@@ -1,4 +1,4 @@
-name: Build ManyueNext Prefetch v5
+name: Build ManyueNext Prefetch v6
 
 on:
   push:
@@ -20,8 +20,8 @@ jobs:
         shell: bash
         run: |
           mkdir extracted
-          unzip -q ManyueNext_fixed_source_v9.zip -d extracted
-          cp -a extracted/ManyueNext_fixed_source_v8/. .
+          unzip -q ManyueNext_fixed_source_v10_prefetch_gate.zip -d extracted
+          cp -a extracted/source/. .
           chmod +x gradlew
 
       - name: Set up JDK 21
@@ -47,10 +47,14 @@ jobs:
         run: |
           mkdir -p dist
           cp app/build/outputs/apk/debug/*.apk dist/
+          for f in dist/*.apk; do
+            mv "$f" "dist/ManyueNext-v6-debug.apk"
+            break
+          done
           sha256sum dist/*.apk > dist/SHA256SUMS.txt
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ManyueNext-prefetch-v5
+          name: ManyueNext-prefetch-v6
           path: dist
