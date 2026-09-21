@@ -20,7 +20,7 @@ jobs:
         shell: bash
         run: |
           mkdir extracted
-          unzip -q ManyueNext_fixed_source_v10_prefetch_gate.zip -d extracted
+          unzip -q ManyueNext_fixed_source_v11_v6_clean.zip -d extracted
           cp -a extracted/source/. .
           chmod +x gradlew
 
