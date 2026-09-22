@@ -1,0 +1,65 @@
+name: Build ManyueNext Prefetch v8
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and package APK
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout build inputs
+        uses: actions/checkout@v4
+
+      - name: Extract fixed source
+        shell: bash
+        run: |
+          mkdir extracted
+          unzip -q ManyueNext_fixed_source_v11_v6_clean.zip -d extracted
+          cp -a extracted/source/. .
+
+      - name: Apply v8 dynamic target and render patch
+        shell: bash
+        run: |
+          git apply --check manyue_v8.patch
+          git apply --verbose manyue_v8.patch
+          git diff --check
+          chmod +x gradlew
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Verify native AI assets
+        run: python3 scripts/verify_manyue_native.py
+
+      - name: Run Manyue unit tests
+        run: ./gradlew --no-daemon :app:testDebugUnitTest --tests 'eu.kanade.tachiyomi.ui.reader.manyue.*'
+
+      - name: Build debug APKs
+        run: ./gradlew --no-daemon :app:assembleDebug
+
+      - name: Package APKs and checksums
+        shell: bash
+        run: |
+          mkdir -p dist
+          apk="$(find app/build/outputs/apk/debug -maxdepth 1 -type f -name '*.apk' | head -n 1)"
+          test -n "$apk"
+          cp "$apk" dist/ManyueNext-v8-debug.apk
+          sha256sum dist/ManyueNext-v8-debug.apk > dist/SHA256SUMS.txt
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ManyueNext-prefetch-v8
+          path: dist
