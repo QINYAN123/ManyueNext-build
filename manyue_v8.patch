@@ -1,6 +1,5 @@
-diff -ruN source_v11_base/source/app/src/main/java/eu/kanade/presentation/reader/settings/GeneralSettingsPage.kt source_v11/source/app/src/main/java/eu/kanade/presentation/reader/settings/GeneralSettingsPage.kt
---- source_v11_base/source/app/src/main/java/eu/kanade/presentation/reader/settings/GeneralSettingsPage.kt	2026-09-19 19:51:48.000000000 -0500
-+++ source_v11/source/app/src/main/java/eu/kanade/presentation/reader/settings/GeneralSettingsPage.kt	2026-09-22 00:17:47.069454276 -0500
+--- a/app/src/main/java/eu/kanade/presentation/reader/settings/GeneralSettingsPage.kt	2026-09-19 19:51:48.000000000 -0500
++++ b/app/src/main/java/eu/kanade/presentation/reader/settings/GeneralSettingsPage.kt	2026-09-22 00:17:47.069454276 -0500
 @@ -236,29 +236,50 @@
  
      val aiTargetMode by viewModel.preferences.manyueAiTargetMode.collectAsState()
@@ -59,9 +58,8 @@ diff -ruN source_v11_base/source/app/src/main/java/eu/kanade/presentation/reader
              },
          )
      }
-diff -ruN source_v11_base/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/ReaderActivity.kt source_v11/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/ReaderActivity.kt
---- source_v11_base/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/ReaderActivity.kt	2026-09-19 19:48:07.000000000 -0500
-+++ source_v11/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/ReaderActivity.kt	2026-09-22 00:18:21.167976246 -0500
+--- a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/ReaderActivity.kt	2026-09-19 19:48:07.000000000 -0500
++++ b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/ReaderActivity.kt	2026-09-22 00:18:21.167976246 -0500
 @@ -385,8 +385,16 @@
          viewModel.state.value.viewer?.refreshManyue()
      }
@@ -81,9 +79,8 @@ diff -ruN source_v11_base/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader
          viewModel.state.value.viewer?.refreshManyue()
      }
  
-diff -ruN source_v11_base/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiRequestFactory.kt source_v11/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiRequestFactory.kt
---- source_v11_base/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiRequestFactory.kt	2026-09-20 12:56:32.000000000 -0500
-+++ source_v11/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiRequestFactory.kt	2026-09-22 00:19:26.913135368 -0500
+--- a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiRequestFactory.kt	2026-09-20 12:56:32.000000000 -0500
++++ b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiRequestFactory.kt	2026-09-22 00:19:26.913135368 -0500
 @@ -40,7 +40,8 @@
  
          val targetMode = ManyueRuntimeState.aiTargetMode
@@ -142,9 +139,8 @@ diff -ruN source_v11_base/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader
              )
              ManyuePrefetchManager.register(identity.chapterId, identity.pageIndex, token)
              ManyueAiUpscaler.queue(token)
-diff -ruN source_v11_base/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiUpscaler.kt source_v11/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiUpscaler.kt
---- source_v11_base/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiUpscaler.kt	2026-09-20 12:55:28.000000000 -0500
-+++ source_v11/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiUpscaler.kt	2026-09-22 00:19:15.749621231 -0500
+--- a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiUpscaler.kt	2026-09-20 12:55:28.000000000 -0500
++++ b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiUpscaler.kt	2026-09-22 00:19:15.749621231 -0500
 @@ -7,6 +7,7 @@
  import android.os.Handler
  import android.os.Looper
@@ -458,9 +454,8 @@ diff -ruN source_v11_base/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader
              else -> { // AUTO
                  if (sourceWidth >= 2344) sourceWidth
                  else minOf(2344, maxOf(1632, Math.round(sourceWidth * 1.2f)))
-diff -ruN source_v11_base/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementCache.kt source_v11/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementCache.kt
---- source_v11_base/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementCache.kt	2026-09-19 19:41:59.000000000 -0500
-+++ source_v11/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementCache.kt	2026-09-22 00:18:27.543699804 -0500
+--- a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementCache.kt	2026-09-19 19:41:59.000000000 -0500
++++ b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementCache.kt	2026-09-22 00:18:27.543699804 -0500
 @@ -30,8 +30,9 @@
          targetWidth: Int,
          classicStrength: Int,
@@ -472,9 +467,8 @@ diff -ruN source_v11_base/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader
          val md = MessageDigest.getInstance("MD5").digest(raw.toByteArray())
          return md.joinToString("") { "%02x".format(it) }
      }
-diff -ruN source_v11_base/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementPreferences.kt source_v11/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementPreferences.kt
---- source_v11_base/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementPreferences.kt	2026-09-19 19:22:18.000000000 -0500
-+++ source_v11/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementPreferences.kt	2026-09-22 00:17:16.138795264 -0500
+--- a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementPreferences.kt	2026-09-19 19:22:18.000000000 -0500
++++ b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementPreferences.kt	2026-09-22 00:17:16.138795264 -0500
 @@ -15,11 +15,17 @@
      /** 0..100, default 25 */
      val classicStrength: Preference<Int> = store.getInt("manyueClassicStrength", 25)
@@ -504,9 +498,8 @@ diff -ruN source_v11_base/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader
  
          const val FOLD_AUTO = -1
          const val FOLD_FULL = 0
-diff -ruN source_v11_base/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueImagePipeline.kt source_v11/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueImagePipeline.kt
---- source_v11_base/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueImagePipeline.kt	2026-09-19 19:49:47.000000000 -0500
-+++ source_v11/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueImagePipeline.kt	2026-09-22 00:20:33.058267882 -0500
+--- a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueImagePipeline.kt	2026-09-19 19:49:47.000000000 -0500
++++ b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueImagePipeline.kt	2026-09-22 00:20:33.058267882 -0500
 @@ -96,6 +96,7 @@
          targetMode: Int,
          targetWidth: Int,
@@ -529,9 +522,8 @@ diff -ruN source_v11_base/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader
              )
              ManyueAiUpscaler.queue(token)
              return token
-diff -ruN source_v11_base/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePageBridge.kt source_v11/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePageBridge.kt
---- source_v11_base/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePageBridge.kt	2026-09-21 14:39:23.000000000 -0500
-+++ source_v11/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePageBridge.kt	2026-09-22 00:22:25.665385957 -0500
+--- a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePageBridge.kt	2026-09-21 14:39:23.000000000 -0500
++++ b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePageBridge.kt	2026-09-22 00:22:25.665385957 -0500
 @@ -2,8 +2,8 @@
  
  import android.content.Context
@@ -639,9 +631,8 @@ diff -ruN source_v11_base/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader
          }
      }
  
-diff -ruN source_v11_base/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueRuntimeState.kt source_v11/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueRuntimeState.kt
---- source_v11_base/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueRuntimeState.kt	2026-09-19 19:54:35.000000000 -0500
-+++ source_v11/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueRuntimeState.kt	2026-09-22 00:17:16.602775145 -0500
+--- a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueRuntimeState.kt	2026-09-19 19:54:35.000000000 -0500
++++ b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueRuntimeState.kt	2026-09-22 00:17:16.602775145 -0500
 @@ -14,6 +14,7 @@
          private set
      @Volatile var aiTargetMode: Int = 2001
@@ -681,9 +672,8 @@ diff -ruN source_v11_base/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader
          )
          foldableMode = prefs.manyueFoldableMode.get()
          foldableTargetWidth = prefs.manyueFoldableTargetWidth.get()
-diff -ruN source_v11_base/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/setting/ReaderPreferences.kt source_v11/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/setting/ReaderPreferences.kt
---- source_v11_base/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/setting/ReaderPreferences.kt	2026-09-19 19:22:18.000000000 -0500
-+++ source_v11/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/setting/ReaderPreferences.kt	2026-09-22 00:18:12.540350239 -0500
+--- a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/setting/ReaderPreferences.kt	2026-09-19 19:22:18.000000000 -0500
++++ b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/setting/ReaderPreferences.kt	2026-09-22 00:18:12.540350239 -0500
 @@ -224,6 +224,7 @@
      val manyueClassicStrength: Preference<Int> = preferenceStore.getInt("manyueClassicStrength", 25)
      val manyueAiTargetMode: Preference<Int> = preferenceStore.getInt("manyueAiTargetMode", 2001)
@@ -692,9 +682,8 @@ diff -ruN source_v11_base/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader
      val manyueFoldableMode: Preference<Int> = preferenceStore.getInt("manyueFoldableMode", -1)
      val manyueFoldableTargetWidth: Preference<Int> = preferenceStore.getInt("manyueFoldableTargetWidth", 2344)
  
-diff -ruN source_v11_base/source/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiRuntimeTest.kt source_v11/source/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiRuntimeTest.kt
---- source_v11_base/source/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiRuntimeTest.kt	2026-09-19 19:22:19.000000000 -0500
-+++ source_v11/source/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiRuntimeTest.kt	2026-09-22 00:20:49.377560432 -0500
+--- a/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiRuntimeTest.kt	2026-09-19 19:22:19.000000000 -0500
++++ b/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiRuntimeTest.kt	2026-09-22 00:20:49.377560432 -0500
 @@ -35,4 +35,32 @@
          // 4000 > 2880 -> sourceWidth
          assertEquals(2000, w)
@@ -728,9 +717,8 @@ diff -ruN source_v11_base/source/app/src/test/java/eu/kanade/tachiyomi/ui/reader
 +        assertEquals(1035, w)
 +    }
  }
-diff -ruN source_v11_base/source/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementCacheTest.kt source_v11/source/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementCacheTest.kt
---- source_v11_base/source/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementCacheTest.kt	2026-09-19 19:22:19.000000000 -0500
-+++ source_v11/source/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementCacheTest.kt	2026-09-22 00:20:49.825541022 -0500
+--- a/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementCacheTest.kt	2026-09-19 19:22:19.000000000 -0500
++++ b/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementCacheTest.kt	2026-09-22 00:20:49.825541022 -0500
 @@ -22,6 +22,12 @@
          assertNotEquals(a, b)
      }
