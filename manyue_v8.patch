@@ -58,6 +58,7 @@
              },
          )
      }
+
 --- a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/ReaderActivity.kt	2026-09-19 19:48:07.000000000 -0500
 +++ b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/ReaderActivity.kt	2026-09-22 00:18:21.167976246 -0500
 @@ -385,8 +385,16 @@
@@ -79,6 +80,7 @@
          viewModel.state.value.viewer?.refreshManyue()
      }
  
+
 --- a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiRequestFactory.kt	2026-09-20 12:56:32.000000000 -0500
 +++ b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiRequestFactory.kt	2026-09-22 00:19:26.913135368 -0500
 @@ -40,7 +40,8 @@
@@ -139,6 +141,7 @@
              )
              ManyuePrefetchManager.register(identity.chapterId, identity.pageIndex, token)
              ManyueAiUpscaler.queue(token)
+
 --- a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiUpscaler.kt	2026-09-20 12:55:28.000000000 -0500
 +++ b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiUpscaler.kt	2026-09-22 00:19:15.749621231 -0500
 @@ -7,6 +7,7 @@
@@ -454,6 +457,7 @@
              else -> { // AUTO
                  if (sourceWidth >= 2344) sourceWidth
                  else minOf(2344, maxOf(1632, Math.round(sourceWidth * 1.2f)))
+
 --- a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementCache.kt	2026-09-19 19:41:59.000000000 -0500
 +++ b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementCache.kt	2026-09-22 00:18:27.543699804 -0500
 @@ -30,8 +30,9 @@
@@ -467,6 +471,7 @@
          val md = MessageDigest.getInstance("MD5").digest(raw.toByteArray())
          return md.joinToString("") { "%02x".format(it) }
      }
+
 --- a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementPreferences.kt	2026-09-19 19:22:18.000000000 -0500
 +++ b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementPreferences.kt	2026-09-22 00:17:16.138795264 -0500
 @@ -15,11 +15,17 @@
@@ -498,6 +503,7 @@
  
          const val FOLD_AUTO = -1
          const val FOLD_FULL = 0
+
 --- a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueImagePipeline.kt	2026-09-19 19:49:47.000000000 -0500
 +++ b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueImagePipeline.kt	2026-09-22 00:20:33.058267882 -0500
 @@ -96,6 +96,7 @@
@@ -522,6 +528,7 @@
              )
              ManyueAiUpscaler.queue(token)
              return token
+
 --- a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePageBridge.kt	2026-09-21 14:39:23.000000000 -0500
 +++ b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePageBridge.kt	2026-09-22 00:22:25.665385957 -0500
 @@ -2,8 +2,8 @@
@@ -631,8 +638,9 @@
          }
      }
  
+
 --- a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueRuntimeState.kt	2026-09-19 19:54:35.000000000 -0500
-+++ b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueRuntimeState.kt	2026-09-22 00:17:16.602775145 -0500
++++ b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueRuntimeState.kt	2026-09-22 00:32:54.862123958 -0500
 @@ -14,6 +14,7 @@
          private set
      @Volatile var aiTargetMode: Int = 2001
@@ -668,10 +676,11 @@
          updateAiTarget(
              prefs.manyueAiTargetMode.get(),
              prefs.manyueAiTargetWidth.get(),
-+            prefs.aiScalePercent.get(),
++            prefs.manyueAiScalePercent.get(),
          )
          foldableMode = prefs.manyueFoldableMode.get()
          foldableTargetWidth = prefs.manyueFoldableTargetWidth.get()
+
 --- a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/setting/ReaderPreferences.kt	2026-09-19 19:22:18.000000000 -0500
 +++ b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/setting/ReaderPreferences.kt	2026-09-22 00:18:12.540350239 -0500
 @@ -224,6 +224,7 @@
@@ -682,6 +691,7 @@
      val manyueFoldableMode: Preference<Int> = preferenceStore.getInt("manyueFoldableMode", -1)
      val manyueFoldableTargetWidth: Preference<Int> = preferenceStore.getInt("manyueFoldableTargetWidth", 2344)
  
+
 --- a/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiRuntimeTest.kt	2026-09-19 19:22:19.000000000 -0500
 +++ b/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiRuntimeTest.kt	2026-09-22 00:20:49.377560432 -0500
 @@ -35,4 +35,32 @@
@@ -717,6 +727,7 @@
 +        assertEquals(1035, w)
 +    }
  }
+
 --- a/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementCacheTest.kt	2026-09-19 19:22:19.000000000 -0500
 +++ b/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementCacheTest.kt	2026-09-22 00:20:49.825541022 -0500
 @@ -22,6 +22,12 @@
