@@ -1,0 +1,300 @@
+--- a/app/src/main/java/eu/kanade/presentation/reader/settings/GeneralSettingsPage.kt	2026-09-20 02:51:48.000000000 +0200
++++ b/app/src/main/java/eu/kanade/presentation/reader/settings/GeneralSettingsPage.kt	2026-09-22 02:42:07.047092832 +0200
+@@ -238,7 +238,12 @@
+     val aiTargetWidth by viewModel.preferences.manyueAiTargetWidth.collectAsState()
+     Text("AI 输出宽度", style = MaterialTheme.typography.bodyMedium)
+     androidx.compose.foundation.layout.FlowRow {
+-        listOf("AUTO" to 2001, "原生 2×" to 2003, "MANUAL" to 2002).map { (label, value) ->
++        listOf(
++            "AUTO" to 2001,
++            "快速 1.5×" to 2004,
++            "原生 2×" to 2003,
++            "MANUAL" to 2002,
++        ).map { (label, value) ->
+             FilterChip(
+                 selected = aiTargetMode == value,
+                 onClick = {
+--- a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiRequestFactory.kt	2026-09-20 19:56:32.000000000 +0200
++++ b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiRequestFactory.kt	2026-09-22 02:42:08.183084642 +0200
+@@ -73,10 +73,23 @@
+             return reusable
+         }
+ 
++        val nativeBytes = ManyueAiUpscaler.prepareNativeInput(
++            originalBytes = originalBytes,
++            sourceWidth = width,
++            sourceHeight = height,
++            targetMode = targetMode,
++            targetWidth = targetWidth,
++        )
++        if (nativeBytes.isEmpty() || nativeBytes.size > ManyueAiRuntime.MAX_INPUT_BYTES) return null
++        val nativeBounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
++        BitmapFactory.decodeByteArray(nativeBytes, 0, nativeBytes.size, nativeBounds)
++        val nativeWidth = nativeBounds.outWidth.takeIf { it > 0 } ?: width
++        val nativeHeight = nativeBounds.outHeight.takeIf { it > 0 } ?: height
++
+         var input: File? = null
+         return try {
+             input = File(context.cacheDir, "manyue_in_${UUID.randomUUID()}.bin")
+-            input.writeBytes(originalBytes)
++            input.writeBytes(nativeBytes)
+             val token = ManyueAiUpscaler.register(
+                 mangaId = identity.mangaId,
+                 chapterId = identity.chapterId,
+@@ -90,6 +103,8 @@
+                 expectedMode = expectedMode,
+                 generation = generation,
+                 sourceFingerprint = sourceFingerprint,
++                nativeSourceWidth = nativeWidth,
++                nativeSourceHeight = nativeHeight,
+             )
+             ManyuePrefetchManager.register(identity.chapterId, identity.pageIndex, token)
+             ManyueAiUpscaler.queue(token)
+--- a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiUpscaler.kt	2026-09-20 19:55:28.000000000 +0200
++++ b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiUpscaler.kt	2026-09-22 02:43:35.950454401 +0200
+@@ -7,6 +7,7 @@
+ import android.os.Handler
+ import android.os.Looper
+ import android.os.SystemClock
++import java.io.ByteArrayOutputStream
+ import java.io.File
+ import java.io.FileOutputStream
+ import java.security.MessageDigest
+@@ -20,7 +21,7 @@
+ import tachiyomi.core.common.util.system.logcat
+ 
+ /**
+- * AI upscaling scheduler. Single-thread priority queue.
++ * AI upscaling scheduler. Priority queue with one visible-page lane and one read-ahead lane.
+  * Process() is asynchronous: register -> queue -> listeners notified on main thread.
+  */
+ object ManyueAiUpscaler {
+@@ -41,6 +42,10 @@
+     private const val FAILURE_LOG_DIR = "manyue_ai_failures"
+     private const val MAX_FAILURE_LOGS = 8
+     private const val MAX_REQUESTS = 64
++    // One lane keeps the visible page responsive while the second lane fills the +1..+5
++    // cache. Both lanes are independently cancellable; stale read-ahead work is discarded by
++    // ManyuePrefetchManager when the user changes page.
++    private const val NATIVE_WORKER_COUNT = 2
+     private val MODEL_SHA256 = mapOf(
+         "x2.bin" to "548a36f9c3f4ab8da56cd3b13badf23968bee207b396dad14d04b830e5f2ab2d",
+         "x2.param" to "b88ff4f00ebf019a7fdac17fdd45a7fd3665d37509efc5baf2e4da2e24420a04",
+@@ -67,6 +72,7 @@
+         val sourceFingerprint: String = "",
+         var enqueuedAt: Long = 0L,
+         var failedAt: Long = 0L,
++        @Volatile var processingStartedAt: Long = 0L,
+         @Volatile var cancelled: Boolean = false,
+         @Volatile var queued: Boolean = false,
+         @Volatile var processing: Boolean = false,
+@@ -74,6 +80,10 @@
+         @Volatile var completed: Boolean = false,
+         @Volatile var failureDetail: String? = null,
+         val requestKey: String = "",
++        // Usually equal to sourceWidth/sourceHeight. FAST_1_5X uses a smaller native input
++        // while retaining the original dimensions for the cache manifest and target math.
++        val nativeSourceWidth: Int = sourceWidth,
++        val nativeSourceHeight: Int = sourceHeight,
+     ) : Comparable<Request> {
+         override fun compareTo(other: Request): Int =
+             other.priority.compareTo(this.priority)
+@@ -95,24 +105,29 @@
+     private fun ensureStarted() {
+         if (started) return
+         started = true
+-        thread(name = "manyue-ai-worker", isDaemon = true) {
+-            while (!Thread.currentThread().isInterrupted) {
+-                try {
+-                    val req = queue.poll(1, TimeUnit.SECONDS) ?: continue
+-                    req.queued = false
+-                    if (req.cancelled) {
+-                        req.inputFile.delete()
+-                        continue
+-                    }
+-                    req.processing = true
++        repeat(NATIVE_WORKER_COUNT) { workerIndex ->
++            thread(name = "manyue-ai-worker-$workerIndex", isDaemon = true) {
++                while (!Thread.currentThread().isInterrupted) {
+                     try {
+-                        process(req)
+-                    } finally {
+-                        req.processing = false
++                        val req = queue.poll(1, TimeUnit.SECONDS) ?: continue
++                        req.queued = false
++                        if (req.cancelled) {
++                            req.inputFile.delete()
++                            continue
++                        }
++                        req.processing = true
++                        req.processingStartedAt = System.currentTimeMillis()
++                        try {
++                            process(req)
++                        } finally {
++                            req.processing = false
++                        }
++                    } catch (t: Throwable) {
++                        logcat(LogPriority.ERROR, t) {
++                            "Manyue AI worker $workerIndex survived an unexpected error"
++                        }
++                        Thread.sleep(500)
+                     }
+-                } catch (t: Throwable) {
+-                    logcat(LogPriority.ERROR, t) { "Manyue AI worker survived an unexpected error" }
+-                    Thread.sleep(500)
+                 }
+             }
+         }
+@@ -132,6 +147,8 @@
+         expectedMode: Int = ManyueRuntimeState.modeInt,
+         generation: Long = ManyueRuntimeState.generation,
+         sourceFingerprint: String = "",
++        nativeSourceWidth: Int = sourceWidth,
++        nativeSourceHeight: Int = sourceHeight,
+     ): String {
+         val requestKey = requestKeyFor(
+             mangaId, chapterId, pageIndex, targetMode, targetWidth,
+@@ -152,6 +169,8 @@
+             token, mangaId, chapterId, pageIndex, inputFile,
+             sourceWidth, sourceHeight, targetMode, targetWidth, priority,
+             expectedMode, generation, sourceFingerprint, requestKey = requestKey,
++            nativeSourceWidth = nativeSourceWidth,
++            nativeSourceHeight = nativeSourceHeight,
+         )
+         requests[token] = req
+         tokensByRequestKey[requestKey] = token
+@@ -376,8 +395,8 @@
+             // Refuse long pages before launch when the predicted 2x bitmap exceeds the safe
+             // display budget; falling back to the original is preferable to a 4K/long-image OOM.
+             if (!ManyueAiSafetyPolicy.isPredictedNativeOutputSafe(
+-                    req.sourceWidth,
+-                    req.sourceHeight,
++                    req.nativeSourceWidth,
++                    req.nativeSourceHeight,
+                     minOf(ManyueAiRuntime.MAX_MODEL_OUTPUT_PIXELS, ManyueAiSafetyPolicy.MAX_DISPLAY_PIXELS),
+                 )
+             ) {
+@@ -435,18 +454,24 @@
+             if (!requestIsCurrent(req)) return
+             ManyueEnhancementCache.putBundle(context, key, segResult.parts, segResult.manifest)
+             ManyueEnhancementCache.trimCache(context)
+-            val waitMs = if (req.enqueuedAt > 0L) {
+-                (System.currentTimeMillis() - req.enqueuedAt).coerceAtLeast(0L)
++            val postElapsedMs = SystemClock.elapsedRealtime() - postStartedAt
++            val now = System.currentTimeMillis()
++            val waitMs = if (req.enqueuedAt > 0L && req.processingStartedAt > 0L) {
++                (req.processingStartedAt - req.enqueuedAt).coerceAtLeast(0L)
+             } else {
+                 0L
+             }
+-            val postElapsedMs = SystemClock.elapsedRealtime() - postStartedAt
++            val totalMs = if (req.enqueuedAt > 0L) {
++                (now - req.enqueuedAt).coerceAtLeast(0L)
++            } else {
++                nativeElapsedMs + postElapsedMs
++            }
+             logcat {
+                 "Manyue AI timings chapter=${req.chapterId} page=${req.pageIndex} " +
+-                    "queueWaitMs=$waitMs nativeMs=$nativeElapsedMs postMs=$postElapsedMs"
++                    "queueWaitMs=$waitMs nativeMs=$nativeElapsedMs postMs=$postElapsedMs totalMs=$totalMs"
+             }
+             ManyueDiagnostics.record(
+-                "第 ${req.pageIndex + 1} 页 AI 完成（排队 ${waitMs}ms，推理 ${nativeElapsedMs}ms，处理 ${postElapsedMs}ms）",
++                "第 ${req.pageIndex + 1} 页 AI 完成（排队 ${waitMs}ms，推理 ${nativeElapsedMs}ms，处理 ${postElapsedMs}ms，总计 ${totalMs}ms）",
+             )
+             state = STATE_READY
+         } catch (_: ManyueAiRuntime.CancelledException) {
+@@ -569,6 +594,7 @@
+         return SegmentResult(parts, manifest)
+     }
+ 
++    @Synchronized
+     private fun ensureModel(context: Context): File {
+         val dir = File(context.filesDir, RUNTIME_DIR).apply { mkdirs() }
+         MODEL_SHA256.forEach { (name, expectedHash) ->
+@@ -604,6 +630,41 @@
+         MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+ 
+     /**
++     * The native model is x2 only. FAST_1_5X therefore reduces the input before inference so
++     * the final native output is about 1.5x the original instead of running a full-resolution
++     * x2 pass and throwing pixels away afterwards. Other target modes keep the original bytes.
++     */
++    fun prepareNativeInput(
++        originalBytes: ByteArray,
++        sourceWidth: Int,
++        sourceHeight: Int,
++        targetMode: Int,
++        targetWidth: Int,
++    ): ByteArray {
++        if (targetMode != ManyueEnhancementPreferences.TARGET_FAST_1_5X) return originalBytes
++        val resolved = resolveTargetWidth(sourceWidth, targetMode, targetWidth)
++        val nativeWidth = ((resolved + 1) / 2).coerceAtLeast(1)
++        if (nativeWidth >= sourceWidth || sourceWidth <= 0 || sourceHeight <= 0) return originalBytes
++        var source: Bitmap? = null
++        var scaled: Bitmap? = null
++        return try {
++            source = BitmapFactory.decodeByteArray(originalBytes, 0, originalBytes.size) ?: return originalBytes
++            val nativeHeight = Math.round(source.height * (nativeWidth.toDouble() / source.width)).coerceAtLeast(1)
++            scaled = Bitmap.createScaledBitmap(source, nativeWidth, nativeHeight, true)
++            ByteArrayOutputStream().use { output ->
++                check(scaled.compress(Bitmap.CompressFormat.WEBP_LOSSY, 95, output))
++                output.toByteArray()
++            }
++        } catch (t: Throwable) {
++            logcat(LogPriority.WARN, t) { "Manyue fast input resize failed; original retained" }
++            originalBytes
++        } finally {
++            scaled?.takeIf { it !== source && !it.isRecycled }?.recycle()
++            source?.takeIf { !it.isRecycled }?.recycle()
++        }
++    }
++
++    /**
+      * Final target width per spec.
+      */
+     fun resolveTargetWidth(sourceWidth: Int, targetMode: Int, targetWidth: Int): Int {
+@@ -612,6 +673,8 @@
+                 val doubled = sourceWidth * 2
+                 if (doubled <= 2880) doubled else sourceWidth
+             }
++            ManyueEnhancementPreferences.TARGET_FAST_1_5X ->
++                minOf(2160, Math.round(sourceWidth * 1.5f))
+             ManyueEnhancementPreferences.TARGET_MANUAL -> targetWidth.coerceIn(1360, 2880)
+             else -> { // AUTO
+                 if (sourceWidth >= 2344) sourceWidth
+--- a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementPreferences.kt	2026-09-20 02:22:18.000000000 +0200
++++ b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementPreferences.kt	2026-09-22 02:42:06.447097161 +0200
+@@ -15,7 +15,7 @@
+     /** 0..100, default 25 */
+     val classicStrength: Preference<Int> = store.getInt("manyueClassicStrength", 25)
+ 
+-    /** 2001=AUTO, 2002=MANUAL, 2003=NATIVE_2X */
++    /** 2001=AUTO, 2002=MANUAL, 2003=NATIVE_2X, 2004=FAST_1_5X */
+     val aiTargetMode: Preference<Int> = store.getInt("manyueAiTargetMode", TARGET_AUTO)
+ 
+     val aiTargetWidth: Preference<Int> = store.getInt("manyueAiTargetWidth", 2344)
+@@ -31,6 +31,7 @@
+         const val TARGET_AUTO = 2001
+         const val TARGET_MANUAL = 2002
+         const val TARGET_NATIVE_2X = 2003
++        const val TARGET_FAST_1_5X = 2004
+ 
+         const val FOLD_AUTO = -1
+         const val FOLD_FULL = 0
+--- a/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiRuntimeTest.kt	2026-09-20 02:22:19.000000000 +0200
++++ b/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiRuntimeTest.kt	2026-09-22 02:42:08.627081432 +0200
+@@ -35,4 +35,13 @@
+         // 4000 > 2880 -> sourceWidth
+         assertEquals(2000, w)
+     }
++
++    @Test fun `fast target is one and a half times`() {
++        val w = ManyueAiUpscaler.resolveTargetWidth(
++            800,
++            ManyueEnhancementPreferences.TARGET_FAST_1_5X,
++            2344,
++        )
++        assertEquals(1200, w)
++    }
+ }
