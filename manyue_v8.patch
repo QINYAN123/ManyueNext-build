@@ -1,0 +1,746 @@
+diff -ruN source_v11_base/source/app/src/main/java/eu/kanade/presentation/reader/settings/GeneralSettingsPage.kt source_v11/source/app/src/main/java/eu/kanade/presentation/reader/settings/GeneralSettingsPage.kt
+--- source_v11_base/source/app/src/main/java/eu/kanade/presentation/reader/settings/GeneralSettingsPage.kt	2026-09-19 19:51:48.000000000 -0500
++++ source_v11/source/app/src/main/java/eu/kanade/presentation/reader/settings/GeneralSettingsPage.kt	2026-09-22 00:17:47.069454276 -0500
+@@ -236,29 +236,50 @@
+ 
+     val aiTargetMode by viewModel.preferences.manyueAiTargetMode.collectAsState()
+     val aiTargetWidth by viewModel.preferences.manyueAiTargetWidth.collectAsState()
++    val aiScalePercent by viewModel.preferences.manyueAiScalePercent.collectAsState()
+     Text("AI 输出宽度", style = MaterialTheme.typography.bodyMedium)
+     androidx.compose.foundation.layout.FlowRow {
+-        listOf("AUTO" to 2001, "原生 2×" to 2003, "MANUAL" to 2002).map { (label, value) ->
++        listOf(
++            "AUTO" to 2001,
++            "快速 1.5×" to 2004,
++            "原生 2×" to 2003,
++            "MANUAL" to 2002,
++            "动态目标" to 2005,
++            "自定义倍率" to 2006,
++        ).map { (label, value) ->
+             FilterChip(
+                 selected = aiTargetMode == value,
+                 onClick = {
+                     viewModel.preferences.manyueAiTargetMode.set(value)
+-                    readerActivity?.onManyueAiTargetChanged(value, aiTargetWidth)
++                    readerActivity?.onManyueAiTargetChanged(value, aiTargetWidth, aiScalePercent)
+                 },
+                 label = { Text(label) },
+             )
+         }
+     }
+-    if (aiTargetMode == 2002) {
++    if (aiTargetMode == 2002 || aiTargetMode == 2005) {
+         SliderItem(
+-            label = "AI 目标宽度",
++            label = if (aiTargetMode == 2005) "动态目标宽度" else "AI 目标宽度",
+             value = aiTargetWidth,
+-            valueRange = 1360..2880,
+-            steps = 94,
++            valueRange = 720..2880,
++            steps = 107,
+             valueString = "$aiTargetWidth px",
+             onChange = {
+                 viewModel.preferences.manyueAiTargetWidth.set(it)
+-                readerActivity?.onManyueAiTargetChanged(aiTargetMode, it)
++                readerActivity?.onManyueAiTargetChanged(aiTargetMode, it, aiScalePercent)
++            },
++        )
++    }
++    if (aiTargetMode == 2006) {
++        SliderItem(
++            label = "AI 超分倍率",
++            value = aiScalePercent,
++            valueRange = 100..200,
++            steps = 19,
++            valueString = "%.2f×".format(aiScalePercent / 100f),
++            onChange = {
++                viewModel.preferences.manyueAiScalePercent.set(it)
++                readerActivity?.onManyueAiTargetChanged(aiTargetMode, aiTargetWidth, it)
+             },
+         )
+     }
+diff -ruN source_v11_base/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/ReaderActivity.kt source_v11/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/ReaderActivity.kt
+--- source_v11_base/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/ReaderActivity.kt	2026-09-19 19:48:07.000000000 -0500
++++ source_v11/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/ReaderActivity.kt	2026-09-22 00:18:21.167976246 -0500
+@@ -385,8 +385,16 @@
+         viewModel.state.value.viewer?.refreshManyue()
+     }
+ 
+-    fun onManyueAiTargetChanged(targetMode: Int, targetWidth: Int) {
+-        eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.updateAiTarget(targetMode, targetWidth)
++    fun onManyueAiTargetChanged(
++        targetMode: Int,
++        targetWidth: Int,
++        scalePercent: Int = eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.aiScalePercent,
++    ) {
++        eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.updateAiTarget(
++            targetMode,
++            targetWidth,
++            scalePercent,
++        )
+         viewModel.state.value.viewer?.refreshManyue()
+     }
+ 
+diff -ruN source_v11_base/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiRequestFactory.kt source_v11/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiRequestFactory.kt
+--- source_v11_base/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiRequestFactory.kt	2026-09-20 12:56:32.000000000 -0500
++++ source_v11/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiRequestFactory.kt	2026-09-22 00:19:26.913135368 -0500
+@@ -40,7 +40,8 @@
+ 
+         val targetMode = ManyueRuntimeState.aiTargetMode
+         val targetWidth = ManyueRuntimeState.aiTargetWidth
+-        val resolved = ManyueAiUpscaler.resolveTargetWidth(width, targetMode, targetWidth)
++        val targetScalePercent = ManyueRuntimeState.aiScalePercent
++        val resolved = ManyueAiUpscaler.resolveTargetWidth(width, targetMode, targetWidth, targetScalePercent)
+         if (resolved <= width) return null
+         val resolvedHeight = Math.round(height * (resolved.toDouble() / width)).toInt()
+         if (!ManyueAiSafetyPolicy.isPixelBudgetSafe(
+@@ -58,6 +59,7 @@
+             pageIndex = identity.pageIndex,
+             targetMode = targetMode,
+             targetWidth = targetWidth,
++            targetScalePercent = targetScalePercent,
+             expectedMode = expectedMode,
+             generation = generation,
+             sourceFingerprint = sourceFingerprint,
+@@ -73,10 +75,24 @@
+             return reusable
+         }
+ 
++        val nativeBytes = ManyueAiUpscaler.prepareNativeInput(
++            originalBytes = originalBytes,
++            sourceWidth = width,
++            sourceHeight = height,
++            targetMode = targetMode,
++            targetWidth = targetWidth,
++            targetScalePercent = targetScalePercent,
++        )
++        if (nativeBytes.isEmpty() || nativeBytes.size > ManyueAiRuntime.MAX_INPUT_BYTES) return null
++        val nativeBounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
++        BitmapFactory.decodeByteArray(nativeBytes, 0, nativeBytes.size, nativeBounds)
++        val nativeWidth = nativeBounds.outWidth.takeIf { it > 0 } ?: width
++        val nativeHeight = nativeBounds.outHeight.takeIf { it > 0 } ?: height
++
+         var input: File? = null
+         return try {
+             input = File(context.cacheDir, "manyue_in_${UUID.randomUUID()}.bin")
+-            input.writeBytes(originalBytes)
++            input.writeBytes(nativeBytes)
+             val token = ManyueAiUpscaler.register(
+                 mangaId = identity.mangaId,
+                 chapterId = identity.chapterId,
+@@ -86,10 +102,13 @@
+                 sourceHeight = height,
+                 targetMode = targetMode,
+                 targetWidth = targetWidth,
++                targetScalePercent = targetScalePercent,
+                 priority = priority,
+                 expectedMode = expectedMode,
+                 generation = generation,
+                 sourceFingerprint = sourceFingerprint,
++                nativeSourceWidth = nativeWidth,
++                nativeSourceHeight = nativeHeight,
+             )
+             ManyuePrefetchManager.register(identity.chapterId, identity.pageIndex, token)
+             ManyueAiUpscaler.queue(token)
+diff -ruN source_v11_base/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiUpscaler.kt source_v11/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiUpscaler.kt
+--- source_v11_base/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiUpscaler.kt	2026-09-20 12:55:28.000000000 -0500
++++ source_v11/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiUpscaler.kt	2026-09-22 00:19:15.749621231 -0500
+@@ -7,6 +7,7 @@
+ import android.os.Handler
+ import android.os.Looper
+ import android.os.SystemClock
++import java.io.ByteArrayOutputStream
+ import java.io.File
+ import java.io.FileOutputStream
+ import java.security.MessageDigest
+@@ -16,11 +17,12 @@
+ import java.util.concurrent.PriorityBlockingQueue
+ import java.util.concurrent.TimeUnit
+ import kotlin.concurrent.thread
++import kotlin.math.roundToInt
+ import logcat.LogPriority
+ import tachiyomi.core.common.util.system.logcat
+ 
+ /**
+- * AI upscaling scheduler. Single-thread priority queue.
++ * AI upscaling scheduler. Priority queue with one visible-page lane and one read-ahead lane.
+  * Process() is asynchronous: register -> queue -> listeners notified on main thread.
+  */
+ object ManyueAiUpscaler {
+@@ -41,6 +43,10 @@
+     private const val FAILURE_LOG_DIR = "manyue_ai_failures"
+     private const val MAX_FAILURE_LOGS = 8
+     private const val MAX_REQUESTS = 64
++    // One lane keeps the visible page responsive while the second lane fills the +1..+5
++    // cache. Both lanes are independently cancellable; stale read-ahead work is discarded by
++    // ManyuePrefetchManager when the user changes page.
++    private const val NATIVE_WORKER_COUNT = 2
+     private val MODEL_SHA256 = mapOf(
+         "x2.bin" to "548a36f9c3f4ab8da56cd3b13badf23968bee207b396dad14d04b830e5f2ab2d",
+         "x2.param" to "b88ff4f00ebf019a7fdac17fdd45a7fd3665d37509efc5baf2e4da2e24420a04",
+@@ -61,12 +67,14 @@
+         val sourceHeight: Int,
+         val targetMode: Int,
+         val targetWidth: Int,
++        val targetScalePercent: Int = 150,
+         var priority: Int = 10,
+         val expectedMode: Int = ManyueEnhancementMode.AI_2X.value,
+         val generation: Long = 0L,
+         val sourceFingerprint: String = "",
+         var enqueuedAt: Long = 0L,
+         var failedAt: Long = 0L,
++        @Volatile var processingStartedAt: Long = 0L,
+         @Volatile var cancelled: Boolean = false,
+         @Volatile var queued: Boolean = false,
+         @Volatile var processing: Boolean = false,
+@@ -74,6 +82,10 @@
+         @Volatile var completed: Boolean = false,
+         @Volatile var failureDetail: String? = null,
+         val requestKey: String = "",
++        // Usually equal to sourceWidth/sourceHeight. FAST_1_5X uses a smaller native input
++        // while retaining the original dimensions for the cache manifest and target math.
++        val nativeSourceWidth: Int = sourceWidth,
++        val nativeSourceHeight: Int = sourceHeight,
+     ) : Comparable<Request> {
+         override fun compareTo(other: Request): Int =
+             other.priority.compareTo(this.priority)
+@@ -95,24 +107,29 @@
+     private fun ensureStarted() {
+         if (started) return
+         started = true
+-        thread(name = "manyue-ai-worker", isDaemon = true) {
+-            while (!Thread.currentThread().isInterrupted) {
+-                try {
+-                    val req = queue.poll(1, TimeUnit.SECONDS) ?: continue
+-                    req.queued = false
+-                    if (req.cancelled) {
+-                        req.inputFile.delete()
+-                        continue
+-                    }
+-                    req.processing = true
++        repeat(NATIVE_WORKER_COUNT) { workerIndex ->
++            thread(name = "manyue-ai-worker-$workerIndex", isDaemon = true) {
++                while (!Thread.currentThread().isInterrupted) {
+                     try {
+-                        process(req)
+-                    } finally {
+-                        req.processing = false
++                        val req = queue.poll(1, TimeUnit.SECONDS) ?: continue
++                        req.queued = false
++                        if (req.cancelled) {
++                            req.inputFile.delete()
++                            continue
++                        }
++                        req.processing = true
++                        req.processingStartedAt = System.currentTimeMillis()
++                        try {
++                            process(req)
++                        } finally {
++                            req.processing = false
++                        }
++                    } catch (t: Throwable) {
++                        logcat(LogPriority.ERROR, t) {
++                            "Manyue AI worker $workerIndex survived an unexpected error"
++                        }
++                        Thread.sleep(500)
+                     }
+-                } catch (t: Throwable) {
+-                    logcat(LogPriority.ERROR, t) { "Manyue AI worker survived an unexpected error" }
+-                    Thread.sleep(500)
+                 }
+             }
+         }
+@@ -129,12 +146,15 @@
+         targetMode: Int,
+         targetWidth: Int,
+         priority: Int,
++        targetScalePercent: Int = ManyueRuntimeState.aiScalePercent,
+         expectedMode: Int = ManyueRuntimeState.modeInt,
+         generation: Long = ManyueRuntimeState.generation,
+         sourceFingerprint: String = "",
++        nativeSourceWidth: Int = sourceWidth,
++        nativeSourceHeight: Int = sourceHeight,
+     ): String {
+         val requestKey = requestKeyFor(
+-            mangaId, chapterId, pageIndex, targetMode, targetWidth,
++            mangaId, chapterId, pageIndex, targetMode, targetWidth, targetScalePercent,
+             expectedMode, generation, sourceFingerprint,
+         )
+         tokensByRequestKey[requestKey]?.let { existingToken ->
+@@ -149,9 +169,23 @@
+         }
+         val token = UUID.randomUUID().toString()
+         val req = Request(
+-            token, mangaId, chapterId, pageIndex, inputFile,
+-            sourceWidth, sourceHeight, targetMode, targetWidth, priority,
+-            expectedMode, generation, sourceFingerprint, requestKey = requestKey,
++            token = token,
++            mangaId = mangaId,
++            chapterId = chapterId,
++            pageIndex = pageIndex,
++            inputFile = inputFile,
++            sourceWidth = sourceWidth,
++            sourceHeight = sourceHeight,
++            targetMode = targetMode,
++            targetWidth = targetWidth,
++            targetScalePercent = targetScalePercent,
++            priority = priority,
++            expectedMode = expectedMode,
++            generation = generation,
++            sourceFingerprint = sourceFingerprint,
++            requestKey = requestKey,
++            nativeSourceWidth = nativeSourceWidth,
++            nativeSourceHeight = nativeSourceHeight,
+         )
+         requests[token] = req
+         tokensByRequestKey[requestKey] = token
+@@ -209,9 +243,10 @@
+         expectedMode: Int,
+         generation: Long,
+         sourceFingerprint: String,
++        targetScalePercent: Int = ManyueRuntimeState.aiScalePercent,
+     ): String? {
+         val key = requestKeyFor(
+-            mangaId, chapterId, pageIndex, targetMode, targetWidth,
++            mangaId, chapterId, pageIndex, targetMode, targetWidth, targetScalePercent,
+             expectedMode, generation, sourceFingerprint,
+         )
+         val token = tokensByRequestKey[key] ?: return null
+@@ -333,7 +368,7 @@
+         ManyueEnhancementCache.cacheKey(
+             req.mangaId, req.chapterId, req.pageIndex,
+             ManyueEnhancementMode.AI_2X.value, req.targetMode, req.targetWidth, 0,
+-            req.sourceFingerprint,
++            req.sourceFingerprint, req.targetScalePercent,
+         )
+ 
+     private fun requestKeyFor(
+@@ -342,11 +377,12 @@
+         pageIndex: Int,
+         targetMode: Int,
+         targetWidth: Int,
++        targetScalePercent: Int,
+         expectedMode: Int,
+         generation: Long,
+         sourceFingerprint: String,
+     ): String = listOf(
+-        mangaId, chapterId, pageIndex, targetMode, targetWidth,
++        mangaId, chapterId, pageIndex, targetMode, targetWidth, targetScalePercent,
+         expectedMode, generation, sourceFingerprint,
+     ).joinToString("|")
+ 
+@@ -376,15 +412,20 @@
+             // Refuse long pages before launch when the predicted 2x bitmap exceeds the safe
+             // display budget; falling back to the original is preferable to a 4K/long-image OOM.
+             if (!ManyueAiSafetyPolicy.isPredictedNativeOutputSafe(
+-                    req.sourceWidth,
+-                    req.sourceHeight,
++                    req.nativeSourceWidth,
++                    req.nativeSourceHeight,
+                     minOf(ManyueAiRuntime.MAX_MODEL_OUTPUT_PIXELS, ManyueAiSafetyPolicy.MAX_DISPLAY_PIXELS),
+                 )
+             ) {
+                 req.failedAt = System.currentTimeMillis(); return
+             }
+ 
+-            val resolved = resolveTargetWidth(req.sourceWidth, req.targetMode, req.targetWidth)
++            val resolved = resolveTargetWidth(
++                req.sourceWidth,
++                req.targetMode,
++                req.targetWidth,
++                req.targetScalePercent,
++            )
+             if (resolved <= req.sourceWidth) {
+                 // AI modes never copy an unmodified original into the AI cache. The reader is
+                 // already displaying the original and simply keeps it as the fallback.
+@@ -435,18 +476,24 @@
+             if (!requestIsCurrent(req)) return
+             ManyueEnhancementCache.putBundle(context, key, segResult.parts, segResult.manifest)
+             ManyueEnhancementCache.trimCache(context)
+-            val waitMs = if (req.enqueuedAt > 0L) {
+-                (System.currentTimeMillis() - req.enqueuedAt).coerceAtLeast(0L)
++            val postElapsedMs = SystemClock.elapsedRealtime() - postStartedAt
++            val now = System.currentTimeMillis()
++            val waitMs = if (req.enqueuedAt > 0L && req.processingStartedAt > 0L) {
++                (req.processingStartedAt - req.enqueuedAt).coerceAtLeast(0L)
+             } else {
+                 0L
+             }
+-            val postElapsedMs = SystemClock.elapsedRealtime() - postStartedAt
++            val totalMs = if (req.enqueuedAt > 0L) {
++                (now - req.enqueuedAt).coerceAtLeast(0L)
++            } else {
++                nativeElapsedMs + postElapsedMs
++            }
+             logcat {
+                 "Manyue AI timings chapter=${req.chapterId} page=${req.pageIndex} " +
+-                    "queueWaitMs=$waitMs nativeMs=$nativeElapsedMs postMs=$postElapsedMs"
++                    "queueWaitMs=$waitMs nativeMs=$nativeElapsedMs postMs=$postElapsedMs totalMs=$totalMs"
+             }
+             ManyueDiagnostics.record(
+-                "第 ${req.pageIndex + 1} 页 AI 完成（排队 ${waitMs}ms，推理 ${nativeElapsedMs}ms，处理 ${postElapsedMs}ms）",
++                "第 ${req.pageIndex + 1} 页 AI 完成（排队 ${waitMs}ms，推理 ${nativeElapsedMs}ms，处理 ${postElapsedMs}ms，总计 ${totalMs}ms）",
+             )
+             state = STATE_READY
+         } catch (_: ManyueAiRuntime.CancelledException) {
+@@ -569,6 +616,7 @@
+         return SegmentResult(parts, manifest)
+     }
+ 
++    @Synchronized
+     private fun ensureModel(context: Context): File {
+         val dir = File(context.filesDir, RUNTIME_DIR).apply { mkdirs() }
+         MODEL_SHA256.forEach { (name, expectedHash) ->
+@@ -604,15 +652,64 @@
+         MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+ 
+     /**
++     * The native model is x2 only. FAST_1_5X, DYNAMIC_TARGET and SCALE_SLIDER reduce the input
++     * before inference so the native output is close to the requested final width instead of
++     * always running a full-resolution x2 pass and throwing pixels away afterwards.
++     */
++    fun prepareNativeInput(
++        originalBytes: ByteArray,
++        sourceWidth: Int,
++        sourceHeight: Int,
++        targetMode: Int,
++        targetWidth: Int,
++        targetScalePercent: Int = ManyueRuntimeState.aiScalePercent,
++    ): ByteArray {
++        if (targetMode != ManyueEnhancementPreferences.TARGET_FAST_1_5X &&
++            targetMode != ManyueEnhancementPreferences.TARGET_DYNAMIC &&
++            targetMode != ManyueEnhancementPreferences.TARGET_SCALE
++        ) return originalBytes
++        val resolved = resolveTargetWidth(sourceWidth, targetMode, targetWidth, targetScalePercent)
++        val nativeWidth = ((resolved + 1) / 2).coerceAtLeast(1)
++        if (nativeWidth >= sourceWidth || sourceWidth <= 0 || sourceHeight <= 0) return originalBytes
++        var source: Bitmap? = null
++        var scaled: Bitmap? = null
++        return try {
++            source = BitmapFactory.decodeByteArray(originalBytes, 0, originalBytes.size) ?: return originalBytes
++            val nativeHeight = (source.height * (nativeWidth.toDouble() / source.width)).roundToInt().coerceAtLeast(1)
++            scaled = Bitmap.createScaledBitmap(source, nativeWidth, nativeHeight, true)
++            ByteArrayOutputStream().use { output ->
++                check(scaled.compress(Bitmap.CompressFormat.WEBP_LOSSY, 95, output))
++                output.toByteArray()
++            }
++        } catch (t: Throwable) {
++            logcat(LogPriority.WARN, t) { "Manyue fast input resize failed; original retained" }
++            originalBytes
++        } finally {
++            scaled?.takeIf { it !== source && !it.isRecycled }?.recycle()
++            source?.takeIf { !it.isRecycled }?.recycle()
++        }
++    }
++
++    /**
+      * Final target width per spec.
+      */
+-    fun resolveTargetWidth(sourceWidth: Int, targetMode: Int, targetWidth: Int): Int {
++    fun resolveTargetWidth(
++        sourceWidth: Int,
++        targetMode: Int,
++        targetWidth: Int,
++        targetScalePercent: Int = ManyueRuntimeState.aiScalePercent,
++    ): Int {
+         val resolved = when (targetMode) {
+             ManyueEnhancementPreferences.TARGET_NATIVE_2X -> {
+                 val doubled = sourceWidth * 2
+                 if (doubled <= 2880) doubled else sourceWidth
+             }
+-            ManyueEnhancementPreferences.TARGET_MANUAL -> targetWidth.coerceIn(1360, 2880)
++            ManyueEnhancementPreferences.TARGET_FAST_1_5X ->
++                minOf(2160, Math.round(sourceWidth * 1.5f))
++            ManyueEnhancementPreferences.TARGET_MANUAL,
++            ManyueEnhancementPreferences.TARGET_DYNAMIC -> targetWidth.coerceIn(720, 2880)
++            ManyueEnhancementPreferences.TARGET_SCALE ->
++                Math.round(sourceWidth * targetScalePercent.coerceIn(100, 200) / 100f)
+             else -> { // AUTO
+                 if (sourceWidth >= 2344) sourceWidth
+                 else minOf(2344, maxOf(1632, Math.round(sourceWidth * 1.2f)))
+diff -ruN source_v11_base/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementCache.kt source_v11/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementCache.kt
+--- source_v11_base/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementCache.kt	2026-09-19 19:41:59.000000000 -0500
++++ source_v11/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementCache.kt	2026-09-22 00:18:27.543699804 -0500
+@@ -30,8 +30,9 @@
+         targetWidth: Int,
+         classicStrength: Int,
+         sourceFingerprint: String = "",
++        targetScalePercent: Int = 150,
+     ): String {
+-        val raw = "$MODEL_VERSION|$mangaId|$chapterId|$pageIndex|$mode|$targetMode|$targetWidth|$classicStrength|$sourceFingerprint|v4"
++        val raw = "$MODEL_VERSION|$mangaId|$chapterId|$pageIndex|$mode|$targetMode|$targetWidth|$classicStrength|$targetScalePercent|$sourceFingerprint|v5"
+         val md = MessageDigest.getInstance("MD5").digest(raw.toByteArray())
+         return md.joinToString("") { "%02x".format(it) }
+     }
+diff -ruN source_v11_base/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementPreferences.kt source_v11/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementPreferences.kt
+--- source_v11_base/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementPreferences.kt	2026-09-19 19:22:18.000000000 -0500
++++ source_v11/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementPreferences.kt	2026-09-22 00:17:16.138795264 -0500
+@@ -15,11 +15,17 @@
+     /** 0..100, default 25 */
+     val classicStrength: Preference<Int> = store.getInt("manyueClassicStrength", 25)
+ 
+-    /** 2001=AUTO, 2002=MANUAL, 2003=NATIVE_2X */
++    /**
++     * 2001=AUTO, 2002=MANUAL, 2003=NATIVE_2X, 2004=FAST_1_5X,
++     * 2005=DYNAMIC_TARGET, 2006=SCALE_SLIDER.
++     */
+     val aiTargetMode: Preference<Int> = store.getInt("manyueAiTargetMode", TARGET_AUTO)
+ 
+     val aiTargetWidth: Preference<Int> = store.getInt("manyueAiTargetWidth", 2344)
+ 
++    /** AI output scale in percent for SCALE_SLIDER (100..200, default 150 = 1.50x). */
++    val aiScalePercent: Preference<Int> = store.getInt("manyueAiScalePercent", 150)
++
+     /** -1=AUTO, 0=FULL, >0=manual px */
+     val foldableMode: Preference<Int> = store.getInt("manyueFoldableMode", FOLD_AUTO)
+ 
+@@ -31,6 +37,9 @@
+         const val TARGET_AUTO = 2001
+         const val TARGET_MANUAL = 2002
+         const val TARGET_NATIVE_2X = 2003
++        const val TARGET_FAST_1_5X = 2004
++        const val TARGET_DYNAMIC = 2005
++        const val TARGET_SCALE = 2006
+ 
+         const val FOLD_AUTO = -1
+         const val FOLD_FULL = 0
+diff -ruN source_v11_base/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueImagePipeline.kt source_v11/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueImagePipeline.kt
+--- source_v11_base/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueImagePipeline.kt	2026-09-19 19:49:47.000000000 -0500
++++ source_v11/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueImagePipeline.kt	2026-09-22 00:20:33.058267882 -0500
+@@ -96,6 +96,7 @@
+         targetMode: Int,
+         targetWidth: Int,
+         priority: Int,
++        targetScalePercent: Int = ManyueRuntimeState.aiScalePercent,
+     ): String? {
+         try {
+             if (!ManyueAiRuntime.isSupported(context)) return null
+@@ -104,11 +105,11 @@
+             val w = opts.outWidth
+             val h = opts.outHeight
+             if (w <= 0 || h <= 0) return null
+-            val resolved = ManyueAiUpscaler.resolveTargetWidth(w, targetMode, targetWidth)
++            val resolved = ManyueAiUpscaler.resolveTargetWidth(w, targetMode, targetWidth, targetScalePercent)
+             if (resolved <= w) return null // AI not useful
+             val token = ManyueAiUpscaler.register(
+                 pageInfo.mangaId, pageInfo.chapterId, pageInfo.pageIndex,
+-                inputFile, w, h, targetMode, targetWidth, priority,
++                inputFile, w, h, targetMode, targetWidth, priority, targetScalePercent,
+             )
+             ManyueAiUpscaler.queue(token)
+             return token
+diff -ruN source_v11_base/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePageBridge.kt source_v11/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePageBridge.kt
+--- source_v11_base/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePageBridge.kt	2026-09-21 14:39:23.000000000 -0500
++++ source_v11/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePageBridge.kt	2026-09-22 00:22:25.665385957 -0500
+@@ -2,8 +2,8 @@
+ 
+ import android.content.Context
+ import android.graphics.Bitmap
++import android.graphics.drawable.BitmapDrawable
+ import eu.kanade.tachiyomi.ui.reader.viewer.ReaderPageImageView
+-import java.io.ByteArrayOutputStream
+ import kotlinx.coroutines.CancellationException
+ import kotlinx.coroutines.CoroutineScope
+ import kotlinx.coroutines.Dispatchers
+@@ -12,7 +12,6 @@
+ import kotlinx.coroutines.launch
+ import kotlinx.coroutines.withContext
+ import logcat.LogPriority
+-import okio.Buffer
+ import tachiyomi.core.common.util.system.logcat
+ 
+ /**
+@@ -96,17 +95,26 @@
+                     }
+                     renderJob?.cancel()
+                     renderJob = scope.launch {
++                        var rendered: RenderedResult? = null
++                        var installed = false
+                         try {
+-                            val rendered = withContext(Dispatchers.Default) {
++                            rendered = withContext(Dispatchers.Default) {
+                                 buildRenderedResult(context, tok, wantClassic, strength)
+-                            } ?: run {
++                            }
++                            val result = rendered ?: run {
+                                 onState(ManyueEnhancementState.FAILED, "AI 结果读取失败")
+                                 return@launch
+                             }
+-                            if (!isCurrent(t, identity, mode, expectedGeneration)) return@launch
+-                            view.setImage(Buffer().write(rendered.bytes), false, config)
+-                            onEnhancedDimensions(rendered.width, rendered.height)
+-                            onState(rendered.state, rendered.detail)
++                            if (!isCurrent(t, identity, mode, expectedGeneration)) {
++                                return@launch
++                            }
++                            // The cached parts are already decoded off the main thread. Pass
++                            // the Bitmap directly to the reader so it does not decode a
++                            // second WEBP copy at the exact moment the page becomes sharp.
++                            view.setImage(BitmapDrawable(view.resources, result.bitmap), config)
++                            installed = true
++                            onEnhancedDimensions(result.width, result.height)
++                            onState(result.state, result.detail)
+                             logcat {
+                                 "Manyue reader replace chapter=${identity.chapterId} " +
+                                     "page=${identity.pageIndex} token=$t"
+@@ -116,6 +124,8 @@
+                         } catch (error: Throwable) {
+                             logcat(LogPriority.WARN, error) { "Manyue AI render failed; original retained" }
+                             onState(ManyueEnhancementState.FAILED, "AI 结果显示失败")
++                        } finally {
++                            if (!installed) rendered?.bitmap?.takeIf { !it.isRecycled }?.recycle()
+                         }
+                     }
+                 }
+@@ -138,7 +148,7 @@
+         ManyueRuntimeState.generation == expectedGeneration
+ 
+     private data class RenderedResult(
+-        val bytes: ByteArray,
++        val bitmap: Bitmap,
+         val width: Int,
+         val height: Int,
+         val state: ManyueEnhancementState,
+@@ -153,6 +163,7 @@
+     ): RenderedResult? {
+         var bitmap: Bitmap? = null
+         var finalBitmap: Bitmap? = null
++        var handedOff = false
+         try {
+             bitmap = ManyueAiUpscaler.loadCachedBitmap(context, token) ?: return null
+             val classicSafe = !wantClassic || ManyueAiSafetyPolicy.isPixelBudgetSafe(
+@@ -166,8 +177,6 @@
+                 bitmap
+             }
+             finalBitmap = output
+-            val out = ByteArrayOutputStream()
+-            check(output.compress(Bitmap.CompressFormat.WEBP_LOSSY, 92, out))
+             val state = if (wantClassic && classicSafe && strength > 0) {
+                 ManyueEnhancementState.AI_CLASSIC_READY
+             } else {
+@@ -178,10 +187,17 @@
+                 wantClassic && !classicSafe -> "经典增强超过内存限制，已保留 AI 超分"
+                 else -> null
+             }
+-            return RenderedResult(out.toByteArray(), output.width, output.height, state, detail)
++            handedOff = true
++            return RenderedResult(output, output.width, output.height, state, detail)
+         } finally {
+-            finalBitmap?.takeIf { it !== bitmap && !it.isRecycled }?.recycle()
+-            bitmap?.takeIf { !it.isRecycled }?.recycle()
++            if (handedOff) {
++                // The reader now owns the returned bitmap. Only release the intermediate
++                // bitmap when classic enhancement produced a distinct output bitmap.
++                bitmap?.takeIf { it !== finalBitmap && !it.isRecycled }?.recycle()
++            } else {
++                finalBitmap?.takeIf { !it.isRecycled }?.recycle()
++                bitmap?.takeIf { !it.isRecycled }?.recycle()
++            }
+         }
+     }
+ 
+diff -ruN source_v11_base/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueRuntimeState.kt source_v11/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueRuntimeState.kt
+--- source_v11_base/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueRuntimeState.kt	2026-09-19 19:54:35.000000000 -0500
++++ source_v11/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueRuntimeState.kt	2026-09-22 00:17:16.602775145 -0500
+@@ -14,6 +14,7 @@
+         private set
+     @Volatile var aiTargetMode: Int = 2001
+     @Volatile var aiTargetWidth: Int = 2344
++    @Volatile var aiScalePercent: Int = 150
+     @Volatile var foldableMode: Int = -1
+     @Volatile var foldableTargetWidth: Int = 2344
+     @Volatile var generation: Long = 0L
+@@ -45,11 +46,19 @@
+     }
+ 
+     @Synchronized
+-    fun updateAiTarget(newTargetMode: Int, newTargetWidth: Int) {
+-        val safeWidth = newTargetWidth.coerceIn(1360, 2880)
+-        if (aiTargetMode == newTargetMode && aiTargetWidth == safeWidth) return
++    fun updateAiTarget(
++        newTargetMode: Int,
++        newTargetWidth: Int,
++        newScalePercent: Int = aiScalePercent,
++    ) {
++        val safeWidth = newTargetWidth.coerceIn(720, 2880)
++        val safeScalePercent = newScalePercent.coerceIn(100, 200)
++        if (aiTargetMode == newTargetMode && aiTargetWidth == safeWidth &&
++            aiScalePercent == safeScalePercent
++        ) return
+         aiTargetMode = newTargetMode
+         aiTargetWidth = safeWidth
++        aiScalePercent = safeScalePercent
+         generation++
+         ManyuePrefetchManager.reset()
+     }
+@@ -68,6 +77,7 @@
+         updateAiTarget(
+             prefs.manyueAiTargetMode.get(),
+             prefs.manyueAiTargetWidth.get(),
++            prefs.aiScalePercent.get(),
+         )
+         foldableMode = prefs.manyueFoldableMode.get()
+         foldableTargetWidth = prefs.manyueFoldableTargetWidth.get()
+diff -ruN source_v11_base/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/setting/ReaderPreferences.kt source_v11/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/setting/ReaderPreferences.kt
+--- source_v11_base/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/setting/ReaderPreferences.kt	2026-09-19 19:22:18.000000000 -0500
++++ source_v11/source/app/src/main/java/eu/kanade/tachiyomi/ui/reader/setting/ReaderPreferences.kt	2026-09-22 00:18:12.540350239 -0500
+@@ -224,6 +224,7 @@
+     val manyueClassicStrength: Preference<Int> = preferenceStore.getInt("manyueClassicStrength", 25)
+     val manyueAiTargetMode: Preference<Int> = preferenceStore.getInt("manyueAiTargetMode", 2001)
+     val manyueAiTargetWidth: Preference<Int> = preferenceStore.getInt("manyueAiTargetWidth", 2344)
++    val manyueAiScalePercent: Preference<Int> = preferenceStore.getInt("manyueAiScalePercent", 150)
+     val manyueFoldableMode: Preference<Int> = preferenceStore.getInt("manyueFoldableMode", -1)
+     val manyueFoldableTargetWidth: Preference<Int> = preferenceStore.getInt("manyueFoldableTargetWidth", 2344)
+ 
+diff -ruN source_v11_base/source/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiRuntimeTest.kt source_v11/source/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiRuntimeTest.kt
+--- source_v11_base/source/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiRuntimeTest.kt	2026-09-19 19:22:19.000000000 -0500
++++ source_v11/source/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiRuntimeTest.kt	2026-09-22 00:20:49.377560432 -0500
+@@ -35,4 +35,32 @@
+         // 4000 > 2880 -> sourceWidth
+         assertEquals(2000, w)
+     }
++
++    @Test fun `fast target is one and a half times`() {
++        val w = ManyueAiUpscaler.resolveTargetWidth(
++            800,
++            ManyueEnhancementPreferences.TARGET_FAST_1_5X,
++            2344,
++        )
++        assertEquals(1200, w)
++    }
++
++    @Test fun `dynamic target reaches requested width`() {
++        val w = ManyueAiUpscaler.resolveTargetWidth(
++            690,
++            ManyueEnhancementPreferences.TARGET_DYNAMIC,
++            1000,
++        )
++        assertEquals(1000, w)
++    }
++
++    @Test fun `scale slider follows selected multiplier`() {
++        val w = ManyueAiUpscaler.resolveTargetWidth(
++            690,
++            ManyueEnhancementPreferences.TARGET_SCALE,
++            2344,
++            150,
++        )
++        assertEquals(1035, w)
++    }
+ }
+diff -ruN source_v11_base/source/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementCacheTest.kt source_v11/source/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementCacheTest.kt
+--- source_v11_base/source/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementCacheTest.kt	2026-09-19 19:22:19.000000000 -0500
++++ source_v11/source/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementCacheTest.kt	2026-09-22 00:20:49.825541022 -0500
+@@ -22,6 +22,12 @@
+         assertNotEquals(a, b)
+     }
+ 
++    @Test fun `cache key depends on scale slider`() {
++        val a = ManyueEnhancementCache.cacheKey(1L, 2L, 3, 0, 2006, 2344, 0, "source", 125)
++        val b = ManyueEnhancementCache.cacheKey(1L, 2L, 3, 0, 2006, 2344, 0, "source", 150)
++        assertNotEquals(a, b)
++    }
++
+     @Test fun `constants match spec`() {
+         assertEquals(48_000_000, ManyueAiRuntime.MAX_MODEL_OUTPUT_PIXELS)
+         assertEquals(67108864, ManyueAiRuntime.MAX_INPUT_BYTES)
