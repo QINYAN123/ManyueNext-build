@@ -60,6 +60,14 @@
  import java.io.File
  import java.io.FileOutputStream
  import java.security.MessageDigest
+@@ -14,6 +14,7 @@
+ import java.util.concurrent.ConcurrentHashMap
+ import java.util.concurrent.CopyOnWriteArrayList
+ import java.util.concurrent.PriorityBlockingQueue
+ import java.util.concurrent.TimeUnit
+ import kotlin.concurrent.thread
++import kotlin.math.roundToInt
+ import logcat.LogPriority
 @@ -20,7 +21,7 @@
  import tachiyomi.core.common.util.system.logcat
  
@@ -235,7 +243,7 @@
 +        var scaled: Bitmap? = null
 +        return try {
 +            source = BitmapFactory.decodeByteArray(originalBytes, 0, originalBytes.size) ?: return originalBytes
-+            val nativeHeight = Math.round(source.height * (nativeWidth.toDouble() / source.width)).coerceAtLeast(1)
++            val nativeHeight = (source.height * (nativeWidth.toDouble() / source.width)).roundToInt().coerceAtLeast(1)
 +            scaled = Bitmap.createScaledBitmap(source, nativeWidth, nativeHeight, true)
 +            ByteArrayOutputStream().use { output ->
 +                check(scaled.compress(Bitmap.CompressFormat.WEBP_LOSSY, 95, output))
