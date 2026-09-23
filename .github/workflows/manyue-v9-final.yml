@@ -40,7 +40,7 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb
 
-      - name: Add Real-CUGAN and Anime4K native assets
+      - name: Add Real-CUGAN native assets
         shell: bash
         run: |
           set -euo pipefail
@@ -82,8 +82,6 @@ jobs:
           mkdir -p "$native"
           cp "$(find_one 'Real-CUGAN runner' 'realcugan-ncnn' '*realcugan*ncnn*')" \
             "$native/libmanyue_realcugan.so"
-          cp "$(find_one 'Anime4K runner' 'Anime4KCPP' 'anime4kcpp' 'Anime4KCPP*' 'anime4kcpp*')" \
-            "$native/libmanyue_anime4k.so"
           cp "$(find_one 'OpenMP runtime' 'libomp.so')" "$native/libomp.so"
 
           model_dir="project/app/src/main/assets/ai/models-Real-CUGAN-se"
@@ -92,7 +90,10 @@ jobs:
             "$model_dir/up2x-no-denoise.bin"
           cp "$(find_path 'Real-CUGAN params' '*/models-se/up2x-no-denoise.param')" \
             "$model_dir/up2x-no-denoise.param"
-          chmod 755 "$native/libmanyue_realcugan.so" "$native/libmanyue_anime4k.so"
+          chmod 755 "$native/libmanyue_realcugan.so"
+
+      - name: Build pinned Anime4KCPP ARM64 CPU overlay
+        run: bash project/scripts/build_anime4k_android.sh project/app/src/main/jniLibs/arm64-v8a/libmanyue_anime4k.so
 
       - name: Verify native files and model hashes
         working-directory: project
