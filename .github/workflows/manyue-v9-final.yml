@@ -90,7 +90,7 @@ jobs:
             "$model_dir/up2x-no-denoise.bin"
           cp "$(find_path 'Real-CUGAN params' '*/models-se/up2x-no-denoise.param')" \
             "$model_dir/up2x-no-denoise.param"
-          chmod 755 "$native/libmanyue_realcugan.so"
+          chmod 755 "$native/libmanyue_realesr.so" "$native/libmanyue_realcugan.so"
 
       - name: Build pinned Anime4KCPP ARM64 CPU overlay
         run: bash project/scripts/build_anime4k_android.sh project/app/src/main/jniLibs/arm64-v8a/libmanyue_anime4k.so
