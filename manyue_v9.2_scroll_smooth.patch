@@ -51,7 +51,7 @@ diff --git a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePageBr
      data class Identity(val mangaId: Long, val chapterId: Long, val pageIndex: Int)
  
      @Volatile
-@@ -97,34 +110,36 @@
+@@ -97,34 +110,50 @@
                  renderJob?.cancel()
                  renderJob = scope.launch {
                      try {
@@ -101,10 +101,24 @@ diff --git a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePageBr
 +                                // Decoding can take seconds; the reader may have started moving
 +                                // again while it ran. Do not replace a frame during that gesture.
 +                                if (!awaitDisplayPause(t, identity, mode, expectedGeneration)) return@withLock
-+                                view.setImage(BitmapDrawable(view.resources, rendered.bitmap), config)
++                                val layered = view.showEnhancedBitmap(rendered.bitmap, config) { shown ->
++                                    if (isCurrent(t, identity, mode, expectedGeneration)) {
++                                        if (shown) {
++                                            onEnhancedDimensions(rendered.width, rendered.height)
++                                            onState(rendered.state, rendered.detail)
++                                        } else {
++                                            onState(ManyueEnhancementState.FAILED, "AI 结果显示失败，已保留原图")
++                                        }
++                                    }
++                                }
++                                if (!layered) {
++                                    // Pager viewers do not scroll a RecyclerView and retain
++                                    // their existing zoomable image replacement path.
++                                    view.setImage(BitmapDrawable(view.resources, rendered.bitmap), config)
++                                    onEnhancedDimensions(rendered.width, rendered.height)
++                                    onState(rendered.state, rendered.detail)
++                                }
 +                                installed = true
-+                                onEnhancedDimensions(rendered.width, rendered.height)
-+                                onState(rendered.state, rendered.detail)
 +                                logcat {
 +                                    "Manyue reader replace chapter=${identity.chapterId} " +
 +                                        "page=${identity.pageIndex} token=$t"
@@ -115,7 +129,7 @@ diff --git a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePageBr
                          }
                      } catch (_: CancellationException) {
                          // Holder was rebound or detached.
-@@ -140,6 +155,42 @@
+@@ -140,6 +169,42 @@
                  ManyuePrefetchManager.releaseCurrent(identity.chapterId, identity.pageIndex)
              }
          }
@@ -158,3 +172,183 @@ diff --git a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePageBr
      }
  
      private fun isCurrentBeforeToken(
+@@ -225,6 +290,7 @@
+ 
+     /** Cancel pending AI and drop any identity binding. Safe to call repeatedly. */
+     fun cancel() {
++        view.cancelEnhancedTransition()
+         startJob?.cancel()
+         startJob = null
+         val currentToken = token
+diff --git a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/viewer/ReaderPageImageView.kt b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/viewer/ReaderPageImageView.kt
+--- a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/viewer/ReaderPageImageView.kt
++++ b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/viewer/ReaderPageImageView.kt
+@@ -18,6 +18,7 @@
+ import androidx.appcompat.widget.AppCompatImageView
+ import androidx.core.os.postDelayed
+ import androidx.core.view.isVisible
++import androidx.recyclerview.widget.RecyclerView
+ import coil3.BitmapImage
+ import coil3.asDrawable
+ import coil3.dispose
+@@ -57,6 +58,8 @@
+ ) : FrameLayout(context, attrs, defStyleAttrs, defStyleRes) {
+ 
+     private var pageView: View? = null
++    private var pendingEnhancedView: SubsamplingScaleImageView? = null
++    private var retiredPageView: SubsamplingScaleImageView? = null
+ 
+     private var config: Config? = null
+ 
+@@ -140,6 +143,7 @@
+     }
+ 
+     fun setImage(drawable: Drawable, config: Config) {
++        clearEnhancedLayers()
+         this.config = config
+         if (drawable is Animatable) {
+             prepareAnimatedImageView()
+@@ -151,6 +155,7 @@
+     }
+ 
+     fun setImage(source: BufferedSource, isAnimated: Boolean, config: Config) {
++        clearEnhancedLayers()
+         this.config = config
+         if (isAnimated) {
+             prepareAnimatedImageView()
+@@ -161,12 +166,107 @@
+         }
+     }
+ 
+-    fun recycle() = pageView?.let {
++    fun recycle() {
++        clearEnhancedLayers()
++        pageView?.let {
+         when (it) {
+             is SubsamplingScaleImageView -> it.recycle()
+             is AppCompatImageView -> it.dispose()
+         }
+         it.isVisible = false
++        }
++    }
++
++    /** Prepare the AI result in a second webtoon image view; keep the original on screen
++     * until the new view is ready, then fade its alpha without resetting the active view.
++     * Ownership of [bitmap] transfers to this view when this method returns true.
++     */
++    fun showEnhancedBitmap(bitmap: android.graphics.Bitmap, config: Config, onComplete: (Boolean) -> Unit): Boolean {
++        if (!isWebtoon) return false
++        val original = pageView as? SubsamplingScaleImageView ?: return false
++        clearPendingEnhancedView()
++        val enhanced = createNonAnimatedImageView()
++        enhanced.alpha = 0F
++        addView(enhanced, MATCH_PARENT, MATCH_PARENT)
++        pendingEnhancedView = enhanced
++        enhanced.setMinimumScaleType(config.minimumScaleType)
++        enhanced.setMinimumDpi(1)
++        enhanced.setCropBorders(config.cropBorders)
++        enhanced.setOnImageEventListener(
++            object : SubsamplingScaleImageView.DefaultOnImageEventListener() {
++                override fun onReady() {
++                    if (pendingEnhancedView !== enhanced) return
++                    // A low-opacity frame lets the renderer prepare the new layer before the
++                    // short alpha animation. The old page remains visible throughout.
++                    enhanced.alpha = 0.01F
++                    enhanced.postOnAnimation {
++                        enhanced.postOnAnimation {
++                            if (pendingEnhancedView !== enhanced) return@postOnAnimation
++                            enhanced.animate().alpha(1F).setDuration(180L).withEndAction {
++                                if (pendingEnhancedView !== enhanced) return@withEndAction
++                                pendingEnhancedView = null
++                                pageView = enhanced
++                                original.isVisible = false
++                                retiredPageView = original
++                                retireOriginalWhenIdle(original)
++                                onComplete(true)
++                            }.start()
++                        }
++                    }
++                }
++
++                override fun onImageLoadError(e: Exception) {
++                    if (pendingEnhancedView !== enhanced) return
++                    clearPendingEnhancedView()
++                    onComplete(false)
++                }
++            },
++        )
++        try {
++            enhanced.setImage(ImageSource.bitmap(bitmap))
++        } catch (e: Exception) {
++            clearPendingEnhancedView()
++            onComplete(false)
++        }
++        return true
++    }
++
++    fun cancelEnhancedTransition() = clearPendingEnhancedView()
++
++    private fun clearPendingEnhancedView() {
++        val pending = pendingEnhancedView ?: return
++        pendingEnhancedView = null
++        pending.animate().cancel()
++        removeView(pending)
++        pending.recycle()
++    }
++
++    private fun clearEnhancedLayers() {
++        clearPendingEnhancedView()
++        retiredPageView?.let { old ->
++            retiredPageView = null
++            removeView(old)
++            old.recycle()
++        }
++    }
++
++    private fun retireOriginalWhenIdle(original: SubsamplingScaleImageView) {
++        original.postDelayed({
++            if (retiredPageView !== original) return@postDelayed
++            var ancestor = parent
++            var recycler: RecyclerView? = null
++            while (ancestor != null) {
++                if (ancestor is RecyclerView) { recycler = ancestor; break }
++                ancestor = (ancestor as? View)?.parent
++            }
++            if (recycler != null && (recycler.scrollState != RecyclerView.SCROLL_STATE_IDLE || recycler.isComputingLayout)) {
++                retireOriginalWhenIdle(original)
++            } else {
++                retiredPageView = null
++                removeView(original)
++                original.recycle()
++            }
++        }, 500L)
+     }
+ 
+     /**
+@@ -227,11 +327,15 @@
+         if (pageView is SubsamplingScaleImageView) return
+         removeView(pageView)
+ 
+-        pageView = if (isWebtoon) {
++        pageView = createNonAnimatedImageView()
++        addView(pageView, MATCH_PARENT, MATCH_PARENT)
++    }
++
++    private fun createNonAnimatedImageView(): SubsamplingScaleImageView = (if (isWebtoon) {
+             WebtoonSubsamplingImageView(context)
+         } else {
+             SubsamplingScaleImageView(context)
+-        }.apply {
++        }).apply {
+             setDoubleTapZoomStyle(SubsamplingScaleImageView.ZOOM_FOCUS_CENTER)
+             setPanLimit(SubsamplingScaleImageView.PAN_LIMIT_INSIDE)
+             setMinimumTileDpi(180)
+@@ -248,8 +352,6 @@
+             )
+             setOnClickListener { this@ReaderPageImageView.onViewClicked() }
+         }
+-        addView(pageView, MATCH_PARENT, MATCH_PARENT)
+-    }
+ 
+     private fun SubsamplingScaleImageView.setupZoom(config: Config?) {
+         // 5x zoom
