@@ -1,0 +1,160 @@
+diff --git a/app/build.gradle.kts b/app/build.gradle.kts
+--- a/app/build.gradle.kts
++++ b/app/build.gradle.kts
+@@ -33,8 +33,8 @@
+     defaultConfig {
+         applicationId = "app.mihon"
+ 
+-        versionCode = 31
+-        versionName = "0.20.5"
++        versionCode = 32
++        versionName = "0.20.6"
+ 
+         buildConfigField("String", "COMMIT_COUNT", "\"${getLatestCommitCount()}\"")
+         buildConfigField("String", "COMMIT_SHA", "\"${getLatestCommitSha()}\"")
+diff --git a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePageBridge.kt b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePageBridge.kt
+--- a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePageBridge.kt
++++ b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePageBridge.kt
+@@ -2,15 +2,22 @@
+ 
+ import android.content.Context
+ import android.graphics.Bitmap
++import android.graphics.Rect
+ import android.graphics.drawable.BitmapDrawable
++import android.os.SystemClock
++import android.view.View
++import androidx.recyclerview.widget.RecyclerView
+ import eu.kanade.tachiyomi.ui.reader.viewer.ReaderPageImageView
+ import kotlinx.coroutines.CancellationException
+ import kotlinx.coroutines.CoroutineScope
++import kotlinx.coroutines.delay
+ import kotlinx.coroutines.Dispatchers
+ import kotlinx.coroutines.Job
+ import kotlinx.coroutines.SupervisorJob
+ import kotlinx.coroutines.launch
+ import kotlinx.coroutines.withContext
++import kotlinx.coroutines.sync.Mutex
++import kotlinx.coroutines.sync.withLock
+ import logcat.LogPriority
+ import tachiyomi.core.common.util.system.logcat
+ 
+@@ -26,6 +33,12 @@
+     private val view: ReaderPageImageView,
+     private val config: ReaderPageImageView.Config,
+ ) {
++    companion object {
++        // Prevent several visible pages from decoding and installing large AI bitmaps at once.
++        private val renderMutex = Mutex()
++        private const val SCROLL_SETTLE_MS = 300L
++    }
++
+     data class Identity(val mangaId: Long, val chapterId: Long, val pageIndex: Int)
+ 
+     @Volatile
+@@ -97,34 +110,36 @@
+                 renderJob?.cancel()
+                 renderJob = scope.launch {
+                     try {
+-                        val rendered = withContext(Dispatchers.Default) {
+-                            buildRenderedResult(context, tok, wantClassic, strength)
+-                        } ?: run {
+-                            onState(ManyueEnhancementState.FAILED, "AI 结果读取失败")
+-                            return@launch
+-                        }
+-                        if (!isCurrent(t, identity, mode, expectedGeneration)) {
+-                            // buildRenderedResult transfers ownership to this coroutine. If the
+-                            // holder was rebound while the background decode finished, there is
+-                            // no view install that can take ownership, so release the bitmap now.
+-                            if (!rendered.bitmap.isRecycled) rendered.bitmap.recycle()
+-                            return@launch
+-                        }
+-                        var installed = false
+-                        try {
+-                            // The expensive WebP decode used to happen inside setImage on the
+-                            // main thread. Hand the already decoded Bitmap directly to the
+-                            // subsampling view; this leaves only a cheap view swap on main.
+-                            view.setImage(BitmapDrawable(view.resources, rendered.bitmap), config)
+-                            installed = true
+-                            onEnhancedDimensions(rendered.width, rendered.height)
+-                            onState(rendered.state, rendered.detail)
+-                            logcat {
+-                                "Manyue reader replace chapter=${identity.chapterId} " +
+-                                    "page=${identity.pageIndex} token=$t"
++                        // A swap resets the subsampling view and can block a scroll frame even
++                        // when decoding ran in the background. Keep READY results on disk until
++                        // this page is visible and the recycler has actually stopped moving.
++                        if (!awaitDisplayPause(t, identity, mode, expectedGeneration)) return@launch
++                        renderMutex.withLock {
++                            if (!awaitDisplayPause(t, identity, mode, expectedGeneration)) return@withLock
++                            val rendered = withContext(Dispatchers.Default) {
++                                buildRenderedResult(context, tok, wantClassic, strength)
++                            } ?: run {
++                                if (isCurrent(t, identity, mode, expectedGeneration)) {
++                                    onState(ManyueEnhancementState.FAILED, "AI 结果读取失败")
++                                }
++                                return@withLock
+                             }
+-                        } finally {
+-                            if (!installed && !rendered.bitmap.isRecycled) rendered.bitmap.recycle()
++                            var installed = false
++                            try {
++                                // Decoding can take seconds; the reader may have started moving
++                                // again while it ran. Do not replace a frame during that gesture.
++                                if (!awaitDisplayPause(t, identity, mode, expectedGeneration)) return@withLock
++                                view.setImage(BitmapDrawable(view.resources, rendered.bitmap), config)
++                                installed = true
++                                onEnhancedDimensions(rendered.width, rendered.height)
++                                onState(rendered.state, rendered.detail)
++                                logcat {
++                                    "Manyue reader replace chapter=${identity.chapterId} " +
++                                        "page=${identity.pageIndex} token=$t"
++                                }
++                            } finally {
++                                if (!installed && !rendered.bitmap.isRecycled) rendered.bitmap.recycle()
++                            }
+                         }
+                     } catch (_: CancellationException) {
+                         // Holder was rebound or detached.
+@@ -140,6 +155,42 @@
+                 ManyuePrefetchManager.releaseCurrent(identity.chapterId, identity.pageIndex)
+             }
+         }
++    }
++
++    private suspend fun awaitDisplayPause(
++        expectedToken: String,
++        expectedIdentity: Identity,
++        expectedMode: Int,
++        expectedGeneration: Long,
++    ): Boolean {
++        val recycler = findRecyclerView() ?: return isCurrent(
++            expectedToken, expectedIdentity, expectedMode, expectedGeneration,
++        )
++        var quietSince = 0L
++        while (isCurrent(expectedToken, expectedIdentity, expectedMode, expectedGeneration)) {
++            if (!view.isAttachedToWindow) return false
++            val pageVisible = view.isShown && view.getGlobalVisibleRect(Rect())
++            val settled = pageVisible && recycler.scrollState == RecyclerView.SCROLL_STATE_IDLE &&
++                !recycler.isComputingLayout
++            val now = SystemClock.uptimeMillis()
++            if (settled) {
++                if (quietSince == 0L) quietSince = now
++                if (now - quietSince >= SCROLL_SETTLE_MS) return true
++            } else {
++                quietSince = 0L
++            }
++            delay(80L)
++        }
++        return false
++    }
++
++    private fun findRecyclerView(): RecyclerView? {
++        var ancestor = view.parent
++        while (ancestor != null) {
++            if (ancestor is RecyclerView) return ancestor
++            ancestor = (ancestor as? View)?.parent
++        }
++        return null
+     }
+ 
+     private fun isCurrentBeforeToken(
