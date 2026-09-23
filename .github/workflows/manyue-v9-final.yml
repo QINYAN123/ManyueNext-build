@@ -35,9 +35,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cd project
-          git apply --check ../manyue_v9.1_cugan_fix.patch
-          git apply ../manyue_v9.1_cugan_fix.patch
+          git apply --directory=project --check manyue_v9.1_cugan_fix.patch
+          git apply --directory=project manyue_v9.1_cugan_fix.patch
+          grep -q 'versionCode = 31' project/app/build.gradle.kts
+          grep -q 'versionName = "0.20.5"' project/app/build.gradle.kts
+          grep -q 'REAL_CUGAN_NOISE_LEVEL = "0"' project/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiRuntime.kt
 
       - name: Set up JDK 21
         uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6
@@ -149,9 +151,10 @@ jobs:
             zip -qr "${RUNNER_TEMP}/manyue-v9-delivery/ManyueNext-v9.1-source.zip" . \
               -x '.gradle/*' '*/build/*' 'build/*' '.kotlin/*'
           )
-          sha256sum "${RUNNER_TEMP}/manyue-v9-delivery/ManyueNext-v9.1-arm64-release.apk" \
-            "${RUNNER_TEMP}/manyue-v9-delivery/ManyueNext-v9.1-source.zip" \
-            > "${RUNNER_TEMP}/manyue-v9-delivery/SHA256SUMS.txt"
+          (
+            cd "${RUNNER_TEMP}/manyue-v9-delivery"
+            sha256sum ManyueNext-v9.1-arm64-release.apk ManyueNext-v9.1-source.zip > SHA256SUMS.txt
+          )
           cat > "${RUNNER_TEMP}/manyue-v9-delivery/BUILD_VERIFICATION.txt" <<EOF
           Manyue v9.1 Real-CUGAN fix build
           Workflow run: ${GITHUB_RUN_ID}
