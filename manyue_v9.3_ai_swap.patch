@@ -463,7 +463,7 @@ index dfb206c..c773c17 100644
      }
  }
 diff --git a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePageBridge.kt b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePageBridge.kt
-index e5acd95..8ffb88e 100644
+index e5acd95..79a3a9a 100644
 --- a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePageBridge.kt
 +++ b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePageBridge.kt
 @@ -3,7 +3,6 @@ package eu.kanade.tachiyomi.ui.reader.manyue
@@ -841,7 +841,7 @@ index e5acd95..8ffb88e 100644
 +            )
 +            if (!callbackRanSynchronously) stagedImageId = requestId
          }
-+        beginStage(image, mayFallback = classicVariant)
++        beginStage(image, classicVariant)
      }
  
      private fun isCurrent(
