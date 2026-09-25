@@ -208,7 +208,7 @@ index 1bfb909..10dd656 100644
          val dir = File(context.filesDir, model.runtimeDir).apply { mkdirs() }
          MODEL_SHA256.getValue(model).forEach { (name, expectedHash) ->
 diff --git a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementCache.kt b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementCache.kt
-index dfb206c..644bd82 100644
+index dfb206c..c773c17 100644
 --- a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementCache.kt
 +++ b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementCache.kt
 @@ -1,23 +1,27 @@
@@ -374,10 +374,10 @@ index dfb206c..644bd82 100644
 +        pending.delete()
 +        return try {
 +            val encoded = FileOutputStream(pending).use {
++                @Suppress("DEPRECATION")
 +                val format = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
 +                    Bitmap.CompressFormat.WEBP_LOSSY
 +                } else {
-+                    @Suppress("DEPRECATION")
 +                    Bitmap.CompressFormat.WEBP
 +                }
 +                bitmap.compress(format, 96, it)
