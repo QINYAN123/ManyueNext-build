@@ -1,0 +1,1185 @@
+diff --git a/app/build.gradle.kts b/app/build.gradle.kts
+index f8de8db..ab04168 100644
+--- a/app/build.gradle.kts
++++ b/app/build.gradle.kts
+@@ -33,8 +33,8 @@ android {
+     defaultConfig {
+         applicationId = "app.mihon"
+ 
+-        versionCode = 32
+-        versionName = "0.20.6"
++        versionCode = 33
++        versionName = "0.20.7"
+ 
+         buildConfigField("String", "COMMIT_COUNT", "\"${getLatestCommitCount()}\"")
+         buildConfigField("String", "COMMIT_SHA", "\"${getLatestCommitSha()}\"")
+diff --git a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiUpscaler.kt b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiUpscaler.kt
+index 1bfb909..10dd656 100644
+--- a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiUpscaler.kt
++++ b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiUpscaler.kt
+@@ -3,7 +3,6 @@ package eu.kanade.tachiyomi.ui.reader.manyue
+ import android.content.Context
+ import android.graphics.Bitmap
+ import android.graphics.BitmapFactory
+-import android.graphics.Canvas
+ import android.os.Handler
+ import android.os.Looper
+ import android.os.SystemClock
+@@ -30,8 +29,6 @@ object ManyueAiUpscaler {
+     const val STATE_PROCESSING = 0
+     const val STATE_FAILED = -1
+ 
+-    private const val SEGMENT_HEIGHT = 2048
+-    private const val WEBP_QUALITY = 96
+     private const val FAILURE_COOLDOWN_MS = 30_000L
+     private const val FAILURE_LOG_DIR = "manyue_ai_failures"
+     private const val MAX_FAILURE_LOGS = 8
+@@ -291,45 +288,40 @@ object ManyueAiUpscaler {
+         return ManyueEnhancementCache.getBundle(context, cacheKeyFor(req))
+     }
+ 
+-    /**
+-     * Load and stitch cached parts into a single Bitmap. Returns null on any failure.
+-     */
++    fun cachedImage(context: Context, token: String): ManyueEnhancementCache.CachedImage? {
++        val req = requests[token] ?: return null
++        return ManyueEnhancementCache.getImage(context, cacheKeyFor(req))
++    }
++
++    fun cachedClassicImage(
++        context: Context,
++        token: String,
++        strength: Int,
++    ): ManyueEnhancementCache.CachedImage? {
++        val req = requests[token] ?: return null
++        return ManyueEnhancementCache.getClassicImage(context, cacheKeyFor(req), strength)
++    }
++
++    fun cacheClassicImage(
++        context: Context,
++        token: String,
++        strength: Int,
++        bitmap: Bitmap,
++    ): ManyueEnhancementCache.CachedImage? {
++        val req = requests[token] ?: return null
++        return ManyueEnhancementCache.putClassicImage(context, cacheKeyFor(req), strength, bitmap)
++    }
++
++    fun removeClassicImage(context: Context, token: String, strength: Int) {
++        val req = requests[token] ?: return
++        ManyueEnhancementCache.removeClassicImage(context, cacheKeyFor(req), strength)
++    }
++
++    /** Decode the cached full image for the optional classic pass. Call only off the main thread. */
+     fun loadCachedBitmap(context: Context, token: String): Bitmap? {
+         return try {
+-            val dir = cachedBundle(context, token) ?: return null
+-            val parts = dir.listFiles { f -> f.name.startsWith("part_") && f.name.endsWith(".webp") }
+-                ?.sortedBy { it.name.removePrefix("part_").removeSuffix(".webp").toIntOrNull() ?: Int.MAX_VALUE }
+-                ?: return null
+-            if (parts.isEmpty()) return null
+-            val bounds = parts.map { part ->
+-                val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+-                BitmapFactory.decodeFile(part.absolutePath, opts)
+-                if (opts.outWidth <= 0 || opts.outHeight <= 0) return null
+-                opts.outWidth to opts.outHeight
+-            }
+-            val w = bounds.maxOf { it.first }
+-            val hLong = bounds.sumOf { it.second.toLong() }
+-            if (hLong > Int.MAX_VALUE ||
+-                !ManyueAiSafetyPolicy.isPixelBudgetSafe(w, hLong.toInt(), ManyueAiSafetyPolicy.MAX_DISPLAY_PIXELS)
+-            ) return null
+-            if (parts.size == 1) return BitmapFactory.decodeFile(parts[0].absolutePath)
+-            val h = hLong.toInt()
+-            val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+-            val canvas = Canvas(out)
+-            var y = 0
+-            parts.forEach { part ->
+-                val decoded = BitmapFactory.decodeFile(part.absolutePath) ?: run {
+-                    out.recycle()
+-                    return null
+-                }
+-                try {
+-                    canvas.drawBitmap(decoded, 0f, y.toFloat(), null)
+-                    y += decoded.height
+-                } finally {
+-                    decoded.recycle()
+-                }
+-            }
+-            out
++            val image = cachedImage(context, token) ?: return null
++            BitmapFactory.decodeFile(image.file.absolutePath)
+         } catch (t: Throwable) {
+             null
+         }
+@@ -367,9 +359,9 @@ object ManyueAiUpscaler {
+             if (req.inputFile.length() > ManyueAiRuntime.MAX_INPUT_BYTES) {
+                 req.failedAt = System.currentTimeMillis(); return
+             }
+-            // The current implementation decodes the native output once before segmenting it.
+-            // Refuse long pages before launch when the predicted 2x bitmap exceeds the safe
+-            // display budget; falling back to the original is preferable to a 4K/long-image OOM.
++            // Refuse long pages before launch when the predicted 2x image exceeds the display
++            // budget. The encoded result stays on disk and the reader decodes it off the main
++            // thread through its tiled image path.
+             if (!ManyueAiSafetyPolicy.isPredictedNativeOutputSafe(
+                     req.sourceWidth,
+                     req.sourceHeight,
+@@ -458,12 +450,11 @@ object ManyueAiUpscaler {
+             ) {
+                 req.failedAt = System.currentTimeMillis(); return
+             }
+-            // Native produced the requested fixed 2x output. Keep it at native dimensions; no
+-            // post-resize is performed, avoiding a second interpolation pass.
++            // Native produced the requested fixed 2x output. Keep that encoded file directly in
++            // the cache; do not decode, stitch, and re-encode it into in-memory Bitmap segments.
+             val postStartedAt = SystemClock.elapsedRealtime()
+-            val segResult = segmentToWebp(outDir, outFile, outW, outH, outW, req.sourceWidth, req.sourceHeight)
+             if (!requestIsCurrent(req)) return
+-            ManyueEnhancementCache.putBundle(context, key, segResult.parts, segResult.manifest)
++            ManyueEnhancementCache.putImage(context, key, outFile, outW, outH)
+             ManyueEnhancementCache.trimCache(context)
+             val waitMs = if (req.enqueuedAt > 0L) {
+                 (System.currentTimeMillis() - req.enqueuedAt).coerceAtLeast(0L)
+@@ -529,65 +520,6 @@ object ManyueAiUpscaler {
+         }
+     }
+ 
+-    private data class SegmentResult(val parts: List<File>, val manifest: String)
+-
+-    /** Decode the native 2x output and slice it into SEGMENT_HEIGHT-tall WebP pieces. */
+-    private fun segmentToWebp(
+-        workDir: File,
+-        src: File,
+-        srcW: Int,
+-        srcH: Int,
+-        @Suppress("UNUSED_PARAMETER") targetWidth: Int,
+-        origW: Int,
+-        origH: Int,
+-    ): SegmentResult {
+-        val raw = BitmapFactory.decodeFile(src.absolutePath)
+-            ?: return SegmentResult(listOf(src), ManyueEnhancementCache.buildJsonObject(
+-                "parts" to 1, "sourceWidth" to origW, "sourceHeight" to origH,
+-                "targetWidth" to srcW, "targetHeight" to srcH,
+-            ))
+-        // Both supported workers emit their native 2x result. Do not resample here.
+-        val scaled: Bitmap = raw
+-        val w = scaled.width
+-        val h = scaled.height
+-        val dir = File(workDir, "segments").apply { mkdirs() }
+-        val parts = mutableListOf<File>()
+-        val segHeights = mutableListOf<Int>()
+-        var y = 0
+-        var i = 0
+-        try {
+-            while (y < h) {
+-                val segH = minOf(SEGMENT_HEIGHT, h - y)
+-                val seg = Bitmap.createBitmap(scaled, 0, y, w, segH)
+-                try {
+-                    val f = File(dir, "seg_$i.webp")
+-                    FileOutputStream(f).use {
+-                        check(seg.compress(Bitmap.CompressFormat.WEBP_LOSSY, WEBP_QUALITY, it))
+-                    }
+-                    parts.add(f)
+-                    segHeights.add(segH)
+-                } finally {
+-                    if (seg !== scaled) seg.recycle()
+-                }
+-                y += segH
+-                i++
+-            }
+-        } finally {
+-            if (scaled !== raw) raw.recycle()
+-            scaled.recycle()
+-        }
+-        val manifest = ManyueEnhancementCache.buildJsonObject(
+-            "parts" to parts.size,
+-            "sourceWidth" to origW,
+-            "sourceHeight" to origH,
+-            "targetWidth" to w,
+-            "targetHeight" to h,
+-            "segmentHeight" to SEGMENT_HEIGHT,
+-            "segmentHeights" to segHeights.joinToString(","),
+-        )
+-        return SegmentResult(parts, manifest)
+-    }
+-
+     private fun ensureModel(context: Context, model: ManyueAiModel): File {
+         val dir = File(context.filesDir, model.runtimeDir).apply { mkdirs() }
+         MODEL_SHA256.getValue(model).forEach { (name, expectedHash) ->
+diff --git a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementCache.kt b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementCache.kt
+index dfb206c..644bd82 100644
+--- a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementCache.kt
++++ b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementCache.kt
+@@ -1,23 +1,27 @@
+ package eu.kanade.tachiyomi.ui.reader.manyue
+ 
+ import android.content.Context
++import android.graphics.Bitmap
++import android.os.Build
+ import java.io.File
+ import java.io.FileInputStream
+ import java.io.FileOutputStream
+ import java.security.MessageDigest
+ 
+ /**
+- * Disk cache for AI-enhanced image bundles.
+- * Layout: <cacheDir>/manyue_ai_anime_fixed2_v6/<key>/{manifest.json,part_0.webp,...}
++ * Disk cache for complete AI-enhanced images.
++ * Layout: <cacheDir>/manyue_ai_anime_fixed2_v7/<key>/{manifest.json,image.webp|image.png}
+  */
+ object ManyueEnhancementCache {
+ 
+-    const val MODEL_VERSION = "anime_fixed2_v6"
+-    private const val CACHE_DIR_NAME = "manyue_ai_anime_fixed2_v6"
+-
++    const val MODEL_VERSION = "anime_fixed2_v7"
++    private const val CACHE_DIR_NAME = "manyue_ai_anime_fixed2_v7"
++    private const val LEGACY_CACHE_DIR_NAME = "manyue_ai_anime_fixed2_v6"
+     private const val MAX_CACHE_BYTES = 805_306_368L // 768 MiB
+     private const val TRIM_TO_BYTES = 671_088_640L // 640 MiB
+ 
++    data class CachedImage(val file: File, val width: Int, val height: Int)
++
+     fun cacheDir(context: Context): File =
+         File(context.cacheDir, CACHE_DIR_NAME).apply { mkdirs() }
+ 
+@@ -34,86 +38,143 @@ object ManyueEnhancementCache {
+         modelId: String = "legacy",
+         anime4kOverlay: Boolean = false,
+     ): String {
+-        val raw = "$MODEL_VERSION|$mangaId|$chapterId|$pageIndex|$mode|$targetMode|$targetWidth|$targetScaleTenths|$classicStrength|$sourceFingerprint|$modelId|overlay=$anime4kOverlay|v6"
++        val raw = "$MODEL_VERSION|$mangaId|$chapterId|$pageIndex|$mode|$targetMode|$targetWidth|$targetScaleTenths|$classicStrength|$sourceFingerprint|$modelId|overlay=$anime4kOverlay|v7"
+         val md = MessageDigest.getInstance("MD5").digest(raw.toByteArray())
+         return md.joinToString("") { "%02x".format(it) }
+     }
+ 
+-    /** Returns the bundle dir if manifest + all parts exist, else null. */
++    /** Returns the bundle dir if its complete image and dimension manifest exist. */
+     fun getBundle(context: Context, key: String): File? {
+         val dir = File(cacheDir(context), key)
+-        if (!dir.isDirectory) return null
+-        val manifest = File(dir, "manifest.json")
+-        if (!manifest.exists() || manifest.length() == 0L) return null
+-        val expectedParts = runCatching {
+-            Regex("\\\"parts\\\"\\s*:\\s*(\\d+)")
+-                .find(manifest.readText())
+-                ?.groupValues
+-                ?.get(1)
+-                ?.toInt()
+-        }.getOrNull() ?: return null
+-        if (expectedParts <= 0) return null
+-        val parts = dir.listFiles { f -> f.name.startsWith("part_") && f.name.endsWith(".webp") }
+-        if (parts.isNullOrEmpty()) return null
+-        if (parts.size != expectedParts) return null
+-        val expectedNames = (0 until expectedParts).mapTo(hashSetOf()) { "part_$it.webp" }
+-        if (parts.mapTo(hashSetOf()) { it.name } != expectedNames) return null
+-        if (parts.any { it.length() == 0L }) return null
++        if (cachedImage(dir) == null) return null
+         dir.setLastModified(System.currentTimeMillis())
+         return dir
+     }
+ 
+-    /** Atomically write a bundle: stage into .pending then rename. */
+-    fun putBundle(context: Context, key: String, parts: List<File>, manifestJson: String = defaultManifest(parts)) {
++    fun getImage(context: Context, key: String): CachedImage? =
++        getBundle(context, key)?.let { cachedImage(it) }
++
++    fun getClassicImage(context: Context, key: String, strength: Int): CachedImage? {
++        val bundle = getBundle(context, key) ?: return null
++        return cachedImage(bundle, strength)
++    }
++
++    /** Internal pure helper so cache file validation can be covered without an Android Context. */
++    internal fun cachedImage(bundle: File, classicStrength: Int? = null): CachedImage? {
++        if (!bundle.isDirectory) return null
++        val manifest = runCatching { File(bundle, "manifest.json").readText() }.getOrNull() ?: return null
++        val name = Regex("\\\"image\\\"\\s*:\\s*\\\"(image\\.(?:webp|png))\\\"")
++            .find(manifest)?.groupValues?.get(1) ?: return null
++        val width = Regex("\\\"width\\\"\\s*:\\s*(\\d+)")
++            .find(manifest)?.groupValues?.get(1)?.toIntOrNull() ?: return null
++        val height = Regex("\\\"height\\\"\\s*:\\s*(\\d+)")
++            .find(manifest)?.groupValues?.get(1)?.toIntOrNull() ?: return null
++        if (!ManyueAiSafetyPolicy.isPixelBudgetSafe(width, height, ManyueAiSafetyPolicy.MAX_DISPLAY_PIXELS)) {
++            return null
++        }
++        val image = if (classicStrength == null) {
++            File(bundle, name)
++        } else {
++            classicVariantFile(bundle, classicStrength) ?: return null
++        }
++        if (!image.isFile || image.length() <= 0L) return null
++        return CachedImage(image, width, height)
++    }
++
++    internal fun imageFile(bundle: File): File? = cachedImage(bundle)?.file
++
++    private fun classicVariantFile(bundle: File, strength: Int): File? {
++        if (strength !in 1..100) return null
++        return File(bundle, "classic_$strength.webp")
++    }
++
++    /** Atomically copy one complete encoded image into the cache bundle. */
++    fun putImage(
++        context: Context,
++        key: String,
++        source: File,
++        width: Int,
++        height: Int,
++    ) {
++        require(source.isFile && source.length() > 0L) { "AI output file is missing" }
++        require(ManyueAiSafetyPolicy.isPixelBudgetSafe(width, height, ManyueAiSafetyPolicy.MAX_DISPLAY_PIXELS))
++        val imageName = when (source.extension.lowercase()) {
++            "png" -> "image.png"
++            "webp" -> "image.webp"
++            else -> error("unsupported AI output format: ${source.extension}")
++        }
+         val base = cacheDir(context)
+         val finalDir = File(base, key)
+         val pending = File(base, "$key.pending")
+         if (pending.exists()) pending.deleteRecursively()
+         pending.mkdirs()
+-
+-        parts.forEachIndexed { i, src ->
+-            FileOutputStream(File(pending, "part_$i.webp")).use { out ->
+-                FileInputStream(src).use { it.copyTo(out) }
++        try {
++            FileOutputStream(File(pending, imageName)).use { out ->
++                FileInputStream(source).use { it.copyTo(out) }
+             }
++            File(pending, "manifest.json").writeText(
++                buildJsonObject("image" to imageName, "width" to width, "height" to height),
++            )
++            if (finalDir.exists()) finalDir.deleteRecursively()
++            if (!pending.renameTo(finalDir)) error("failed to commit cache bundle $key")
++        } catch (t: Throwable) {
++            pending.deleteRecursively()
++            throw t
+         }
+-        File(pending, "manifest.json").writeText(manifestJson)
++    }
+ 
+-        if (finalDir.exists()) finalDir.deleteRecursively()
+-        if (!pending.renameTo(finalDir)) {
+-            pending.deleteRecursively()
+-            error("failed to commit cache bundle $key")
++    /** Atomically cache a classic-enhanced AI variant beside its base output. */
++    fun putClassicImage(context: Context, key: String, strength: Int, bitmap: Bitmap): CachedImage? {
++        if (strength !in 1..100) return null
++        val bundle = getBundle(context, key) ?: return null
++        val base = cachedImage(bundle) ?: return null
++        if (bitmap.width != base.width || bitmap.height != base.height) return null
++        val image = classicVariantFile(bundle, strength) ?: return null
++        val pending = File(bundle, "${image.name}.pending")
++        pending.delete()
++        return try {
++            val encoded = FileOutputStream(pending).use {
++                val format = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
++                    Bitmap.CompressFormat.WEBP_LOSSY
++                } else {
++                    @Suppress("DEPRECATION")
++                    Bitmap.CompressFormat.WEBP
++                }
++                bitmap.compress(format, 96, it)
++            }
++            check(encoded && pending.length() > 0L) { "classic AI cache encoding failed" }
++            if (image.exists()) image.delete()
++            check(pending.renameTo(image)) { "failed to commit classic AI image" }
++            bundle.setLastModified(System.currentTimeMillis())
++            trimCache(context)
++            CachedImage(image, base.width, base.height)
++        } catch (t: Throwable) {
++            pending.delete()
++            null
+         }
+     }
+ 
+-    private fun defaultManifest(parts: List<File>): String {
+-        return buildJsonObject(
+-            "parts" to parts.size,
+-            "bytes" to parts.sumOf { it.length() },
+-        )
++    fun removeClassicImage(context: Context, key: String, strength: Int) {
++        val bundle = getBundle(context, key) ?: return
++        classicVariantFile(bundle, strength)?.delete()
+     }
+ 
+-    internal fun buildJsonObject(vararg pairs: Pair<String, Any>): String {
+-        val sb = StringBuilder("{")
+-        pairs.forEachIndexed { i, (k, v) ->
+-            if (i > 0) sb.append(',')
+-            sb.append('"').append(k).append("\":")
+-            when (v) {
+-                is String -> sb.append('"').append(v).append('"')
+-                else -> sb.append(v.toString())
+-            }
++    internal fun buildJsonObject(vararg pairs: Pair<String, Any>): String =
++        pairs.joinToString(prefix = "{", postfix = "}", separator = ",") { (key, value) ->
++            if (value is String) "\"$key\":\"$value\"" else "\"$key\":$value"
+         }
+-        sb.append('}')
+-        return sb.toString()
+-    }
+ 
+     fun clearCache(context: Context) {
+         cacheDir(context).deleteRecursively()
++        File(context.cacheDir, LEGACY_CACHE_DIR_NAME).deleteRecursively()
+     }
+ 
+     fun cacheSizeBytes(context: Context): Long {
+-        val dir = cacheDir(context)
+-        if (!dir.exists()) return 0L
+-        return dir.walkTopDown().filter { it.isFile }.sumOf { it.length() }
++        val current = File(context.cacheDir, CACHE_DIR_NAME)
++        val legacy = File(context.cacheDir, LEGACY_CACHE_DIR_NAME)
++        return listOf(current, legacy)
++            .filter { it.exists() }
++            .sumOf { dir -> dir.walkTopDown().filter { it.isFile }.sumOf { it.length() } }
+     }
+ 
+     fun cacheSizeText(context: Context): String {
+@@ -124,6 +185,9 @@ object ManyueEnhancementCache {
+ 
+     /** LRU trim to TRIM_TO_BYTES when over MAX_CACHE_BYTES. */
+     fun trimCache(context: Context) {
++        // v7 uses complete encoded files and a different layout. Remove the retired v6 cache
++        // during the worker-side trim so old segmented files do not permanently consume space.
++        File(context.cacheDir, LEGACY_CACHE_DIR_NAME).deleteRecursively()
+         val dir = cacheDir(context)
+         if (!dir.isDirectory) return
+         var size = cacheSizeBytes(context)
+@@ -132,10 +196,10 @@ object ManyueEnhancementCache {
+             ?.filter { it.isDirectory }
+             ?.sortedBy { it.lastModified() }
+             ?: return
+-        for (e in entries) {
++        for (entry in entries) {
+             if (size <= TRIM_TO_BYTES) break
+-            size -= e.walkTopDown().filter { it.isFile }.sumOf { it.length() }
+-            e.deleteRecursively()
++            size -= entry.walkTopDown().filter { it.isFile }.sumOf { it.length() }
++            entry.deleteRecursively()
+         }
+     }
+ }
+diff --git a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePageBridge.kt b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePageBridge.kt
+index e5acd95..8ffb88e 100644
+--- a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePageBridge.kt
++++ b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePageBridge.kt
+@@ -3,7 +3,6 @@ package eu.kanade.tachiyomi.ui.reader.manyue
+ import android.content.Context
+ import android.graphics.Bitmap
+ import android.graphics.Rect
+-import android.graphics.drawable.BitmapDrawable
+ import android.os.SystemClock
+ import android.view.View
+ import androidx.recyclerview.widget.RecyclerView
+@@ -26,7 +25,8 @@ import tachiyomi.core.common.util.system.logcat
+  *
+  * - Captures the identity (mangaId/chapterId/pageIndex) at start.
+  * - On AI completion, verifies identity still matches before refreshing.
+- * - Stitches cached WebP segments into one Bitmap, optionally runs classic enhancement.
++ * - Keeps AI output encoded on disk and installs it through a staged tiled view.
++ * - Optionally caches a classic-enhanced encoded variant, never handing a large Bitmap to the view.
+  * - All callbacks arrive on the main thread (ManyueAiUpscaler posts to main looper).
+  */
+ class ManyuePageBridge(
+@@ -34,7 +34,6 @@ class ManyuePageBridge(
+     private val config: ReaderPageImageView.Config,
+ ) {
+     companion object {
+-        // Prevent several visible pages from decoding and installing large AI bitmaps at once.
+         private val renderMutex = Mutex()
+         private const val SCROLL_SETTLE_MS = 300L
+     }
+@@ -47,6 +46,7 @@ class ManyuePageBridge(
+     private var listener: ManyueAiUpscaler.OnAiCompleteListener? = null
+     private var startJob: Job? = null
+     private var renderJob: Job? = null
++    private var stagedImageId: Long? = null
+     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+ 
+     /**
+@@ -72,97 +72,115 @@ class ManyuePageBridge(
+         startJob = scope.launch {
+             try {
+                 val t = withContext(Dispatchers.IO) {
+-                ManyueAiRequestFactory.enqueue(
+-                    context = context,
+-                    identity = identity,
+-                    originalBytes = originalBytes,
+-                    priority = 100,
+-                    expectedMode = mode,
+-                    generation = expectedGeneration,
+-                )
++                    ManyueAiRequestFactory.enqueue(
++                        context = context,
++                        identity = identity,
++                        originalBytes = originalBytes,
++                        priority = 100,
++                        expectedMode = mode,
++                        generation = expectedGeneration,
++                    )
+                 } ?: run {
+-                val capability = withContext(Dispatchers.IO) { ManyueAiRuntime.probe(context) }
+-                val detail = if (capability == ManyueAiRuntime.Capability.READY) {
+-                    "图片格式、尺寸或固定 2× 安全预算不适用"
+-                } else {
+-                    capability.userMessage
+-                }
+-                onState(ManyueEnhancementState.SKIPPED, detail)
+-                return@launch
++                    val capability = withContext(Dispatchers.IO) { ManyueAiRuntime.probe(context) }
++                    val detail = if (capability == ManyueAiRuntime.Capability.READY) {
++                        "图片格式、尺寸或固定 2× 安全预算不适用"
++                    } else {
++                        capability.userMessage
++                    }
++                    if (isCurrentBeforeToken(identity, mode, expectedGeneration)) {
++                        onState(ManyueEnhancementState.SKIPPED, detail)
++                    }
++                    return@launch
+                 }
+                 if (!isCurrentBeforeToken(identity, mode, expectedGeneration)) {
+-                ManyueAiUpscaler.cancel(t)
+-                return@launch
++                    // The request may be shared with prefetch; this view only drops its listener.
++                    return@launch
+                 }
+                 token = t
+ 
+                 val strength = ManyueRuntimeState.classicStrength
+                 val wantClassic = (mode == ManyueEnhancementMode.AI_2X_CLASSIC.value)
+                 val completionListener = ManyueAiUpscaler.OnAiCompleteListener { tok, state, detail ->
+-                if (!isCurrent(t, identity, mode, expectedGeneration)) return@OnAiCompleteListener
+-                if (state != ManyueAiUpscaler.STATE_READY) {
+-                    onState(
+-                        ManyueEnhancementState.FAILED,
+-                        detail ?: "AI 推理失败，已保留原图",
+-                    )
+-                    return@OnAiCompleteListener
+-                }
+-                renderJob?.cancel()
+-                renderJob = scope.launch {
+-                    try {
+-                        // A swap resets the subsampling view and can block a scroll frame even
+-                        // when decoding ran in the background. Keep READY results on disk until
+-                        // this page is visible and the recycler has actually stopped moving.
+-                        if (!awaitDisplayPause(t, identity, mode, expectedGeneration)) return@launch
+-                        renderMutex.withLock {
++                    if (!isCurrent(t, identity, mode, expectedGeneration)) return@OnAiCompleteListener
++                    if (state != ManyueAiUpscaler.STATE_READY) {
++                        onState(
++                            ManyueEnhancementState.FAILED,
++                            detail ?: "AI 推理失败，已保留原图",
++                        )
++                        return@OnAiCompleteListener
++                    }
++                    renderJob?.cancel()
++                    renderJob = scope.launch {
++                        try {
++                            if (!awaitDisplayPause(t, identity, mode, expectedGeneration)) return@launch
++                            renderMutex.withLock {
+                             if (!awaitDisplayPause(t, identity, mode, expectedGeneration)) return@withLock
+-                            val rendered = withContext(Dispatchers.Default) {
+-                                buildRenderedResult(context, tok, wantClassic, strength)
++                            val baseImage = withContext(Dispatchers.IO) {
++                                ManyueAiUpscaler.cachedImage(context, tok)
+                             } ?: run {
+                                 if (isCurrent(t, identity, mode, expectedGeneration)) {
+                                     onState(ManyueEnhancementState.FAILED, "AI 结果读取失败")
+                                 }
+                                 return@withLock
+                             }
+-                            var installed = false
+-                            try {
+-                                // Decoding can take seconds; the reader may have started moving
+-                                // again while it ran. Do not replace a frame during that gesture.
+-                                if (!awaitDisplayPause(t, identity, mode, expectedGeneration)) return@withLock
+-                                val layered = view.showEnhancedBitmap(rendered.bitmap, config) { shown ->
+-                                    if (isCurrent(t, identity, mode, expectedGeneration)) {
+-                                        if (shown) {
+-                                            onEnhancedDimensions(rendered.width, rendered.height)
+-                                            onState(rendered.state, rendered.detail)
+-                                        } else {
+-                                            onState(ManyueEnhancementState.FAILED, "AI 结果显示失败，已保留原图")
+-                                        }
+-                                    }
++
++                            var displayImage = baseImage
++                            var displayState = ManyueEnhancementState.AI_READY
++                            val classicSafe = ManyueAiSafetyPolicy.isPixelBudgetSafe(
++                                baseImage.width,
++                                baseImage.height,
++                                ManyueAiSafetyPolicy.MAX_CLASSIC_PIXELS,
++                            )
++                            var displayDetail = when {
++                                wantClassic && strength <= 0 -> "经典增强强度为 0"
++                                wantClassic && !classicSafe -> "经典增强超过内存限制，已保留 AI 超分"
++                                else -> null
++                            }
++
++                            if (wantClassic && strength > 0 && classicSafe) {
++                                val cachedClassic = withContext(Dispatchers.IO) {
++                                    ManyueAiUpscaler.cachedClassicImage(context, tok, strength)
+                                 }
+-                                if (!layered) {
+-                                    // Pager viewers do not scroll a RecyclerView and retain
+-                                    // their existing zoomable image replacement path.
+-                                    view.setImage(BitmapDrawable(view.resources, rendered.bitmap), config)
+-                                    onEnhancedDimensions(rendered.width, rendered.height)
+-                                    onState(rendered.state, rendered.detail)
++                                val classicImage = cachedClassic ?: withContext(Dispatchers.Default) {
++                                    buildClassicVariant(context, tok, strength)
+                                 }
+-                                installed = true
+-                                logcat {
+-                                    "Manyue reader replace chapter=${identity.chapterId} " +
+-                                        "page=${identity.pageIndex} token=$t"
++                                if (classicImage != null) {
++                                    displayImage = classicImage
++                                    displayState = ManyueEnhancementState.AI_CLASSIC_READY
++                                } else {
++                                    // The enhancer can return its input on failure. In that case keep
++                                    // the clean AI result and report that the optional pass was skipped.
++                                    displayDetail = "经典增强失败，已保留 AI 超分"
+                                 }
+-                            } finally {
+-                                if (!installed && !rendered.bitmap.isRecycled) rendered.bitmap.recycle()
++                            }
++
++                            if (!awaitDisplayPause(t, identity, mode, expectedGeneration)) return@withLock
++                            stageFile(
++                                image = displayImage,
++                                baseImage = baseImage,
++                                classicVariant = displayImage.file != baseImage.file,
++                                state = displayState,
++                                detail = displayDetail,
++                                token = t,
++                                expectedIdentity = identity,
++                                expectedMode = mode,
++                                expectedGeneration = expectedGeneration,
++                                context = context,
++                                strength = strength,
++                                onEnhancedDimensions = onEnhancedDimensions,
++                                onState = onState,
++                            )
++                            }
++                        } catch (_: CancellationException) {
++                            // Holder was rebound or detached.
++                        } catch (error: Throwable) {
++                            logcat(LogPriority.WARN, error) { "Manyue AI render failed; original retained" }
++                            if (isCurrent(t, identity, mode, expectedGeneration)) {
++                                onState(ManyueEnhancementState.FAILED, "AI 结果显示失败")
+                             }
+                         }
+-                    } catch (_: CancellationException) {
+-                        // Holder was rebound or detached.
+-                    } catch (error: Throwable) {
+-                        logcat(LogPriority.WARN, error) { "Manyue AI render failed; original retained" }
+-                        onState(ManyueEnhancementState.FAILED, "AI 结果显示失败")
+                     }
+                 }
+-                }
+                 listener = completionListener
+                 ManyueAiUpscaler.addListener(t, completionListener)
+             } finally {
+@@ -215,61 +233,111 @@ class ManyuePageBridge(
+         ManyueRuntimeState.modeInt == expectedMode &&
+         ManyueRuntimeState.generation == expectedGeneration
+ 
+-    private data class RenderedResult(
+-        val bitmap: Bitmap,
+-        val width: Int,
+-        val height: Int,
+-        val state: ManyueEnhancementState,
+-        val detail: String?,
+-    )
+-
+-    private fun buildRenderedResult(
++    private fun buildClassicVariant(
+         context: Context,
+         token: String,
+-        wantClassic: Boolean,
+         strength: Int,
+-    ): RenderedResult? {
+-        var bitmap: Bitmap? = null
+-        var output: Bitmap? = null
+-        var handedOff = false
++    ): ManyueEnhancementCache.CachedImage? {
++        var input: Bitmap? = null
++        var enhanced: Bitmap? = null
+         try {
+-            bitmap = ManyueAiUpscaler.loadCachedBitmap(context, token) ?: return null
+-            val classicSafe = !wantClassic || ManyueAiSafetyPolicy.isPixelBudgetSafe(
+-                bitmap.width,
+-                bitmap.height,
+-                ManyueAiSafetyPolicy.MAX_CLASSIC_PIXELS,
+-            )
+-            output = if (wantClassic && classicSafe && strength > 0) {
+-                ManyueClassicEnhancer.enhance(bitmap, strength, isAiCombined = true)
+-            } else {
+-                bitmap
+-            }
+-            // Ask Android to upload the decoded pixels to the GPU before this page is drawn.
+-            // The first frame after replacing the source image should not also pay that cost.
+-            val finalOutput = output ?: return null
+-            finalOutput.prepareToDraw()
+-            val state = if (wantClassic && classicSafe && strength > 0) {
+-                ManyueEnhancementState.AI_CLASSIC_READY
+-            } else {
+-                ManyueEnhancementState.AI_READY
+-            }
+-            val detail = when {
+-                wantClassic && strength <= 0 -> "经典增强强度为 0"
+-                wantClassic && !classicSafe -> "经典增强超过内存限制，已保留 AI 超分"
+-                else -> null
+-            }
+-            val result = RenderedResult(finalOutput, finalOutput.width, finalOutput.height, state, detail)
+-            // Ownership moves to the main-thread install block. If classic created a new
+-            // bitmap, release the stitched source before returning it.
+-            if (finalOutput !== bitmap) bitmap?.takeIf { !it.isRecycled }?.recycle()
+-            handedOff = true
+-            return result
++            val source = ManyueAiUpscaler.loadCachedBitmap(context, token) ?: return null
++            input = source
++            val output = ManyueClassicEnhancer.enhance(source, strength, isAiCombined = true)
++            enhanced = output
++            if (output === input) return null
++            return ManyueAiUpscaler.cacheClassicImage(context, token, strength, output)
++        } catch (error: Throwable) {
++            logcat(LogPriority.WARN, error) { "Manyue classic AI variant failed; keeping AI output" }
++            return null
+         } finally {
+-            if (!handedOff) {
+-                output?.takeIf { !it.isRecycled }?.recycle()
+-                bitmap?.takeIf { it !== output && !it.isRecycled }?.recycle()
+-            }
++            enhanced?.takeIf { it !== input && !it.isRecycled }?.recycle()
++            input?.takeIf { !it.isRecycled }?.recycle()
++        }
++    }
++
++    private fun stageFile(
++        image: ManyueEnhancementCache.CachedImage,
++        baseImage: ManyueEnhancementCache.CachedImage,
++        classicVariant: Boolean,
++        state: ManyueEnhancementState,
++        detail: String?,
++        token: String,
++        expectedIdentity: Identity,
++        expectedMode: Int,
++        expectedGeneration: Long,
++        context: Context,
++        strength: Int,
++        onEnhancedDimensions: (Int, Int) -> Unit,
++        onState: (ManyueEnhancementState, String?) -> Unit,
++    ) {
++        var readyState = state
++        var readyDetail = detail
++        val recycler = findRecyclerView()
++        var quietSince = 0L
++        lateinit var beginStage: (ManyueEnhancementCache.CachedImage, Boolean) -> Unit
++        beginStage = { target, mayFallback ->
++            var callbackRanSynchronously = false
++            val requestId = view.setTiledImagePreservingCurrent(
++                file = target.file,
++                config = config,
++                shouldCommit = {
++                    isCurrent(token, expectedIdentity, expectedMode, expectedGeneration)
++                },
++                maySwap = {
++                    if (recycler == null) {
++                        true
++                    } else {
++                        val settled = view.isAttachedToWindow && view.isShown &&
++                            view.getGlobalVisibleRect(Rect()) &&
++                            recycler.scrollState == RecyclerView.SCROLL_STATE_IDLE &&
++                            !recycler.isComputingLayout
++                        if (!settled) {
++                            quietSince = 0L
++                            false
++                        } else {
++                            val now = SystemClock.uptimeMillis()
++                            if (quietSince == 0L) quietSince = now
++                            now - quietSince >= SCROLL_SETTLE_MS
++                        }
++                    }
++                },
++                onReady = { _, _ ->
++                    callbackRanSynchronously = true
++                    stagedImageId = null
++                    onEnhancedDimensions(target.width, target.height)
++                    onState(readyState, readyDetail)
++                    logcat {
++                        "Manyue reader replace chapter=${expectedIdentity.chapterId} " +
++                            "page=${expectedIdentity.pageIndex} token=$token"
++                    }
++                },
++                onError = { error ->
++                    callbackRanSynchronously = true
++                    if (isCurrent(token, expectedIdentity, expectedMode, expectedGeneration) &&
++                        mayFallback && classicVariant
++                    ) {
++                        logcat(LogPriority.WARN, error) {
++                            "Manyue classic cache image failed; falling back to AI output"
++                        }
++                        readyState = ManyueEnhancementState.AI_READY
++                        readyDetail = "经典增强结果读取失败，已保留 AI 超分"
++                        kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch {
++                            ManyueAiUpscaler.removeClassicImage(context, token, strength)
++                        }
++                        beginStage(baseImage, false)
++                    } else if (isCurrent(token, expectedIdentity, expectedMode, expectedGeneration)) {
++                        stagedImageId = null
++                        logcat(LogPriority.WARN, error) {
++                            "Manyue AI tiled image load failed; original retained"
++                        }
++                        onState(ManyueEnhancementState.FAILED, "AI 结果显示失败")
++                    }
++                },
++            )
++            if (!callbackRanSynchronously) stagedImageId = requestId
+         }
++        beginStage(image, mayFallback = classicVariant)
+     }
+ 
+     private fun isCurrent(
+@@ -290,7 +358,6 @@ class ManyuePageBridge(
+ 
+     /** Cancel pending AI and drop any identity binding. Safe to call repeatedly. */
+     fun cancel() {
+-        view.cancelEnhancedTransition()
+         startJob?.cancel()
+         startJob = null
+         val currentToken = token
+@@ -298,6 +365,8 @@ class ManyuePageBridge(
+         if (currentToken != null && currentListener != null) {
+             ManyueAiUpscaler.removeListener(currentToken, currentListener)
+         }
++        stagedImageId?.let(view::cancelStagedImage)
++        stagedImageId = null
+         renderJob?.cancel()
+         renderJob = null
+         listener = null
+diff --git a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/viewer/ReaderPageImageView.kt b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/viewer/ReaderPageImageView.kt
+index ada95f8..888cb1c 100644
+--- a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/viewer/ReaderPageImageView.kt
++++ b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/viewer/ReaderPageImageView.kt
+@@ -6,6 +6,9 @@ import android.graphics.RectF
+ import android.graphics.drawable.Animatable
+ import android.graphics.drawable.BitmapDrawable
+ import android.graphics.drawable.Drawable
++import android.net.Uri
++import android.os.Handler
++import android.os.Looper
+ import android.util.AttributeSet
+ import android.view.GestureDetector
+ import android.view.MotionEvent
+@@ -18,7 +21,6 @@ import androidx.annotation.StyleRes
+ import androidx.appcompat.widget.AppCompatImageView
+ import androidx.core.os.postDelayed
+ import androidx.core.view.isVisible
+-import androidx.recyclerview.widget.RecyclerView
+ import coil3.BitmapImage
+ import coil3.asDrawable
+ import coil3.dispose
+@@ -39,6 +41,7 @@ import eu.kanade.tachiyomi.data.coil.customDecoder
+ import eu.kanade.tachiyomi.ui.reader.viewer.webtoon.WebtoonSubsamplingImageView
+ import eu.kanade.tachiyomi.util.system.animatorDurationScale
+ import eu.kanade.tachiyomi.util.view.isVisibleOnScreen
++import java.io.File
+ import okio.BufferedSource
+ 
+ /**
+@@ -58,8 +61,9 @@ open class ReaderPageImageView @JvmOverloads constructor(
+ ) : FrameLayout(context, attrs, defStyleAttrs, defStyleRes) {
+ 
+     private var pageView: View? = null
+-    private var pendingEnhancedView: SubsamplingScaleImageView? = null
+-    private var retiredPageView: SubsamplingScaleImageView? = null
++    private var stagedPageView: SubsamplingScaleImageView? = null
++    private var stagedImageId = 0L
++    private val mainHandler = Handler(Looper.getMainLooper())
+ 
+     private var config: Config? = null
+ 
+@@ -143,7 +147,7 @@ open class ReaderPageImageView @JvmOverloads constructor(
+     }
+ 
+     fun setImage(drawable: Drawable, config: Config) {
+-        clearEnhancedLayers()
++        cancelStagedImage()
+         this.config = config
+         if (drawable is Animatable) {
+             prepareAnimatedImageView()
+@@ -155,7 +159,7 @@ open class ReaderPageImageView @JvmOverloads constructor(
+     }
+ 
+     fun setImage(source: BufferedSource, isAnimated: Boolean, config: Config) {
+-        clearEnhancedLayers()
++        cancelStagedImage()
+         this.config = config
+         if (isAnimated) {
+             prepareAnimatedImageView()
+@@ -167,106 +171,101 @@ open class ReaderPageImageView @JvmOverloads constructor(
+     }
+ 
+     fun recycle() {
+-        clearEnhancedLayers()
+-        pageView?.let {
+-        when (it) {
+-            is SubsamplingScaleImageView -> it.recycle()
+-            is AppCompatImageView -> it.dispose()
+-        }
+-        it.isVisible = false
++        cancelStagedImage()
++        val current = pageView ?: return
++        when (current) {
++            is SubsamplingScaleImageView -> current.recycle()
++            is AppCompatImageView -> current.dispose()
+         }
++        current.isVisible = false
+     }
+ 
+-    /** Prepare the AI result in a second webtoon image view; keep the original on screen
+-     * until the new view is ready, then fade its alpha without resetting the active view.
+-     * Ownership of [bitmap] transfers to this view when this method returns true.
++    /**
++     * Prepare an encoded AI result in a second tiled view, then swap it in once SSIV has a base
++     * layer ready. Keeping the current page visible avoids the blank interval caused by reset().
+      */
+-    fun showEnhancedBitmap(bitmap: android.graphics.Bitmap, config: Config, onComplete: (Boolean) -> Unit): Boolean {
+-        if (!isWebtoon) return false
+-        val original = pageView as? SubsamplingScaleImageView ?: return false
+-        clearPendingEnhancedView()
+-        val enhanced = createNonAnimatedImageView()
+-        enhanced.alpha = 0F
+-        addView(enhanced, MATCH_PARENT, MATCH_PARENT)
+-        pendingEnhancedView = enhanced
+-        enhanced.setMinimumScaleType(config.minimumScaleType)
+-        enhanced.setMinimumDpi(1)
+-        enhanced.setCropBorders(config.cropBorders)
+-        enhanced.setOnImageEventListener(
+-            object : SubsamplingScaleImageView.DefaultOnImageEventListener() {
+-                override fun onReady() {
+-                    if (pendingEnhancedView !== enhanced) return
+-                    // A low-opacity frame lets the renderer prepare the new layer before the
+-                    // short alpha animation. The old page remains visible throughout.
+-                    enhanced.alpha = 0.01F
+-                    enhanced.postOnAnimation {
+-                        enhanced.postOnAnimation {
+-                            if (pendingEnhancedView !== enhanced) return@postOnAnimation
+-                            enhanced.animate().alpha(1F).setDuration(180L).withEndAction {
+-                                if (pendingEnhancedView !== enhanced) return@withEndAction
+-                                pendingEnhancedView = null
+-                                pageView = enhanced
+-                                original.isVisible = false
+-                                retiredPageView = original
+-                                retireOriginalWhenIdle(original)
+-                                onComplete(true)
+-                            }.start()
+-                        }
++    fun setTiledImagePreservingCurrent(
++        file: File,
++        config: Config,
++        shouldCommit: () -> Boolean,
++        maySwap: () -> Boolean,
++        onReady: (width: Int, height: Int) -> Unit,
++        onError: (Throwable?) -> Unit,
++    ): Long {
++        cancelStagedImage()
++        this.config = config
++        val requestId = ++stagedImageId
++        val nextView = createSubsamplingImageView().apply {
++            setDoubleTapZoomDuration(config.zoomDuration.getSystemScaledDuration())
++            setMinimumScaleType(config.minimumScaleType)
++            setMinimumDpi(1)
++            setCropBorders(config.cropBorders)
++            setOnImageEventListener(
++                object : SubsamplingScaleImageView.DefaultOnImageEventListener() {
++                    override fun onReady() {
++                        tryCommit()
+                     }
+-                }
+-
+-                override fun onImageLoadError(e: Exception) {
+-                    if (pendingEnhancedView !== enhanced) return
+-                    clearPendingEnhancedView()
+-                    onComplete(false)
+-                }
+-            },
+-        )
+-        try {
+-            enhanced.setImage(ImageSource.bitmap(bitmap))
+-        } catch (e: Exception) {
+-            clearPendingEnhancedView()
+-            onComplete(false)
+-        }
+-        return true
+-    }
+-
+-    fun cancelEnhancedTransition() = clearPendingEnhancedView()
+ 
+-    private fun clearPendingEnhancedView() {
+-        val pending = pendingEnhancedView ?: return
+-        pendingEnhancedView = null
+-        pending.animate().cancel()
+-        removeView(pending)
+-        pending.recycle()
+-    }
++                    private fun tryCommit() {
++                        if (stagedPageView !== this@apply || requestId != stagedImageId || !shouldCommit()) {
++                            cancelStagedImage(requestId)
++                            return
++                        }
++                        if (!maySwap()) {
++                            mainHandler.postDelayed(80L) { tryCommit() }
++                            return
++                        }
++                        setupZoom(config)
++                        if (isVisibleOnScreen()) landscapeZoom(true)
++                        val previous = pageView
++                        pageView = this@apply
++                        stagedPageView = null
++                        previous?.let { old ->
++                            removeView(old)
++                            mainHandler.postDelayed(32L) {
++                                when (old) {
++                                    is SubsamplingScaleImageView -> old.recycle()
++                                    is AppCompatImageView -> old.dispose()
++                                }
++                            }
++                        }
++                        this@ReaderPageImageView.onImageLoaded()
++                        onReady(sWidth, sHeight)
++                    }
+ 
+-    private fun clearEnhancedLayers() {
+-        clearPendingEnhancedView()
+-        retiredPageView?.let { old ->
+-            retiredPageView = null
+-            removeView(old)
+-            old.recycle()
++                    override fun onImageLoadError(e: Exception) {
++                        if (stagedPageView === this@apply && requestId == stagedImageId) {
++                            cancelStagedImage(requestId)
++                            onError(e)
++                        }
++                    }
++                },
++            )
++            isVisible = true
+         }
++        stagedPageView = nextView
++        // Keep the old view above this one while the decoder builds the base layer. The staged
++        // view remains visible to Android and therefore continues to receive onDraw callbacks.
++        addView(nextView, 0, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
++        runCatching { nextView.setImage(ImageSource.uri(context, Uri.fromFile(file))) }
++            .onFailure {
++                cancelStagedImage(requestId)
++                onError(it)
++            }
++        return requestId
+     }
+ 
+-    private fun retireOriginalWhenIdle(original: SubsamplingScaleImageView) {
+-        original.postDelayed({
+-            if (retiredPageView !== original) return@postDelayed
+-            var ancestor = parent
+-            var recycler: RecyclerView? = null
+-            while (ancestor != null) {
+-                if (ancestor is RecyclerView) { recycler = ancestor; break }
+-                ancestor = (ancestor as? View)?.parent
++    fun cancelStagedImage(requestId: Long? = null) {
++        if (requestId != null && requestId != stagedImageId) return
++        stagedImageId++
++        val staged = stagedPageView
++        stagedPageView = null
++        if (staged != null) {
++            removeView(staged)
++            mainHandler.postDelayed(32L) {
++                staged.recycle()
+             }
+-            if (recycler != null && (recycler.scrollState != RecyclerView.SCROLL_STATE_IDLE || recycler.isComputingLayout)) {
+-                retireOriginalWhenIdle(original)
+-            } else {
+-                retiredPageView = null
+-                removeView(original)
+-                original.recycle()
+-            }
+-        }, 500L)
++        }
+     }
+ 
+     /**
+@@ -327,15 +326,12 @@ open class ReaderPageImageView @JvmOverloads constructor(
+         if (pageView is SubsamplingScaleImageView) return
+         removeView(pageView)
+ 
+-        pageView = createNonAnimatedImageView()
++        pageView = createSubsamplingImageView()
+         addView(pageView, MATCH_PARENT, MATCH_PARENT)
+     }
+ 
+-    private fun createNonAnimatedImageView(): SubsamplingScaleImageView = (if (isWebtoon) {
+-            WebtoonSubsamplingImageView(context)
+-        } else {
+-            SubsamplingScaleImageView(context)
+-        }).apply {
++    private fun createSubsamplingImageView(): SubsamplingScaleImageView =
++        (if (isWebtoon) WebtoonSubsamplingImageView(context) else SubsamplingScaleImageView(context)).apply {
+             setDoubleTapZoomStyle(SubsamplingScaleImageView.ZOOM_FOCUS_CENTER)
+             setPanLimit(SubsamplingScaleImageView.PAN_LIMIT_INSIDE)
+             setMinimumTileDpi(180)
+diff --git a/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementCacheTest.kt b/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementCacheTest.kt
+index a7e110a..e6cd218 100644
+--- a/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementCacheTest.kt
++++ b/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementCacheTest.kt
+@@ -2,8 +2,10 @@ package eu.kanade.tachiyomi.ui.reader.manyue
+ 
+ import org.junit.jupiter.api.Assertions.assertEquals
+ import org.junit.jupiter.api.Assertions.assertNotEquals
++import org.junit.jupiter.api.Assertions.assertNull
+ import org.junit.jupiter.api.Assertions.assertTrue
+ import org.junit.jupiter.api.Test
++import java.nio.file.Files
+ 
+ class ManyueEnhancementCacheTest {
+ 
+@@ -28,4 +30,35 @@ class ManyueEnhancementCacheTest {
+         // Cache trim target 640 MiB is referenced indirectly via cacheSizeText formatting.
+         assertTrue(ManyueAiRuntime.MAX_INPUT_BYTES > 0L)
+     }
++
++    @Test fun `cached full image is accepted only when manifest and file exist`() {
++        val bundle = Files.createTempDirectory("manyue-cache-test").toFile()
++        try {
++            val image = java.io.File(bundle, "image.webp")
++            image.writeBytes(byteArrayOf(1, 2, 3))
++            java.io.File(bundle, "manifest.json").writeText("""{"image":"image.webp","width":2000,"height":4000}""")
++
++            assertEquals(image, ManyueEnhancementCache.imageFile(bundle))
++
++            image.delete()
++            assertNull(ManyueEnhancementCache.imageFile(bundle))
++        } finally {
++            bundle.deleteRecursively()
++        }
++    }
++
++    @Test fun `classic variant shares bundle dimensions and requires a valid strength`() {
++        val bundle = Files.createTempDirectory("manyue-cache-variant-test").toFile()
++        try {
++            val image = java.io.File(bundle, "image.webp").apply { writeBytes(byteArrayOf(1)) }
++            java.io.File(bundle, "manifest.json").writeText("""{"image":"image.webp","width":1000,"height":2000}""")
++            val variant = java.io.File(bundle, "classic_25.webp").apply { writeBytes(byteArrayOf(2)) }
++
++            assertEquals(image, ManyueEnhancementCache.cachedImage(bundle)?.file)
++            assertEquals(variant, ManyueEnhancementCache.cachedImage(bundle, classicStrength = 25)?.file)
++            assertNull(ManyueEnhancementCache.cachedImage(bundle, classicStrength = 101))
++        } finally {
++            bundle.deleteRecursively()
++        }
++    }
+ }

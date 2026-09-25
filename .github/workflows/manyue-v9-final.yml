@@ -1,4 +1,4 @@
-name: Manyue v9.2 smooth scroll ARM64 build
+name: Manyue v9.3 tiled AI ARM64 build
 
 on:
   push:
@@ -50,6 +50,18 @@ jobs:
           grep -q 'versionCode = 32' project/app/build.gradle.kts
           grep -q 'versionName = "0.20.6"' project/app/build.gradle.kts
           grep -q 'private val renderMutex = Mutex()' project/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePageBridge.kt
+          grep -q 'awaitDisplayPause' project/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePageBridge.kt
+
+      - name: Apply v9.3 tiled AI image swap
+        shell: bash
+        run: |
+          set -euo pipefail
+          git apply --directory=project --check manyue_v9.3_ai_swap.patch
+          git apply --directory=project manyue_v9.3_ai_swap.patch
+          git diff --check
+          grep -q 'versionCode = 33' project/app/build.gradle.kts
+          grep -q 'versionName = "0.20.7"' project/app/build.gradle.kts
+          grep -q 'setTiledImagePreservingCurrent' project/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePageBridge.kt
           grep -q 'awaitDisplayPause' project/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePageBridge.kt
 
       - name: Set up JDK 21
@@ -143,8 +155,8 @@ jobs:
           grep -q 'lib/arm64-v8a/libmanyue_anime4k.so' "$RUNNER_TEMP/apk-files.txt"
           grep -q 'models-Real-CUGAN-se/up2x-no-denoise.bin' "$RUNNER_TEMP/apk-files.txt"
 
-          cat > project/MANYUE_V9_2_STATUS.md <<EOF
-          # Manyue v9.2 build verification
+          cat > project/MANYUE_V9_3_STATUS.md <<EOF
+          # Manyue v9.3 build verification
 
           - GitHub Actions run: ${GITHUB_RUN_ID}
           - Source commit: ${GITHUB_SHA}
@@ -152,23 +164,23 @@ jobs:
           - Manyue JVM unit tests: passed.
           - ARM64 release APK: assembled and APK signature verification passed.
           - APK contents: Real-CUGAN runner/model and Anime4K runner present.
-          - Scroll-safe replacement: visible page swaps wait for 300 ms of RecyclerView idle and a single bitmap render lock.
+          - Scroll-safe replacement: encoded AI output is staged in a tiled view; the visible page swaps after a 300 ms RecyclerView idle window.
           - Device verification: pending on Honor Magic V2; frame pacing, prefetch timing, memory and fold-state behavior require a device test.
           EOF
 
           mkdir -p "${RUNNER_TEMP}/manyue-v9-delivery"
-          cp "$apk" "${RUNNER_TEMP}/manyue-v9-delivery/ManyueNext-v9.2-arm64-release.apk"
+          cp "$apk" "${RUNNER_TEMP}/manyue-v9-delivery/ManyueNext-v9.3-arm64-release.apk"
           (
             cd project
-            zip -qr "${RUNNER_TEMP}/manyue-v9-delivery/ManyueNext-v9.2-source.zip" . \
+            zip -qr "${RUNNER_TEMP}/manyue-v9-delivery/ManyueNext-v9.3-source.zip" . \
               -x '.gradle/*' '*/build/*' 'build/*' '.kotlin/*'
           )
           (
             cd "${RUNNER_TEMP}/manyue-v9-delivery"
-            sha256sum ManyueNext-v9.2-arm64-release.apk ManyueNext-v9.2-source.zip > SHA256SUMS.txt
+            sha256sum ManyueNext-v9.3-arm64-release.apk ManyueNext-v9.3-source.zip > SHA256SUMS.txt
           )
           cat > "${RUNNER_TEMP}/manyue-v9-delivery/BUILD_VERIFICATION.txt" <<EOF
-          Manyue v9.2 scroll-safe AI replacement build
+          Manyue v9.3 tiled AI replacement build
           Workflow run: ${GITHUB_RUN_ID}
           Commit: ${GITHUB_SHA}
           Unit tests: passed
@@ -180,6 +192,6 @@ jobs:
       - name: Upload APK, source and checksums
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: manyue-v9.2-scroll-smooth-${{ github.run_number }}
+          name: manyue-v9.3-tiled-ai-${{ github.run_number }}
           if-no-files-found: error
           path: ${{ runner.temp }}/manyue-v9-delivery/*
