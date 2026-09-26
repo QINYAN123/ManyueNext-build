@@ -1,0 +1,315 @@
+name: Manyue v9.5 Webtoon rendering and stable signing
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: manyue-v9-final-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-arm64:
+    name: Verify assets, test and build ARM64 release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Extract v9 source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p project
+          unzip -q ManyueNext-v9-source.zip -d project
+          test -s project/gradlew
+          chmod +x project/gradlew
+
+      - name: Apply v9.1 Real-CUGAN model selector fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          git apply --directory=project --check manyue_v9.1_cugan_fix.patch
+          git apply --directory=project manyue_v9.1_cugan_fix.patch
+          grep -q 'versionCode = 31' project/app/build.gradle.kts
+          grep -q 'versionName = "0.20.5"' project/app/build.gradle.kts
+          grep -q 'REAL_CUGAN_NOISE_LEVEL = "0"' project/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiRuntime.kt
+
+      - name: Apply v9.2 scroll-safe AI page replacement
+        shell: bash
+        run: |
+          set -euo pipefail
+          git apply --directory=project --check manyue_v9.2_scroll_smooth.patch
+          git apply --directory=project manyue_v9.2_scroll_smooth.patch
+          grep -q 'versionCode = 32' project/app/build.gradle.kts
+          grep -q 'versionName = "0.20.6"' project/app/build.gradle.kts
+          grep -q 'private val renderMutex = Mutex()' project/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePageBridge.kt
+          grep -q 'awaitDisplayPause' project/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePageBridge.kt
+
+      - name: Apply v9.3 tiled AI image swap
+        shell: bash
+        run: |
+          set -euo pipefail
+          git apply --directory=project --check manyue_v9.3_ai_swap.patch
+          git apply --directory=project manyue_v9.3_ai_swap.patch
+          git diff --check
+          grep -q 'versionCode = 33' project/app/build.gradle.kts
+          grep -q 'versionName = "0.20.7"' project/app/build.gradle.kts
+          grep -q 'setTiledImagePreservingCurrent' project/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePageBridge.kt
+          grep -q 'awaitDisplayPause' project/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePageBridge.kt
+
+      - name: Apply v9.4 scale and rendering fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git apply --directory=project --check manyue_v9.4_scale_render.patch
+          git apply --directory=project manyue_v9.4_scale_render.patch
+          git diff --check
+          grep -q 'versionCode = 34' project/app/build.gradle.kts
+          grep -q 'manyueAiScalePercent' project/app/src/main/java/eu/kanade/presentation/reader/settings/GeneralSettingsPage.kt
+
+      - name: Apply v9.5 Webtoon rendering fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git apply --directory=project --check manyue_v9.5_webtoon_fix.patch
+          git apply --directory=project manyue_v9.5_webtoon_fix.patch
+          git diff --check
+          grep -q 'versionCode = 35' project/app/build.gradle.kts
+          grep -q 'versionName = "0.20.9"' project/app/build.gradle.kts
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Run crop JNI host smoke test
+        run: bash scripts/native_crop_jni_smoke.sh project
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb
+
+      - name: Add Real-CUGAN native assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          work="${RUNNER_TEMP}/realsr-assets"
+          mkdir -p "$work"
+          curl --fail --location --retry 5 --retry-all-errors \
+            --output "$work/assets.zip" \
+            https://github.com/tumuyan/RealSR-NCNN-Android/releases/download/1.11.1/assets.zip
+          unzip -q "$work/assets.zip" -d "$work/unpacked"
+
+          find_one() {
+            local label="$1"
+            shift
+            local found=""
+            for pattern in "$@"; do
+              found="$(find "$work/unpacked" -type f -iname "$pattern" -print -quit)"
+              if [[ -n "$found" ]]; then
+                printf '%s\n' "$found"
+                return 0
+              fi
+            done
+            echo "Missing asset: $label" >&2
+            exit 1
+          }
+
+          find_path() {
+            local label="$1"
+            local path_pattern="$2"
+            local found
+            found="$(find "$work/unpacked" -type f -path "$path_pattern" -print -quit)"
+            if [[ -z "$found" ]]; then
+              echo "Missing asset: $label ($path_pattern)" >&2
+              exit 1
+            fi
+            printf '%s\n' "$found"
+          }
+
+          native="project/app/src/main/jniLibs/arm64-v8a"
+          mkdir -p "$native"
+          cp "$(find_one 'Real-CUGAN runner' 'realcugan-ncnn' '*realcugan*ncnn*')" \
+            "$native/libmanyue_realcugan.so"
+          cp "$(find_one 'OpenMP runtime' 'libomp.so')" "$native/libomp.so"
+
+          model_dir="project/app/src/main/assets/ai/models-Real-CUGAN-se"
+          mkdir -p "$model_dir"
+          cp "$(find_path 'Real-CUGAN model' '*/models-se/up2x-no-denoise.bin')" \
+            "$model_dir/up2x-no-denoise.bin"
+          cp "$(find_path 'Real-CUGAN params' '*/models-se/up2x-no-denoise.param')" \
+            "$model_dir/up2x-no-denoise.param"
+          chmod 755 "$native/libmanyue_realesr.so" "$native/libmanyue_realcugan.so"
+
+      - name: Build pinned Anime4KCPP ARM64 CPU overlay
+        run: bash project/scripts/build_anime4k_android.sh project/app/src/main/jniLibs/arm64-v8a/libmanyue_anime4k.so
+
+      - name: Verify native files and model hashes
+        working-directory: project
+        run: python3 scripts/verify_manyue_native.py
+
+      - name: Run Manyue unit tests
+        id: unit_tests
+        working-directory: project
+        run: >-
+          ./gradlew --no-daemon :app:testDebugUnitTest
+          --tests 'eu.kanade.tachiyomi.ui.reader.manyue.*'
+          --tests 'eu.kanade.tachiyomi.ui.reader.metadata.*'
+
+      - name: Validate required JUnit suites and counts
+        if: ${{ always() && steps.unit_tests.outcome != 'skipped' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import sys
+          import xml.etree.ElementTree as ET
+
+          report_dir = Path('project/app/build/test-results/testDebugUnitTest')
+          required = {
+              'ManyueWebtoonLifecycleTest': 8,
+              'ManyueRegionDecoderTest': 5,
+              'ManyueSchedulerLifecycleTest': 4,
+              'ReaderMetadataPresentationTest': 6,
+          }
+          counts = {name: 0 for name in required}
+          failures = {name: 0 for name in required}
+          errors = {name: 0 for name in required}
+          skipped = {name: 0 for name in required}
+          reports = sorted(report_dir.glob('TEST-*.xml')) if report_dir.is_dir() else []
+          if not reports:
+              sys.exit('No JUnit XML reports were produced')
+
+          def local_name(tag):
+              return tag.rsplit('}', 1)[-1]
+
+          for report in reports:
+              root = ET.parse(report).getroot()
+              suites = [node for node in root.iter() if local_name(node.tag) == 'testsuite']
+              if local_name(root.tag) == 'testsuite' and root not in suites:
+                  suites.append(root)
+              for suite in suites:
+                  suite_name = suite.attrib.get('name', '')
+                  for case in (node for node in list(suite) if local_name(node.tag) == 'testcase'):
+                      class_name = case.attrib.get('classname', '')
+                      target = next((name for name in required if name in class_name or name in suite_name), None)
+                      if target is None:
+                          continue
+                      counts[target] += 1
+                      for child in list(case):
+                          tag = local_name(child.tag)
+                          if tag == 'failure':
+                              failures[target] += 1
+                          elif tag == 'error':
+                              errors[target] += 1
+                          elif tag == 'skipped':
+                              skipped[target] += 1
+
+          for name, minimum in required.items():
+              print(f'{name}: executed={counts[name]}, failures={failures[name]}, errors={errors[name]}, skipped={skipped[name]}')
+              if counts[name] < minimum:
+                  sys.exit(f'{name} executed {counts[name]} tests; expected at least {minimum}')
+              if failures[name] or errors[name] or skipped[name]:
+                  sys.exit(f'{name} has failed, errored, or skipped tests')
+          PY
+
+      - name: Upload JUnit XML reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: manyue-v9.5-junit-${{ github.run_number }}
+          if-no-files-found: warn
+          path: project/app/build/test-results/testDebugUnitTest/TEST-*.xml
+
+      - name: Assemble signed release APKs
+        id: assemble_release
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        working-directory: project
+        env:
+          MIHON_GITHUB_RELEASE: 'true'
+          storeFileBase64: ${{ secrets.MANYUE_STORE_FILE_BASE64 }}
+          storePassword: ${{ secrets.MANYUE_STORE_PASSWORD }}
+          keyAlias: ${{ secrets.MANYUE_KEY_ALIAS }}
+          keyPassword: ${{ secrets.MANYUE_KEY_PASSWORD }}
+        run: ./gradlew --no-daemon :app:assembleRelease
+
+      - name: Verify ARM64 APK and package delivery
+        id: verify_delivery
+        if: steps.assemble_release.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          apk="project/app/build/outputs/apk/release/app-arm64-v8a-release.apk"
+          test -s "$apk"
+          sdk="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          apksigner="$(find "$sdk/build-tools" -maxdepth 2 -type f -name apksigner | sort -V | tail -n 1)"
+          test -x "$apksigner"
+          "$apksigner" verify --verbose "$apk"
+          mkdir -p "${RUNNER_TEMP}/manyue-v9-delivery/junit-xml"
+          "$apksigner" verify --verbose --print-certs "$apk" > "${RUNNER_TEMP}/manyue-v9-delivery/APK-signature.txt"
+          test -d project/app/build/test-results/testDebugUnitTest
+          find project/app/build/test-results/testDebugUnitTest -maxdepth 1 -type f -name '*.xml' \
+            -exec cp {} "${RUNNER_TEMP}/manyue-v9-delivery/junit-xml/" \;
+          test -n "$(find "${RUNNER_TEMP}/manyue-v9-delivery/junit-xml" -maxdepth 1 -type f -name '*.xml' -print -quit)"
+          (
+            cd "${RUNNER_TEMP}/manyue-v9-delivery/junit-xml"
+            zip -q "${RUNNER_TEMP}/manyue-v9-delivery/ManyueNext-v9.5-junit-reports.zip" ./*.xml
+          )
+          unzip -Z1 "$apk" > "$RUNNER_TEMP/apk-files.txt"
+          grep -q 'lib/arm64-v8a/libmanyue_realcugan.so' "$RUNNER_TEMP/apk-files.txt"
+          grep -q 'lib/arm64-v8a/libmanyue_anime4k.so' "$RUNNER_TEMP/apk-files.txt"
+          grep -q 'lib/arm64-v8a/libssiv_crop.so' "$RUNNER_TEMP/apk-files.txt"
+          grep -q 'models-Real-CUGAN-se/up2x-no-denoise.bin' "$RUNNER_TEMP/apk-files.txt"
+
+          cat > project/MANYUE_V9_5_STATUS.md <<EOF
+          # Manyue v9.5 build verification
+
+          - GitHub Actions run: ${GITHUB_RUN_ID}
+          - Source commit: ${GITHUB_SHA}
+          - Native assets: SHA-256 and ARM64 ELF verification passed.
+          - Manyue JVM unit tests: passed.
+          - ARM64 release APK: assembled and APK signature verification passed.
+          - APK contents: Real-CUGAN runner/model and Anime4K runner present.
+          - Webtoon rendering and scroll-safe replacement: applied from the v9.5 patch and covered by the CI unit-test selectors listed above.
+          - Device verification has not been performed; real-device visual behavior and performance remain to be checked.
+          EOF
+
+          cp "$apk" "${RUNNER_TEMP}/manyue-v9-delivery/ManyueNext-v9.5-arm64-release.apk"
+          (
+            cd project
+            zip -qr "${RUNNER_TEMP}/manyue-v9-delivery/ManyueNext-v9.5-source.zip" . \
+              -x '.gradle/*' '*/build/*' 'build/*' '.kotlin/*' '*/.cxx/*' '.cxx/*' '.git/*'
+          )
+          (
+            cd "${RUNNER_TEMP}/manyue-v9-delivery"
+            sha256sum ManyueNext-v9.5-arm64-release.apk ManyueNext-v9.5-source.zip \
+              ManyueNext-v9.5-junit-reports.zip APK-signature.txt > SHA256SUMS.txt
+          )
+          cat > "${RUNNER_TEMP}/manyue-v9-delivery/BUILD_VERIFICATION.txt" <<EOF
+          Manyue v9.5 Webtoon rendering and stable signing build
+          Workflow run: ${GITHUB_RUN_ID}
+          Commit: ${GITHUB_SHA}
+          Unit tests: passed
+          Native/model integrity: passed
+          ARM64 release APK: verified with the persistent ManyueNext release certificate.
+          APK signing certificate details: included in APK-signature.txt.
+          JUnit XML reports: included in junit-xml/ and ManyueNext-v9.5-junit-reports.zip.
+          Device verification has not been performed; real-device visual behavior and performance remain to be checked.
+          EOF
+
+      - name: Upload APK, source and checksums
+        if: steps.verify_delivery.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: manyue-v9.5-webtoon-render-${{ github.run_number }}
+          if-no-files-found: error
+          path: ${{ runner.temp }}/manyue-v9-delivery

@@ -1,0 +1,160 @@
+diff --git a/MANYUE_V9_HANDOFF.md b/MANYUE_V9_HANDOFF.md
+index c1ba39a..1694236 100644
+--- a/MANYUE_V9_HANDOFF.md
++++ b/MANYUE_V9_HANDOFF.md
+@@ -37,7 +37,7 @@ Anime4KCPP source: `TianZerL/Anime4KCPP@50c5d1b99965d804eeecfab9b48acfcaffddee3d
+ 
+ ## 真机验收（荣耀 Magic V2 / Snapdragon 8 Gen 2）
+ 
+-1. 安装 ARM64 APK，打开阅读器设置，确认显示“AI 超分：原生运行库已验证”。
++1. 安装 ARM64 APK，打开阅读器设置，确认显示“AI 超分：原生程序文件完整性已校验”。此项只表示已校验原生文件，不等于已执行模型推理。
+ 2. 选“快速 · Real-CUGAN x2”，打开 AI 超分，确认当前页先显示原图，随后替换为 2× 图；状态栏应出现当前页完成时间、排队耗时、推理耗时。
+ 3. 连续快速翻页，确认当前页优先完成；向后五页应在后台依次出现排队/完成记录。关闭 AI 后应恢复原有高质量渲染器且不触发 native worker。
+ 4. 切换“质量 · Real-ESRGAN x2”重复测试，确认不会显示或复用 CUGAN 的缓存结果。
+diff --git a/app/build.gradle.kts b/app/build.gradle.kts
+index d57c9a8..db30cb5 100644
+--- a/app/build.gradle.kts
++++ b/app/build.gradle.kts
+@@ -33,8 +33,8 @@ android {
+     defaultConfig {
+         applicationId = "app.mihon"
+ 
+-        versionCode = 30
+-        versionName = "0.20.4"
++        versionCode = 31
++        versionName = "0.20.5"
+ 
+         buildConfigField("String", "COMMIT_COUNT", "\"${getLatestCommitCount()}\"")
+         buildConfigField("String", "COMMIT_SHA", "\"${getLatestCommitSha()}\"")
+diff --git a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiRuntime.kt b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiRuntime.kt
+index f608347..7ccfb2a 100644
+--- a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiRuntime.kt
++++ b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiRuntime.kt
+@@ -16,7 +16,7 @@ import tachiyomi.core.common.util.system.logcat
+ object ManyueAiRuntime {
+ 
+     enum class Capability(val userMessage: String) {
+-        READY("原生运行库已验证"),
++        READY("原生程序文件完整性已校验"),
+         UNSUPPORTED_ABI("仅支持 arm64-v8a"),
+         MISSING_BINARY("AI 原生程序缺失"),
+         CORRUPT_BINARY("AI 原生程序校验失败"),
+@@ -35,6 +35,9 @@ object ManyueAiRuntime {
+     // Keep one native process, but restore the upstream load/proc/save pipeline concurrency.
+     // This improves overlap without multiplying model processes or their memory footprint.
+     private const val JOBS = "2:4:4"
++    // The packaged Real-CUGAN model is up2x-no-denoise. Upstream selects
++    // up2x-conservative for -1, so the model selector must be 0.
++    private const val REAL_CUGAN_NOISE_LEVEL = "0"
+ 
+     class CancelledException : CancellationException("Manyue AI request cancelled")
+ 
+@@ -122,20 +125,14 @@ object ManyueAiRuntime {
+         logFile.parentFile?.mkdirs()
+         logFile.delete()
+ 
+-        val command = mutableListOf(
+-            binary.absolutePath,
+-            "-i", inputFile.absolutePath,
+-            "-o", outputFile.absolutePath,
+-            "-s", "2",
+-            "-t", TILE_SIZE_AUTO.toString(),
+-            "-m", modelDir.absolutePath,
+-            "-j", JOBS,
+-            "-f", outputFormat,
+-            "-v",
++        val command = buildCommand(
++            binaryPath = binary.absolutePath,
++            inputPath = inputFile.absolutePath,
++            outputPath = outputFile.absolutePath,
++            modelPath = modelDir.absolutePath,
++            model = model,
++            outputFormat = outputFormat,
+         )
+-        if (model == ManyueAiModel.FAST_REAL_CUGAN) {
+-            command.addAll(listOf("-n", "-1"))
+-        }
+         val pb = ProcessBuilder(command)
+         pb.directory(File(nativeDir))
+         pb.environment()["LD_LIBRARY_PATH"] = nativeDir
+@@ -187,6 +184,33 @@ object ManyueAiRuntime {
+         }
+     }
+ 
++    /** Exposed internally so unit tests can lock the native CLI/model pairing. */
++    internal fun buildCommand(
++        binaryPath: String,
++        inputPath: String,
++        outputPath: String,
++        modelPath: String,
++        model: ManyueAiModel,
++        outputFormat: String,
++    ): List<String> = buildList {
++        add(binaryPath)
++        addAll(
++            listOf(
++                "-i", inputPath,
++                "-o", outputPath,
++                "-s", "2",
++                "-t", TILE_SIZE_AUTO.toString(),
++                "-m", modelPath,
++                "-j", JOBS,
++                "-f", outputFormat,
++                "-v",
++            ),
++        )
++        if (model == ManyueAiModel.FAST_REAL_CUGAN) {
++            addAll(listOf("-n", REAL_CUGAN_NOISE_LEVEL))
++        }
++    }
++
+     /**
+      * Applies the optional Anime4KCPP ACNet B4 refinement on CPU at factor 1.0, keeping the
+      * fixed AI 2x dimensions. This is not a GPU shader. It is best-effort and never discards
+diff --git a/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiRuntimeTest.kt b/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiRuntimeTest.kt
+index 9a83264..1a5cf20 100644
+--- a/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiRuntimeTest.kt
++++ b/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiRuntimeTest.kt
+@@ -1,6 +1,7 @@
+ package eu.kanade.tachiyomi.ui.reader.manyue
+ 
+ import org.junit.jupiter.api.Assertions.assertEquals
++import org.junit.jupiter.api.Assertions.assertFalse
+ import org.junit.jupiter.api.Assertions.assertTrue
+ import org.junit.jupiter.api.Test
+ 
+@@ -32,4 +33,34 @@ class ManyueAiRuntimeTest {
+         val w = ManyueAiUpscaler.resolveTargetWidth(2000, 2003, 0)
+         assertEquals(4000, w)
+     }
++
++    @Test fun `real cugan selects the packaged no-denoise model`() {
++        val command = ManyueAiRuntime.buildCommand(
++            binaryPath = "/native/libmanyue_realcugan.so",
++            inputPath = "/cache/input.webp",
++            outputPath = "/cache/output.webp",
++            modelPath = "/cache/models-se",
++            model = ManyueAiModel.FAST_REAL_CUGAN,
++            outputFormat = "webp",
++        )
++
++        val noiseIndex = command.indexOf("-n")
++        assertTrue(noiseIndex >= 0)
++        assertEquals("0", command[noiseIndex + 1])
++        assertTrue(ManyueAiModel.FAST_REAL_CUGAN.modelFiles.contains("up2x-no-denoise.bin"))
++        assertFalse(command.contains("-1"))
++    }
++
++    @Test fun `real esrgan command does not receive cugan noise selector`() {
++        val command = ManyueAiRuntime.buildCommand(
++            binaryPath = "/native/libmanyue_realesr.so",
++            inputPath = "/cache/input.webp",
++            outputPath = "/cache/output.webp",
++            modelPath = "/cache/models-esrgan",
++            model = ManyueAiModel.QUALITY_REAL_ESRGAN,
++            outputFormat = "webp",
++        )
++
++        assertFalse(command.contains("-n"))
++    }
+ }

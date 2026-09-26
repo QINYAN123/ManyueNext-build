@@ -1,0 +1,692 @@
+diff --git a/app/build.gradle.kts b/app/build.gradle.kts
+index ab04168..2ab1907 100644
+--- a/app/build.gradle.kts
++++ b/app/build.gradle.kts
+@@ -33,8 +33,8 @@ android {
+     defaultConfig {
+         applicationId = "app.mihon"
+ 
+-        versionCode = 33
+-        versionName = "0.20.7"
++        versionCode = 34
++        versionName = "0.20.8"
+ 
+         buildConfigField("String", "COMMIT_COUNT", "\"${getLatestCommitCount()}\"")
+         buildConfigField("String", "COMMIT_SHA", "\"${getLatestCommitSha()}\"")
+diff --git a/app/src/main/java/eu/kanade/presentation/reader/settings/GeneralSettingsPage.kt b/app/src/main/java/eu/kanade/presentation/reader/settings/GeneralSettingsPage.kt
+index 1f6f697..8caa88a 100644
+--- a/app/src/main/java/eu/kanade/presentation/reader/settings/GeneralSettingsPage.kt
++++ b/app/src/main/java/eu/kanade/presentation/reader/settings/GeneralSettingsPage.kt
+@@ -9,6 +9,9 @@ import androidx.compose.runtime.Composable
+ import androidx.compose.runtime.collectAsState
+ import androidx.compose.runtime.getValue
+ import androidx.compose.runtime.produceState
++import androidx.compose.runtime.mutableIntStateOf
++import androidx.compose.runtime.remember
++import androidx.compose.runtime.setValue
+ import eu.kanade.tachiyomi.ui.reader.ReaderActivity
+ import eu.kanade.tachiyomi.ui.reader.setting.ReaderPreferences
+ import eu.kanade.tachiyomi.ui.reader.setting.ReaderSettingsViewModel
+@@ -235,7 +238,7 @@ internal fun ColumnScope.GeneralPage(viewModel: ReaderSettingsViewModel) {
+     )
+ 
+     val aiModelId by viewModel.preferences.manyueAiModel.collectAsState()
+-    Text("AI 模型（固定原生 2×）", style = MaterialTheme.typography.bodyMedium)
++    Text("AI 模型", style = MaterialTheme.typography.bodyMedium)
+     androidx.compose.foundation.layout.FlowRow {
+         eu.kanade.tachiyomi.ui.reader.manyue.ManyueAiModel.entries.map { model ->
+             FilterChip(
+@@ -249,9 +252,27 @@ internal fun ColumnScope.GeneralPage(viewModel: ReaderSettingsViewModel) {
+         }
+     }
+     Text(
+-        "快速模式使用 Real-CUGAN，质量模式使用 Real-ESRGAN；两者都直接输出原图 2×，不会先缩小再放大。",
++        "快速模式使用 Real-CUGAN，质量模式使用 Real-ESRGAN；原图进行 2× 推理后按自定义倍率输出，保留源图细节。",
+         style = MaterialTheme.typography.bodySmall,
+     )
++    val aiScalePercent by viewModel.preferences.manyueAiScalePercent.collectAsState()
++    var draftScale by remember(aiScalePercent) { mutableIntStateOf(aiScalePercent.coerceIn(100, 200)) }
++    Text("自定义超分倍率：%.2f×".format(draftScale / 100f), style = MaterialTheme.typography.bodyMedium)
++    tachiyomi.presentation.core.components.material.Slider(
++        value = draftScale,
++        valueRange = 100..200,
++        steps = 99,
++        onValueChange = { draftScale = it },
++        onValueChangeFinished = {
++            // Commit only after release: dragging must not repeatedly rebuild the reader
++            // or cancel/relaunch native inference for every one-percent step.
++            if (draftScale != aiScalePercent) {
++                viewModel.preferences.manyueAiScalePercent.set(draftScale)
++                readerActivity?.onManyueAiScaleChanged(draftScale)
++            }
++        },
++    )
++    Text("1.00×保留原图；1.01–2.00×保持比例输出。超出内存安全预算时保留原图。", style = MaterialTheme.typography.bodySmall)
+     val anime4kOverlay by viewModel.preferences.manyueAnime4kOverlay.collectAsState()
+     androidx.compose.foundation.layout.FlowRow {
+         FilterChip(
+diff --git a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/ReaderActivity.kt b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/ReaderActivity.kt
+index d8f5f2b..cfab5ac 100644
+--- a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/ReaderActivity.kt
++++ b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/ReaderActivity.kt
+@@ -385,6 +385,11 @@ class ReaderActivity : BaseActivity() {
+         viewModel.state.value.viewer?.refreshManyue()
+     }
+ 
++    fun onManyueAiScaleChanged(percent: Int) {
++        eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.updateAiScale(percent)
++        viewModel.state.value.viewer?.refreshManyue()
++    }
++
+     fun onManyueAiModelChanged(modelId: String) {
+         eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.updateAiModel(
+             eu.kanade.tachiyomi.ui.reader.manyue.ManyueAiModel.fromId(modelId),
+diff --git a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiRequestFactory.kt b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiRequestFactory.kt
+index 2143c6f..c703b86 100644
+--- a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiRequestFactory.kt
++++ b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiRequestFactory.kt
+@@ -40,7 +40,9 @@ object ManyueAiRequestFactory {
+ 
+         val model = ManyueRuntimeState.aiModel
+         val targetMode = model.scale
+-        val targetWidth = ManyueAiUpscaler.fixedTargetWidth(width)
++        val targetWidth = ManyueAiUpscaler.customTargetWidth(width, ManyueRuntimeState.aiScalePercent)
++        if (targetWidth <= width) return null
++        // The resolved width is in both cache and request identity; legacy tenths stays native x2.
+         val targetScaleTenths = 20
+         val resolved = targetWidth
+         val resolvedHeight = Math.round(height * (resolved.toDouble() / width)).toInt()
+@@ -67,6 +69,7 @@ object ManyueAiRequestFactory {
+             anime4kOverlay = ManyueRuntimeState.anime4kOverlay,
+         )
+         if (reusable != null) {
++            ManyueAiUpscaler.promotePriority(reusable, priority)
+             ManyuePrefetchManager.register(identity.chapterId, identity.pageIndex, reusable)
+             ManyueAiUpscaler.queue(reusable)
+             return reusable
+diff --git a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiUpscaler.kt b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiUpscaler.kt
+index 10dd656..4fe0582 100644
+--- a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiUpscaler.kt
++++ b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiUpscaler.kt
+@@ -15,6 +15,7 @@ import java.util.concurrent.CopyOnWriteArrayList
+ import java.util.concurrent.PriorityBlockingQueue
+ import java.util.concurrent.TimeUnit
+ import kotlin.concurrent.thread
++import kotlin.math.roundToInt
+ import logcat.LogPriority
+ import tachiyomi.core.common.util.system.logcat
+ 
+@@ -71,6 +72,8 @@ object ManyueAiUpscaler {
+         @Volatile var processing: Boolean = false,
+         @Volatile var runningProcess: Process? = null,
+         @Volatile var completed: Boolean = false,
++        @Volatile var completionState: Int = STATE_FAILED,
++        var processingStartedAt: Long = 0L,
+         @Volatile var failureDetail: String? = null,
+         val requestKey: String = "",
+         val model: ManyueAiModel = ManyueAiModel.DEFAULT,
+@@ -100,12 +103,15 @@ object ManyueAiUpscaler {
+             while (!Thread.currentThread().isInterrupted) {
+                 try {
+                     val req = queue.poll(1, TimeUnit.SECONDS) ?: continue
+-                    req.queued = false
+-                    if (req.cancelled) {
+-                        req.inputFile.delete()
+-                        continue
++                    val claimed = synchronized(this@ManyueAiUpscaler) {
++                        req.queued = false
++                        if (req.cancelled || req.completed || req.processing) false else {
++                            req.processing = true
++                            true
++                        }
+                     }
+-                    req.processing = true
++                    if (!claimed) continue
++                    req.processingStartedAt = System.currentTimeMillis()
+                     try {
+                         process(req)
+                     } finally {
+@@ -163,6 +169,7 @@ object ManyueAiUpscaler {
+         return token
+     }
+ 
++    @Synchronized
+     fun queue(token: String) {
+         val req = requests[token] ?: return
+         if (req.failedAt > 0L && System.currentTimeMillis() - req.failedAt < FAILURE_COOLDOWN_MS) {
+@@ -223,26 +230,33 @@ object ManyueAiUpscaler {
+     }
+ 
+     /** Update a queued task's priority (re-offers it). No-op if already cancelled/started. */
++    @Synchronized
+     fun updatePriority(token: String, newPriority: Int) {
+         val req = requests[token] ?: return
+         if (req.cancelled || req.completed || req.processing) return
++        val wasQueued = queue.remove(req)
+         req.priority = newPriority
+-        if (queue.remove(req)) queue.offer(req)
++        if (wasQueued) queue.offer(req)
++    }
++
++    @Synchronized
++    fun promotePriority(token: String, priority: Int) {
++        val request = requests[token] ?: return
++        updatePriority(token, maxOf(request.priority, priority))
+     }
+ 
++    @Synchronized
+     fun addListener(token: String, listener: OnAiCompleteListener) {
+         val req = requests[token] ?: return
+         if (req.completed) {
+-            val context = appContext
+-            val finalState = if (context != null && cachedBundle(context, token) != null) STATE_READY else STATE_FAILED
++            val finalState = req.completionState
+             mainHandler.post { listener.onAiComplete(token, finalState, req.failureDetail) }
+             return
+         }
+         listeners.getOrPut(token) { CopyOnWriteArrayList() }.add(listener)
+         // Close the tiny race where the worker finishes between the first check and add().
+         if (req.completed && listeners[token]?.remove(listener) == true) {
+-            val context = appContext
+-            val finalState = if (context != null && cachedBundle(context, token) != null) STATE_READY else STATE_FAILED
++            val finalState = req.completionState
+             mainHandler.post { listener.onAiComplete(token, finalState, req.failureDetail) }
+         }
+     }
+@@ -258,6 +272,7 @@ object ManyueAiUpscaler {
+         }
+     }
+ 
++    @Synchronized
+     private fun notify(req: Request, state: Int, detail: String? = req.failureDetail) {
+         val ls = listeners.remove(req.token)?.toList() ?: return
+         mainHandler.post {
+@@ -371,7 +386,8 @@ object ManyueAiUpscaler {
+                 req.failedAt = System.currentTimeMillis(); return
+             }
+ 
+-            val resolved = fixedTargetWidth(req.sourceWidth)
++            val resolved = req.targetWidth
++            if (resolved <= req.sourceWidth) return
+             val resolvedHeight = Math.round(req.sourceHeight * (resolved.toDouble() / req.sourceWidth)).toInt()
+             if (!ManyueAiSafetyPolicy.isPixelBudgetSafe(
+                     resolved,
+@@ -454,10 +470,13 @@ object ManyueAiUpscaler {
+             // the cache; do not decode, stitch, and re-encode it into in-memory Bitmap segments.
+             val postStartedAt = SystemClock.elapsedRealtime()
+             if (!requestIsCurrent(req)) return
+-            ManyueEnhancementCache.putImage(context, key, outFile, outW, outH)
++            val cachedOutput = resizeOutput(outDir, outFile, outW, outH, resolved)
++            if (!requestIsCurrent(req)) return
++            val cachedHeight = (outH * (resolved.toDouble() / outW)).roundToInt().coerceAtLeast(1)
++            ManyueEnhancementCache.putImage(context, key, cachedOutput, resolved, cachedHeight)
+             ManyueEnhancementCache.trimCache(context)
+             val waitMs = if (req.enqueuedAt > 0L) {
+-                (System.currentTimeMillis() - req.enqueuedAt).coerceAtLeast(0L)
++                (req.processingStartedAt - req.enqueuedAt).coerceAtLeast(0L)
+             } else {
+                 0L
+             }
+@@ -490,6 +509,7 @@ object ManyueAiUpscaler {
+         } finally {
+             req.runningProcess = null
+             req.queued = false
++            req.completionState = state
+             req.completed = true
+             req.inputFile.delete()
+             outDir?.deleteRecursively()
+@@ -520,7 +540,11 @@ object ManyueAiUpscaler {
+         }
+     }
+ 
++    private val verifiedModels = mutableMapOf<ManyueAiModel, File>()
++
++    @Synchronized
+     private fun ensureModel(context: Context, model: ManyueAiModel): File {
++        verifiedModels[model]?.let { if (it.isDirectory) return it }
+         val dir = File(context.filesDir, model.runtimeDir).apply { mkdirs() }
+         MODEL_SHA256.getValue(model).forEach { (name, expectedHash) ->
+             val dst = File(dir, name)
+@@ -535,6 +559,7 @@ object ManyueAiUpscaler {
+                 check(pending.renameTo(dst)) { "failed to commit model asset: $name" }
+             }
+         }
++        verifiedModels[model] = dir
+         return dir
+     }
+ 
+@@ -554,6 +579,31 @@ object ManyueAiUpscaler {
+     fun fingerprint(bytes: ByteArray): String =
+         MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+ 
++    /** Full native x2 inference preserves source detail; only custom outputs are resized. */
++    private fun resizeOutput(dir: File, source: File, width: Int, height: Int, target: Int): File {
++        if (target == width) return source
++        val raw = BitmapFactory.decodeFile(source.absolutePath) ?: error("AI output decode failed")
++        var resized: Bitmap? = null
++        try {
++            val targetHeight = (height * (target.toDouble() / width)).roundToInt().coerceAtLeast(1)
++            resized = Bitmap.createScaledBitmap(raw, target, targetHeight, true)
++            return File(dir, "scaled.webp").also { output ->
++                FileOutputStream(output).use {
++                    check(resized.compress(Bitmap.CompressFormat.WEBP_LOSSY, 95, it))
++                }
++            }
++        } finally {
++            resized?.takeIf { it !== raw && !it.isRecycled }?.recycle()
++            raw.recycle()
++        }
++    }
++
++    fun customTargetWidth(sourceWidth: Int, scalePercent: Int): Int {
++        if (sourceWidth <= 0) return 0
++        return (sourceWidth.toLong() * scalePercent.coerceIn(100, 200) + 50L)
++            .div(100L).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
++    }
++
+     /** Fixed native 2x output for both models; settings no longer change the target width. */
+     fun fixedTargetWidth(sourceWidth: Int): Int =
+         sourceWidth.toLong().times(ManyueAiModel.DEFAULT.scale)
+diff --git a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementPreferences.kt b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementPreferences.kt
+index a4930ca..8ab5e62 100644
+--- a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementPreferences.kt
++++ b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementPreferences.kt
+@@ -16,6 +16,8 @@ class ManyueEnhancementPreferences(private val store: PreferenceStore) {
+     val classicStrength: Preference<Int> = store.getInt("manyueClassicStrength", 25)
+ 
+     /** Fixed native x2 model selected for AI requests. */
++    val aiScalePercent: Preference<Int> = store.getInt("manyueAiScalePercent", 200)
++
+     val aiModel: Preference<String> = store.getString("manyueAiModel", ManyueAiModel.DEFAULT.id)
+ 
+     /** Optional Anime4KCPP post-filter overlay, kept off by default for lowest latency. */
+diff --git a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePageBridge.kt b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePageBridge.kt
+index 79a3a9a..b496d70 100644
+--- a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePageBridge.kt
++++ b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePageBridge.kt
+@@ -113,54 +113,51 @@ class ManyuePageBridge(
+                     renderJob = scope.launch {
+                         try {
+                             if (!awaitDisplayPause(t, identity, mode, expectedGeneration)) return@launch
+-                            renderMutex.withLock {
+-                            if (!awaitDisplayPause(t, identity, mode, expectedGeneration)) return@withLock
+-                            val baseImage = withContext(Dispatchers.IO) {
+-                                ManyueAiUpscaler.cachedImage(context, tok)
+-                            } ?: run {
+-                                if (isCurrent(t, identity, mode, expectedGeneration)) {
+-                                    onState(ManyueEnhancementState.FAILED, "AI 结果读取失败")
++                            // Never hold the global decode lock while waiting for visibility:
++                            // an attached offscreen Pager page may remain hidden indefinitely.
++                            val display = renderMutex.withLock {
++                                if (!isCurrent(t, identity, mode, expectedGeneration)) return@withLock null
++                                val baseImage = withContext(Dispatchers.IO) {
++                                    ManyueAiUpscaler.cachedImage(context, tok)
++                                } ?: run {
++                                    if (isCurrent(t, identity, mode, expectedGeneration)) {
++                                        onState(ManyueEnhancementState.FAILED, "AI 结果读取失败")
++                                    }
++                                    return@withLock null
+                                 }
+-                                return@withLock
+-                            }
+-
+-                            var displayImage = baseImage
+-                            var displayState = ManyueEnhancementState.AI_READY
+-                            val classicSafe = ManyueAiSafetyPolicy.isPixelBudgetSafe(
+-                                baseImage.width,
+-                                baseImage.height,
+-                                ManyueAiSafetyPolicy.MAX_CLASSIC_PIXELS,
+-                            )
+-                            var displayDetail = when {
+-                                wantClassic && strength <= 0 -> "经典增强强度为 0"
+-                                wantClassic && !classicSafe -> "经典增强超过内存限制，已保留 AI 超分"
+-                                else -> null
+-                            }
+-
+-                            if (wantClassic && strength > 0 && classicSafe) {
+-                                val cachedClassic = withContext(Dispatchers.IO) {
+-                                    ManyueAiUpscaler.cachedClassicImage(context, tok, strength)
+-                                }
+-                                val classicImage = cachedClassic ?: withContext(Dispatchers.Default) {
+-                                    buildClassicVariant(context, tok, strength)
++                                var image = baseImage
++                                var state = ManyueEnhancementState.AI_READY
++                                val classicSafe = ManyueAiSafetyPolicy.isPixelBudgetSafe(
++                                    baseImage.width, baseImage.height, ManyueAiSafetyPolicy.MAX_CLASSIC_PIXELS,
++                                )
++                                var detail = when {
++                                    wantClassic && strength <= 0 -> "经典增强强度为 0"
++                                    wantClassic && !classicSafe -> "经典增强超过内存限制，已保留 AI 超分"
++                                    else -> null
+                                 }
+-                                if (classicImage != null) {
+-                                    displayImage = classicImage
+-                                    displayState = ManyueEnhancementState.AI_CLASSIC_READY
+-                                } else {
+-                                    // The enhancer can return its input on failure. In that case keep
+-                                    // the clean AI result and report that the optional pass was skipped.
+-                                    displayDetail = "经典增强失败，已保留 AI 超分"
++                                if (wantClassic && strength > 0 && classicSafe) {
++                                    val cached = withContext(Dispatchers.IO) {
++                                        ManyueAiUpscaler.cachedClassicImage(context, tok, strength)
++                                    }
++                                    val classic = cached ?: withContext(Dispatchers.Default) {
++                                        buildClassicVariant(context, tok, strength)
++                                    }
++                                    if (classic != null) {
++                                        image = classic
++                                        state = ManyueEnhancementState.AI_CLASSIC_READY
++                                    } else {
++                                        detail = "经典增强失败，已保留 AI 超分"
++                                    }
+                                 }
+-                            }
+-
+-                            if (!awaitDisplayPause(t, identity, mode, expectedGeneration)) return@withLock
++                                DisplayResult(image, baseImage, state, detail)
++                            } ?: return@launch
++                            if (!awaitDisplayPause(t, identity, mode, expectedGeneration)) return@launch
+                             stageFile(
+-                                image = displayImage,
+-                                baseImage = baseImage,
+-                                classicVariant = displayImage.file != baseImage.file,
+-                                state = displayState,
+-                                detail = displayDetail,
++                                image = display.image,
++                                baseImage = display.baseImage,
++                                classicVariant = display.image.file != display.baseImage.file,
++                                state = display.state,
++                                detail = display.detail,
+                                 token = t,
+                                 expectedIdentity = identity,
+                                 expectedMode = mode,
+@@ -170,7 +167,6 @@ class ManyuePageBridge(
+                                 onEnhancedDimensions = onEnhancedDimensions,
+                                 onState = onState,
+                             )
+-                            }
+                         } catch (_: CancellationException) {
+                             // Holder was rebound or detached.
+                         } catch (error: Throwable) {
+@@ -189,21 +185,27 @@ class ManyuePageBridge(
+         }
+     }
+ 
++    private data class DisplayResult(
++        val image: ManyueEnhancementCache.CachedImage,
++        val baseImage: ManyueEnhancementCache.CachedImage,
++        val state: ManyueEnhancementState,
++        val detail: String?,
++    )
++
+     private suspend fun awaitDisplayPause(
+         expectedToken: String,
+         expectedIdentity: Identity,
+         expectedMode: Int,
+         expectedGeneration: Long,
+     ): Boolean {
+-        val recycler = findRecyclerView() ?: return isCurrent(
+-            expectedToken, expectedIdentity, expectedMode, expectedGeneration,
+-        )
++        val recycler = findRecyclerView()
+         var quietSince = 0L
+         while (isCurrent(expectedToken, expectedIdentity, expectedMode, expectedGeneration)) {
+             if (!view.isAttachedToWindow) return false
+             val pageVisible = view.isShown && view.getGlobalVisibleRect(Rect())
+-            val settled = pageVisible && recycler.scrollState == RecyclerView.SCROLL_STATE_IDLE &&
+-                !recycler.isComputingLayout
++            val settled = pageVisible && !view.isManyueInteractionActive() &&
++                (recycler == null || (recycler.scrollState == RecyclerView.SCROLL_STATE_IDLE &&
++                    !recycler.isComputingLayout))
+             val now = SystemClock.uptimeMillis()
+             if (settled) {
+                 if (quietSince == 0L) quietSince = now
+@@ -285,7 +287,10 @@ class ManyuePageBridge(
+                     isCurrent(token, expectedIdentity, expectedMode, expectedGeneration)
+                 },
+                 maySwap = {
+-                    if (recycler == null) {
++                    if (view.isManyueInteractionActive()) {
++                        quietSince = 0L
++                        false
++                    } else if (recycler == null) {
+                         true
+                     } else {
+                         val settled = view.isAttachedToWindow && view.isShown &&
+diff --git a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueRuntimeState.kt b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueRuntimeState.kt
+index de5f841..3562485 100644
+--- a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueRuntimeState.kt
++++ b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueRuntimeState.kt
+@@ -14,6 +14,8 @@ object ManyueRuntimeState {
+         private set
+     @Volatile var aiModel: ManyueAiModel = ManyueAiModel.DEFAULT
+         private set
++    @Volatile var aiScalePercent: Int = 200
++        private set
+     @Volatile var anime4kOverlay: Boolean = false
+         private set
+     @Volatile var foldableMode: Int = -1
+@@ -54,6 +56,15 @@ object ManyueRuntimeState {
+         ManyuePrefetchManager.reset()
+     }
+ 
++    @Synchronized
++    fun updateAiScale(percent: Int) {
++        val safePercent = percent.coerceIn(100, 200)
++        if (aiScalePercent == safePercent) return
++        aiScalePercent = safePercent
++        generation++
++        ManyuePrefetchManager.reset()
++    }
++
+     @Synchronized
+     fun updateAnime4kOverlay(enabled: Boolean) {
+         if (anime4kOverlay == enabled) return
+@@ -75,6 +86,7 @@ object ManyueRuntimeState {
+         updateClassicStrength(prefs.manyueClassicStrength.get())
+         updateAiModel(ManyueAiModel.fromId(prefs.manyueAiModel.get()))
+         updateAnime4kOverlay(prefs.manyueAnime4kOverlay.get())
++        updateAiScale(prefs.manyueAiScalePercent.get())
+         foldableMode = prefs.manyueFoldableMode.get()
+         foldableTargetWidth = prefs.manyueFoldableTargetWidth.get()
+     }
+diff --git a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueViewportPolicy.kt b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueViewportPolicy.kt
+new file mode 100644
+index 0000000..eadebeb
+--- /dev/null
++++ b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueViewportPolicy.kt
+@@ -0,0 +1,25 @@
++package eu.kanade.tachiyomi.ui.reader.manyue
++
++/** Converts source coordinates so enhancement does not move the visible screen region. */
++object ManyueViewportPolicy {
++    data class Viewport(val scale: Float, val centerX: Float, val centerY: Float)
++
++    fun rescale(
++        scale: Float,
++        centerX: Float,
++        centerY: Float,
++        oldWidth: Int,
++        oldHeight: Int,
++        newWidth: Int,
++        newHeight: Int,
++    ): Viewport? {
++        if (oldWidth <= 0 || oldHeight <= 0 || newWidth <= 0 || newHeight <= 0 ||
++            !scale.isFinite() || scale <= 0f || !centerX.isFinite() || !centerY.isFinite()
++        ) return null
++        return Viewport(
++            scale * oldWidth.toFloat() / newWidth,
++            centerX * newWidth.toFloat() / oldWidth,
++            centerY * newHeight.toFloat() / oldHeight,
++        )
++    }
++}
+diff --git a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/setting/ReaderPreferences.kt b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/setting/ReaderPreferences.kt
+index 1024d96..b0882ed 100644
+--- a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/setting/ReaderPreferences.kt
++++ b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/setting/ReaderPreferences.kt
+@@ -222,6 +222,8 @@ class ReaderPreferences(
+     /** 0=OFF,1=CLASSIC,2=AI_2X,3=AI_2X_CLASSIC */
+     val manyueEnhancementMode: Preference<Int> = preferenceStore.getInt("manyueEnhancementMode", 0)
+     val manyueClassicStrength: Preference<Int> = preferenceStore.getInt("manyueClassicStrength", 25)
++    val manyueAiScalePercent: Preference<Int> = preferenceStore.getInt("manyueAiScalePercent", 200)
++
+     val manyueAiModel: Preference<String> = preferenceStore.getString(
+         "manyueAiModel",
+         eu.kanade.tachiyomi.ui.reader.manyue.ManyueAiModel.DEFAULT.id,
+diff --git a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/viewer/ReaderPageImageView.kt b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/viewer/ReaderPageImageView.kt
+index 888cb1c..08e881d 100644
+--- a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/viewer/ReaderPageImageView.kt
++++ b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/viewer/ReaderPageImageView.kt
+@@ -1,6 +1,8 @@
+ package eu.kanade.tachiyomi.ui.reader.viewer
+ 
+ import android.content.Context
++import android.os.SystemClock
++import eu.kanade.tachiyomi.ui.reader.manyue.ManyueViewportPolicy
+ import android.graphics.PointF
+ import android.graphics.RectF
+ import android.graphics.drawable.Animatable
+@@ -66,6 +68,20 @@ open class ReaderPageImageView @JvmOverloads constructor(
+     private val mainHandler = Handler(Looper.getMainLooper())
+ 
+     private var config: Config? = null
++    private var manyueTouchActive = false
++    private var manyueLastTouch = 0L
++
++    override fun dispatchTouchEvent(event: MotionEvent): Boolean {
++        when (event.actionMasked) {
++            MotionEvent.ACTION_DOWN -> manyueTouchActive = true
++            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> manyueTouchActive = false
++        }
++        manyueLastTouch = SystemClock.uptimeMillis()
++        return super.dispatchTouchEvent(event)
++    }
++
++    fun isManyueInteractionActive(): Boolean = manyueTouchActive ||
++        SystemClock.uptimeMillis() - manyueLastTouch < 120L
+ 
+     var onImageLoaded: (() -> Unit)? = null
+     var onImageLoadError: ((Throwable?) -> Unit)? = null
+@@ -215,9 +231,20 @@ open class ReaderPageImageView @JvmOverloads constructor(
+                             mainHandler.postDelayed(80L) { tryCommit() }
+                             return
+                         }
+-                        setupZoom(config)
+-                        if (isVisibleOnScreen()) landscapeZoom(true)
+                         val previous = pageView
++                        val old = previous as? SubsamplingScaleImageView
++                        val center = old?.center
++                        val viewport = if (old?.isReady == true && center != null) {
++                            ManyueViewportPolicy.rescale(
++                                old.scale, center.x, center.y, old.sWidth, old.sHeight, sWidth, sHeight,
++                            )
++                        } else null
++                        setupZoom(config)
++                        if (viewport != null) {
++                            setScaleAndCenter(viewport.scale, PointF(viewport.centerX, viewport.centerY))
++                        } else if (isVisibleOnScreen()) {
++                            landscapeZoom(true)
++                        }
+                         pageView = this@apply
+                         stagedPageView = null
+                         previous?.let { old ->
+diff --git a/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueQueueRegressionTest.kt b/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueQueueRegressionTest.kt
+new file mode 100644
+index 0000000..341d0f5
+--- /dev/null
++++ b/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueQueueRegressionTest.kt
+@@ -0,0 +1,46 @@
++package eu.kanade.tachiyomi.ui.reader.manyue
++
++import java.nio.file.Files
++import java.util.concurrent.PriorityBlockingQueue
++import org.junit.jupiter.api.Assertions.assertEquals
++import org.junit.jupiter.api.Test
++
++class ManyueQueueRegressionTest {
++    @Test fun `concurrent enqueue is unique and selecting prefetched page promotes it`() {
++        val scheduler = ManyueAiUpscaler
++        val started = scheduler.javaClass.getDeclaredField("started").apply { isAccessible = true }
++        val queueField = scheduler.javaClass.getDeclaredField("queue").apply { isAccessible = true }
++        @Suppress("UNCHECKED_CAST")
++        val queue = queueField.get(scheduler) as PriorityBlockingQueue<ManyueAiUpscaler.Request>
++        val wasStarted = started.getBoolean(scheduler)
++        // Exercise the real queue without launching Android native processes in JVM tests.
++        started.setBoolean(scheduler, true)
++        val tokens = mutableListOf<String>()
++        try {
++            fun register(index: Int, priority: Int): String {
++                val input = Files.createTempFile("manyue-queue-", ".bin").toFile()
++                val token = scheduler.register(
++                    91, 92, index, input, 800, 1000, 2006, 2344, priority,
++                    expectedMode = 2, generation = 991, sourceFingerprint = "queue-$index",
++                )
++                tokens.add(token)
++                return token
++            }
++            val next = register(1, 50)
++            val visible = register(5, 10)
++            scheduler.queue(next)
++            val threads = List(8) { Thread { scheduler.queue(visible) }.apply { start() } }
++            threads.forEach { it.join() }
++            assertEquals(1, queue.count { it.token == visible })
++            scheduler.promotePriority(visible, 100)
++            assertEquals(visible, queue.peek().token)
++            scheduler.promotePriority(visible, 10)
++            assertEquals(visible, queue.peek().token)
++            scheduler.updatePriority(visible, 10)
++            assertEquals(next, queue.peek().token)
++        } finally {
++            tokens.forEach(scheduler::cancel)
++            started.setBoolean(scheduler, wasStarted)
++        }
++    }
++}
+diff --git a/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueRenderRegressionTest.kt b/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueRenderRegressionTest.kt
+new file mode 100644
+index 0000000..9d193cf
+--- /dev/null
++++ b/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueRenderRegressionTest.kt
+@@ -0,0 +1,41 @@
++package eu.kanade.tachiyomi.ui.reader.manyue
++
++import org.junit.jupiter.api.Assertions.assertEquals
++import org.junit.jupiter.api.Assertions.assertNull
++import org.junit.jupiter.api.Test
++
++class ManyueRenderRegressionTest {
++    @Test fun `custom scale preserves original at one and supports hundredth steps`() {
++        assertEquals(690, ManyueAiUpscaler.customTargetWidth(690, 100))
++        assertEquals(863, ManyueAiUpscaler.customTargetWidth(690, 125))
++        assertEquals(1042, ManyueAiUpscaler.customTargetWidth(690, 151))
++        assertEquals(1380, ManyueAiUpscaler.customTargetWidth(690, 200))
++    }
++
++    @Test fun `custom scale clamps invalid settings and never reduces large original`() {
++        assertEquals(800, ManyueAiUpscaler.customTargetWidth(800, -100))
++        assertEquals(1600, ManyueAiUpscaler.customTargetWidth(800, 500))
++        assertEquals(4000, ManyueAiUpscaler.customTargetWidth(2000, 200))
++        assertEquals(8000, ManyueAiUpscaler.customTargetWidth(4000, 200))
++    }
++
++    @Test fun `replacement keeps screen position and magnification`() {
++        val viewport = requireNotNull(ManyueViewportPolicy.rescale(2f, 250f, 600f, 1000, 2000, 1500, 3000))
++        assertEquals(4f / 3f, viewport.scale, 0.0001f)
++        assertEquals(375f, viewport.centerX)
++        assertEquals(900f, viewport.centerY)
++        assertEquals(500f, viewport.centerX * viewport.scale, 0.001f)
++        assertEquals(1200f, viewport.centerY * viewport.scale, 0.001f)
++    }
++
++    @Test fun `replacement uses actual rounded height for odd sized pages`() {
++        val viewport = requireNotNull(ManyueViewportPolicy.rescale(1f, 345f, 1000f, 690, 2001, 1035, 3002))
++        assertEquals(517.5f, viewport.centerX)
++        assertEquals(1000f / 2001 * 3002, viewport.centerY, 0.001f)
++    }
++
++    @Test fun `invalid viewport falls back to initial zoom`() {
++        assertNull(ManyueViewportPolicy.rescale(1f, 0f, 0f, 0, 10, 10, 20))
++        assertNull(ManyueViewportPolicy.rescale(Float.NaN, 0f, 0f, 10, 10, 20, 20))
++    }
++}
