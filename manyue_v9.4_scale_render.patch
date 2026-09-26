@@ -301,10 +301,127 @@ index a4930ca..8ab5e62 100644
  
      /** Optional Anime4KCPP post-filter overlay, kept off by default for lowest latency. */
 diff --git a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePageBridge.kt b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePageBridge.kt
-index 79a3a9a..04db459 100644
+index 79a3a9a..b496d70 100644
 --- a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePageBridge.kt
 +++ b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePageBridge.kt
-@@ -195,15 +195,14 @@ class ManyuePageBridge(
+@@ -113,54 +113,51 @@ class ManyuePageBridge(
+                     renderJob = scope.launch {
+                         try {
+                             if (!awaitDisplayPause(t, identity, mode, expectedGeneration)) return@launch
+-                            renderMutex.withLock {
+-                            if (!awaitDisplayPause(t, identity, mode, expectedGeneration)) return@withLock
+-                            val baseImage = withContext(Dispatchers.IO) {
+-                                ManyueAiUpscaler.cachedImage(context, tok)
+-                            } ?: run {
+-                                if (isCurrent(t, identity, mode, expectedGeneration)) {
+-                                    onState(ManyueEnhancementState.FAILED, "AI 结果读取失败")
++                            // Never hold the global decode lock while waiting for visibility:
++                            // an attached offscreen Pager page may remain hidden indefinitely.
++                            val display = renderMutex.withLock {
++                                if (!isCurrent(t, identity, mode, expectedGeneration)) return@withLock null
++                                val baseImage = withContext(Dispatchers.IO) {
++                                    ManyueAiUpscaler.cachedImage(context, tok)
++                                } ?: run {
++                                    if (isCurrent(t, identity, mode, expectedGeneration)) {
++                                        onState(ManyueEnhancementState.FAILED, "AI 结果读取失败")
++                                    }
++                                    return@withLock null
+                                 }
+-                                return@withLock
+-                            }
+-
+-                            var displayImage = baseImage
+-                            var displayState = ManyueEnhancementState.AI_READY
+-                            val classicSafe = ManyueAiSafetyPolicy.isPixelBudgetSafe(
+-                                baseImage.width,
+-                                baseImage.height,
+-                                ManyueAiSafetyPolicy.MAX_CLASSIC_PIXELS,
+-                            )
+-                            var displayDetail = when {
+-                                wantClassic && strength <= 0 -> "经典增强强度为 0"
+-                                wantClassic && !classicSafe -> "经典增强超过内存限制，已保留 AI 超分"
+-                                else -> null
+-                            }
+-
+-                            if (wantClassic && strength > 0 && classicSafe) {
+-                                val cachedClassic = withContext(Dispatchers.IO) {
+-                                    ManyueAiUpscaler.cachedClassicImage(context, tok, strength)
+-                                }
+-                                val classicImage = cachedClassic ?: withContext(Dispatchers.Default) {
+-                                    buildClassicVariant(context, tok, strength)
++                                var image = baseImage
++                                var state = ManyueEnhancementState.AI_READY
++                                val classicSafe = ManyueAiSafetyPolicy.isPixelBudgetSafe(
++                                    baseImage.width, baseImage.height, ManyueAiSafetyPolicy.MAX_CLASSIC_PIXELS,
++                                )
++                                var detail = when {
++                                    wantClassic && strength <= 0 -> "经典增强强度为 0"
++                                    wantClassic && !classicSafe -> "经典增强超过内存限制，已保留 AI 超分"
++                                    else -> null
+                                 }
+-                                if (classicImage != null) {
+-                                    displayImage = classicImage
+-                                    displayState = ManyueEnhancementState.AI_CLASSIC_READY
+-                                } else {
+-                                    // The enhancer can return its input on failure. In that case keep
+-                                    // the clean AI result and report that the optional pass was skipped.
+-                                    displayDetail = "经典增强失败，已保留 AI 超分"
++                                if (wantClassic && strength > 0 && classicSafe) {
++                                    val cached = withContext(Dispatchers.IO) {
++                                        ManyueAiUpscaler.cachedClassicImage(context, tok, strength)
++                                    }
++                                    val classic = cached ?: withContext(Dispatchers.Default) {
++                                        buildClassicVariant(context, tok, strength)
++                                    }
++                                    if (classic != null) {
++                                        image = classic
++                                        state = ManyueEnhancementState.AI_CLASSIC_READY
++                                    } else {
++                                        detail = "经典增强失败，已保留 AI 超分"
++                                    }
+                                 }
+-                            }
+-
+-                            if (!awaitDisplayPause(t, identity, mode, expectedGeneration)) return@withLock
++                                DisplayResult(image, baseImage, state, detail)
++                            } ?: return@launch
++                            if (!awaitDisplayPause(t, identity, mode, expectedGeneration)) return@launch
+                             stageFile(
+-                                image = displayImage,
+-                                baseImage = baseImage,
+-                                classicVariant = displayImage.file != baseImage.file,
+-                                state = displayState,
+-                                detail = displayDetail,
++                                image = display.image,
++                                baseImage = display.baseImage,
++                                classicVariant = display.image.file != display.baseImage.file,
++                                state = display.state,
++                                detail = display.detail,
+                                 token = t,
+                                 expectedIdentity = identity,
+                                 expectedMode = mode,
+@@ -170,7 +167,6 @@ class ManyuePageBridge(
+                                 onEnhancedDimensions = onEnhancedDimensions,
+                                 onState = onState,
+                             )
+-                            }
+                         } catch (_: CancellationException) {
+                             // Holder was rebound or detached.
+                         } catch (error: Throwable) {
+@@ -189,21 +185,27 @@ class ManyuePageBridge(
+         }
+     }
+ 
++    private data class DisplayResult(
++        val image: ManyueEnhancementCache.CachedImage,
++        val baseImage: ManyueEnhancementCache.CachedImage,
++        val state: ManyueEnhancementState,
++        val detail: String?,
++    )
++
+     private suspend fun awaitDisplayPause(
+         expectedToken: String,
+         expectedIdentity: Identity,
          expectedMode: Int,
          expectedGeneration: Long,
      ): Boolean {
@@ -324,7 +441,7 @@ index 79a3a9a..04db459 100644
              val now = SystemClock.uptimeMillis()
              if (settled) {
                  if (quietSince == 0L) quietSince = now
-@@ -285,7 +284,10 @@ class ManyuePageBridge(
+@@ -285,7 +287,10 @@ class ManyuePageBridge(
                      isCurrent(token, expectedIdentity, expectedMode, expectedGeneration)
                  },
                  maySwap = {
