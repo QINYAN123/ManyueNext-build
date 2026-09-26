@@ -3,7 +3,6 @@ name: Manyue v9.4 custom scale and stable rendering
 on:
   push:
     branches:
-      - codex/manyue-v9.4-scale-render-fixes
       - main
   pull_request:
   workflow_dispatch:
