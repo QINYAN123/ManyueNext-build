@@ -1,9 +1,11 @@
-name: Manyue v9.3 tiled AI ARM64 build
+name: Manyue v9.4 custom scale and stable rendering
 
 on:
   push:
     branches:
-      - codex/manyue-v9-final
+      - codex/manyue-v9.4-scale-render-fixes
+      - main
+  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -63,6 +65,16 @@ jobs:
           grep -q 'versionName = "0.20.7"' project/app/build.gradle.kts
           grep -q 'setTiledImagePreservingCurrent' project/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePageBridge.kt
           grep -q 'awaitDisplayPause' project/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePageBridge.kt
+
+      - name: Apply v9.4 scale and rendering fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git apply --directory=project --check manyue_v9.4_scale_render.patch
+          git apply --directory=project manyue_v9.4_scale_render.patch
+          git diff --check
+          grep -q 'versionCode = 34' project/app/build.gradle.kts
+          grep -q 'manyueAiScalePercent' project/app/src/main/java/eu/kanade/presentation/reader/settings/GeneralSettingsPage.kt
 
       - name: Set up JDK 21
         uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6
@@ -155,8 +167,8 @@ jobs:
           grep -q 'lib/arm64-v8a/libmanyue_anime4k.so' "$RUNNER_TEMP/apk-files.txt"
           grep -q 'models-Real-CUGAN-se/up2x-no-denoise.bin' "$RUNNER_TEMP/apk-files.txt"
 
-          cat > project/MANYUE_V9_3_STATUS.md <<EOF
-          # Manyue v9.3 build verification
+          cat > project/MANYUE_V9_4_STATUS.md <<EOF
+          # Manyue v9.4 build verification
 
           - GitHub Actions run: ${GITHUB_RUN_ID}
           - Source commit: ${GITHUB_SHA}
@@ -169,29 +181,29 @@ jobs:
           EOF
 
           mkdir -p "${RUNNER_TEMP}/manyue-v9-delivery"
-          cp "$apk" "${RUNNER_TEMP}/manyue-v9-delivery/ManyueNext-v9.3-arm64-release.apk"
+          cp "$apk" "${RUNNER_TEMP}/manyue-v9-delivery/ManyueNext-v9.4-arm64-release.apk"
           (
             cd project
-            zip -qr "${RUNNER_TEMP}/manyue-v9-delivery/ManyueNext-v9.3-source.zip" . \
+            zip -qr "${RUNNER_TEMP}/manyue-v9-delivery/ManyueNext-v9.4-source.zip" . \
               -x '.gradle/*' '*/build/*' 'build/*' '.kotlin/*'
           )
           (
             cd "${RUNNER_TEMP}/manyue-v9-delivery"
-            sha256sum ManyueNext-v9.3-arm64-release.apk ManyueNext-v9.3-source.zip > SHA256SUMS.txt
+            sha256sum ManyueNext-v9.4-arm64-release.apk ManyueNext-v9.4-source.zip > SHA256SUMS.txt
           )
           cat > "${RUNNER_TEMP}/manyue-v9-delivery/BUILD_VERIFICATION.txt" <<EOF
-          Manyue v9.3 tiled AI replacement build
+          Manyue v9.4 custom scale and stable rendering build
           Workflow run: ${GITHUB_RUN_ID}
           Commit: ${GITHUB_SHA}
           Unit tests: passed
           Native/model integrity: passed
           ARM64 Release APK signature: passed
-          Device testing on Honor Magic V2: not performed by CI
+          Device frame pacing testing: not performed by CI
           EOF
 
       - name: Upload APK, source and checksums
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: manyue-v9.3-tiled-ai-${{ github.run_number }}
+          name: manyue-v9.4-scale-render-${{ github.run_number }}
           if-no-files-found: error
           path: ${{ runner.temp }}/manyue-v9-delivery/*
