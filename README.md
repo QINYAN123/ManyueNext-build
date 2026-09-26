@@ -40,6 +40,8 @@ GitHub Actions run #23 的云端 JUnit 报告为 **84 项已执行、0 失败、
 
 已通过的完整 CI 提交为 `5b690045b96780fe1f3a5cb447498a35822af4a7`；[GitHub Actions run #23](https://github.com/QINYAN123/ManyueNext-build/actions/runs/36241525506) 已完成签名、ARM64 APK 和内容检查。该流程没有验证 Android 真机上的视觉效果、GPU 耗时或滑动帧率。
 
+为保留 CI 原始源码包及其校验值，源码 ZIP 中保留了 5 个由 Actions 生成的 Gradle 9.7.1 build-logic 运行缓存文件：`gradle/build-logic/.gradle/9.7.1/executionHistory/` 下的二进制记录和锁文件，以及 `buildOutputCleanup/` 下的锁文件、`cache.properties` 和 `outputFiles.bin`。这些是构建缓存，不是 Gradle wrapper 发行包；可复现 Build kit 内的基准源码 ZIP 不含它们。
+
 ## 安装和验收边界
 
 v9.5 使用仓库配置的持久 release 签名。证书 SHA-256 为 `EE3E3B5C0F648507D54D79C9A8ABB772A0448A07F884D0A92EE4599E6F4BAFD7`。此签名与 v9.3/v9.4 不同，**不能直接覆盖安装**。安装前先导出应用内备份并确认文件可用；卸载旧版本会删除应用数据。v9.5 起使用同一持久签名的后续版本可正常覆盖更新。
