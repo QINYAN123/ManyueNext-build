@@ -1,30 +1,49 @@
-# ManyueNext v9.4
+# ManyueNext v9.5 条漫手势与渲染修复
 
-此修复基于 `codex/manyue-v9-final` 的成功构建 v9.3（提交 `7c59efaa8f681c92b6a860ce398d3e280ab32a3c`），保留 Real-CUGAN、Real-ESRGAN、Anime4KCPP 和分块图片预加载功能。
+v9.4 确有条漫手势回归：条漫图片不接收触摸，但图片子视图记录了 `DOWN`；随后 `UP` 被 RecyclerView 接走，图片状态一直等待“手势结束”。v9.5 由 RecyclerView 统一管理条漫手势、惯性滚动和缩放状态，并处理取消、离屏返回和解码失败。
 
-- 恢复自定义超分倍率：1.00–2.00×，步进 0.01×，默认保持原来的 2×。设置持久化，倍率变化使旧任务失效，不同输出尺寸隔离缓存。1.00×直接保留原图。
-- 两种 AI 模型均保留原图进行原生 2×推理，再对自定义倍率输出做后台缩放；不先缩小原图。2×输出继续直接复用原生文件。自定义小倍率不代表原生推理时间会按倍率下降。
-- 当前页复用预渲染结果时提升优先级；同步入队与任务领取，避免同一任务被重复推理。优先级降低时仍正确重新排序。
-- 模型文件完成校验后在当前进程内复用，不逐页计算模型哈希；完成回调不在主线程检查磁盘缓存。
-- 页面可见性等待不再持有全局渲染锁，避免屏外页面阻塞当前页；高清图切换保留当前缩放和阅读中心，避免重新执行横图自动缩放；翻页阅读器和条漫均等待拖动/缩放结束，条漫继续等待 RecyclerView 停止滚动。
-- 修正排队耗时统计，排队时间不再包含推理和缓存写入时间。新增倍率、视口转换和并发调度回归测试。
+## 主要变化
 
-## 构建
+- 修复 AI 状态永久显示“排队中”，分别报告排队、推理和等待画面停稳。
+- 条漫替换前保留原图，等新图的基础分块就绪并停稳后再切换；固定同宽页面的项目高度，避免阅读位置跳动。
+- PNG/WebP 区域解码使用 Android `BitmapRegionDecoder`，分块边长最多 1024 像素，不让底层默认解码器长期保留整张图片的 RGBA 缓冲区。WebP 区域解码覆盖奇数起点的像素校验和采样尺寸校验；实现参考 [Skia Android `BitmapRegionDecoder` 源码](https://skia.googlesource.com/skia/+/5934f0e64066/client_utils/android/BitmapRegionDecoder.cpp)，并以 PNG/WebP 原生图像测试验证。
+- 屏幕内页面保留 AI 优先级；离屏取消的页面再次出现时可以重试。过期解码任务不能改写新图片或传递旧错误。
+- 滚动期间推迟启动新的推理和后处理；缓存访问、进程终止和文件清理移出主线程，并避免每帧创建可见页面集合。
+- 保留 1.00–2.00× 自定义输出倍率，步进 0.01×。底层模型仍按固定原生 2× 推理，降低输出倍率不会按比例缩短推理时间。
+- 裁边沿用现有算法；启用时执行一次临时全图扫描并释放临时 Bitmap/灰度数据。普通区域解码不保留全图 RGBA 数据。固定 2× 结果超过 1200 万像素的长图会保留原图并说明跳过原因。
 
-GitHub Actions 的 `.github/workflows/manyue-v9-final.yml` 自动执行补丁链、下载并校验 Real-CUGAN 资产、构建 Anime4KCPP、运行 Manyue 测试并生成 ARM64 release APK。APK 名称为 `ManyueNext-v9.4-arm64-release.apk`，版本为 0.20.8，versionCode 为 34。
+应用版本为 **0.20.9**，`versionCode` 为 **35**。GitHub Actions 工作流依次应用 v9.1–v9.5 补丁，运行 Manyue 单元测试和 Linux host JNI smoke，再构建签名后的 ARM64 release APK，并检查签名及原生资产。
 
-仅准备源码，可在含 Git 元数据的新检出中运行：
+## 本地准备和 JNI smoke
+
+在全新检出中运行以下命令，源码会准备到 `.build/source`：
 
 ```sh
-python scripts/prepare_manyue_v9_4.py
+python3 scripts/prepare_manyue_v9_5.py
 ```
 
-源码位于 `.build/source`。完整本地构建需要 JDK 21、Android SDK、工作流中的 Real-CUGAN 资产准备步骤和 Anime4KCPP 构建步骤。不要把旧 v8 补丁应用到 v9 源码；`manyue_v9.4_scale_render.patch` 应用在 v9.3 之后。
+源码准备完成后，可从 delivery 仓库根目录运行 JNI smoke：
 
-## 已执行验证与边界
+```sh
+bash scripts/native_crop_jni_smoke.sh .build/source
+```
 
-独立 Kotlin 编译已检查 AI 调度、请求、缓存、运行状态、页面桥接和 ReaderPageImageView，与缓存中的 Android/Coil/SSIV 类库链接；无关的项目偏好和日志扩展使用桩。33 项独立 JVM 回归检查通过，包含并发入队、预取提升/降级、倍率步进和缩放位置转换。完整补丁链已通过 fresh checkout 验证，980 个 Kotlin 源码文件与开发目录一致。
+该 smoke 使用 host `g++` 和 JDK JNI headers 编译实际的 crop C++ 源码，并通过 JVM 调用原生库。它覆盖 RGBA 与灰度结果一致性、白边、黑边、混色、空白、无边框，以及灰度方法的尺寸、数组长度和 null 校验；它不测 Android 设备上的速度或帧率。
 
-本机 Gradle 在项目配置之前被 `java.io.IOException: Unable to establish loopback connection` 阻断。[最终 v9.4 云端构建](https://github.com/QINYAN123/ManyueNext-build/actions/runs/36226267550) 已通过完整 Manyue 单测、Release APK 构建、签名和原生资产验证，代码提交为 `ec59eac2820d00a255ec4899f85a866342f97f1f`。APK 安装和真机帧率测试仍未执行。新 APK 签名与 v9.3 不同，无法直接覆盖升级；请先导出应用内备份。
+完整 Android 构建需要 JDK 21、Android SDK、工作流中的 Real-CUGAN 资产准备和 Anime4KCPP 构建步骤。Build kit 只包含基准 `ManyueNext-v9-source.zip`、v9.1–v9.5 补丁、当前 release workflow、`scripts/` 和本 README，不包含其他历史 source ZIP、`.git`、构建目录或签名私钥。
 
-真机验收：在 Pager 和 Webtoon 中分别测试 1.00/1.25/1.51/2.00×，重开设置确认保存，推理中快速翻页、换章、切换模型，图片替换时缩放和滚动，核对阅读位置、错页保护、失败时保留原图与内存。帧率和 GPU 推理耗时需用相同页面与设备对比。自定义倍率仍受原生 2×和现有像素安全预算限制。
+## 验证记录
+
+独立本地回归检查包括 23 项 UI 检查（条漫生命周期 8 项、调度生命周期 4 项、阅读器元数据展示 6 项、区域解码 5 项）和 33 项 AI 核心检查，覆盖并发入队、预取提升/降级、倍率步进和缩放位置转换。这些是本地回归记录，与下方云端 JUnit 统计分开。
+
+GitHub Actions run #23 的云端 JUnit 报告为 **84 项已执行、0 失败、0 错误、0 跳过**。四个必需测试套件分别为：Webtoon 生命周期 8 项、区域解码 5 项、调度生命周期 4 项、阅读器元数据展示 6 项。它们是云端 JVM 报告中的覆盖套件数，不与本地 23 项 UI 检查或 33 项核心回归相加。
+
+已通过的完整 CI 提交为 `5b690045b96780fe1f3a5cb447498a35822af4a7`；[GitHub Actions run #23](https://github.com/QINYAN123/ManyueNext-build/actions/runs/36241525506) 已完成签名、ARM64 APK 和内容检查。该流程没有验证 Android 真机上的视觉效果、GPU 耗时或滑动帧率。
+
+## 安装和验收边界
+
+v9.5 使用仓库配置的持久 release 签名。证书 SHA-256 为 `EE3E3B5C0F648507D54D79C9A8ABB772A0448A07F884D0A92EE4599E6F4BAFD7`。此签名与 v9.3/v9.4 不同，**不能直接覆盖安装**。安装前先导出应用内备份并确认文件可用；卸载旧版本会删除应用数据。v9.5 起使用同一持久签名的后续版本可正常覆盖更新。
+
+自动化测试、签名及 APK 内容检查不能代替真机验收。目前没有 Android 真机安装、GPU 耗时或实际滑动帧率结果。原生 GPU 推理仍可能与滚动争用资源，因此不能承诺所有设备都没有掉帧。
+
+恢复备份后，请用曾卡住的同一条漫章节和 AI 设置复核：确认状态依次显示排队、推理、等待停稳和完成；连续上下滚动、返回旧页，并检查图片替换无空白、阅读位置不跳动。切换倍率、裁边和增强模式后重复测试；若某页失败，请提供应用内诊断文本和原图尺寸。
