@@ -261,6 +261,21 @@ jobs:
           if-no-files-found: error
           path: project/app/build/reports/lint-results-debug.*
 
+      - name: Reject lint errors
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          report = Path('project/app/build/reports/lint-results-debug.xml')
+          issues = ET.parse(report).getroot().findall('issue')
+          errors = [issue for issue in issues if issue.get('severity') in {'Error', 'Fatal'}]
+          for issue in errors:
+              print(issue.get('id'), issue.get('message'))
+          print(f'Lint: {len(errors)} errors, {len(issues) - len(errors)} other findings')
+          if errors:
+              raise SystemExit('Lint errors must be resolved before packaging')
+          PY
+
       - name: Assemble signed release APKs
         id: assemble_release
         if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository

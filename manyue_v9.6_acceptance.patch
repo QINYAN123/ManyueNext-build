@@ -397,7 +397,7 @@ index f739754..64a1480 100644
  
      private inline fun sharpenChannel(
 diff --git a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementCache.kt b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementCache.kt
-index c773c17..39bc093 100644
+index c773c17..de75afc 100644
 --- a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementCache.kt
 +++ b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementCache.kt
 @@ -20,7 +20,14 @@ object ManyueEnhancementCache {
@@ -569,6 +569,15 @@ index c773c17..39bc093 100644
  
      fun clearCache(context: Context) {
          cacheDir(context).deleteRecursively()
+@@ -180,7 +274,7 @@ object ManyueEnhancementCache {
+     fun cacheSizeText(context: Context): String {
+         val bytes = cacheSizeBytes(context)
+         val mb = bytes / (1024.0 * 1024.0)
+-        return String.format("%.1f MiB", mb)
++        return String.format(java.util.Locale.getDefault(), "%.1f MiB", mb)
+     }
+ 
+     /** LRU trim to TRIM_TO_BYTES when over MAX_CACHE_BYTES. */
 diff --git a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueFoldableController.kt b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueFoldableController.kt
 index 3448486..2ce3b06 100644
 --- a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueFoldableController.kt
@@ -1205,6 +1214,76 @@ index f185b60..bfb8577 100644
  
      override fun reapplyManyueWidth() {
          val position = layoutManager.findFirstVisibleItemPosition()
+diff --git a/app/src/main/java/mihon/feature/upcoming/components/calendar/Calendar.kt b/app/src/main/java/mihon/feature/upcoming/components/calendar/Calendar.kt
+index b728dae..10d28fd 100644
+--- a/app/src/main/java/mihon/feature/upcoming/components/calendar/Calendar.kt
++++ b/app/src/main/java/mihon/feature/upcoming/components/calendar/Calendar.kt
+@@ -12,6 +12,7 @@ import androidx.compose.runtime.Composable
+ import androidx.compose.runtime.remember
+ import androidx.compose.ui.Alignment
+ import androidx.compose.ui.Modifier
++import androidx.compose.ui.platform.LocalConfiguration
+ import androidx.compose.ui.text.font.FontWeight
+ import androidx.compose.ui.text.style.TextAlign
+ import androidx.compose.ui.unit.dp
+@@ -30,7 +31,6 @@ import tachiyomi.presentation.core.components.material.padding
+ import java.time.DayOfWeek
+ import java.time.format.TextStyle
+ import java.time.temporal.WeekFields
+-import java.util.Locale
+ 
+ private val FontSize = 16.sp
+ private const val DAYS_OF_WEEK = 7
+@@ -71,8 +71,9 @@ private fun CalendarGrid(
+     events: Map<LocalDate, Int>,
+     onClickDay: (day: LocalDate) -> Unit,
+ ) {
+-    val localeFirstDayOfWeek = WeekFields.of(Locale.getDefault()).firstDayOfWeek.value
+-    val weekDays = remember {
++    val locale = LocalConfiguration.current.locales[0]
++    val localeFirstDayOfWeek = WeekFields.of(locale).firstDayOfWeek.value
++    val weekDays = remember(localeFirstDayOfWeek) {
+         (0 until DAYS_OF_WEEK)
+             .map { DayOfWeek.of((localeFirstDayOfWeek - 1 + it) % DAYS_OF_WEEK + 1) }
+     }
+@@ -92,7 +93,7 @@ private fun CalendarGrid(
+             Text(
+                 text = item.getDisplayName(
+                     TextStyle.NARROW,
+-                    Locale.getDefault(),
++                    locale,
+                 ),
+                 textAlign = TextAlign.Center,
+                 fontWeight = FontWeight.SemiBold,
+diff --git a/app/src/main/java/mihon/feature/upcoming/components/calendar/CalendarHeader.kt b/app/src/main/java/mihon/feature/upcoming/components/calendar/CalendarHeader.kt
+index 471988c..bfbfb69 100644
+--- a/app/src/main/java/mihon/feature/upcoming/components/calendar/CalendarHeader.kt
++++ b/app/src/main/java/mihon/feature/upcoming/components/calendar/CalendarHeader.kt
+@@ -20,6 +20,7 @@ import androidx.compose.runtime.Composable
+ import androidx.compose.runtime.ReadOnlyComposable
+ import androidx.compose.ui.Alignment
+ import androidx.compose.ui.Modifier
++import androidx.compose.ui.platform.LocalConfiguration
+ import androidx.compose.ui.tooling.preview.Preview
+ import kotlinx.datetime.TimeZone
+ import kotlinx.datetime.YearMonth
+@@ -32,7 +33,6 @@ import mihon.icons.materialsymbols.rounded.KeyboardArrowRight
+ import tachiyomi.i18n.MR
+ import tachiyomi.presentation.core.i18n.stringResource
+ import java.time.format.DateTimeFormatter
+-import java.util.Locale
+ import kotlin.time.Clock
+ 
+ @Composable
+@@ -92,7 +92,7 @@ private fun AnimatedContentTransitionScope<YearMonth>.getAnimation(): ContentTra
+ @Composable
+ @ReadOnlyComposable
+ private fun getTitleText(monthYear: YearMonth): String {
+-    val formatter = DateTimeFormatter.ofPattern("MMMM yyyy", Locale.getDefault())
++    val formatter = DateTimeFormatter.ofPattern("MMMM yyyy", LocalConfiguration.current.locales[0])
+     return formatter.format(monthYear.toJavaYearMonth())
+ }
+ 
 diff --git a/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiRuntimeTest.kt b/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiRuntimeTest.kt
 index 1a5cf20..86e7627 100644
 --- a/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiRuntimeTest.kt
