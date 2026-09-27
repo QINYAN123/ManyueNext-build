@@ -25,6 +25,8 @@ bash scripts/native_crop_jni_smoke.sh .build/source
 
 GitHub Actions 使用 JDK 21 和 Android SDK，准备固定版本及校验值的原生资产，执行 `clean`、Manyue/metadata 单元测试、Android lint、签名 ARM64 release 构建和 APK 内容检查。lint 报告需要单独审查，任务成功不代表没有 lint 发现。最终运行链接与实际测试计数在发布报告中记录。
 
+最终 GitHub Actions 验收：[运行 36289289021](https://github.com/QINYAN123/ManyueNext-build/actions/runs/36289289021)，测试交付提交 `eb4b6ae63b1cca504d155c45ae980c6201989d9f`。JUnit XML 汇总 101 项测试，0 失败、0 错误、0 跳过；Android lint 为 0 Errors、70 Warnings，警告已在验收报告中记录。
+
 Build kit 仅包含基准源码 ZIP、六个补丁、工作流、准备脚本、JNI smoke 和 README，不包含签名私钥。生成的完整源码包也排除嵌套 Gradle 运行缓存。
 
 ## 安装与验收边界
