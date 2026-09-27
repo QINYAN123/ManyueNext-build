@@ -1,4 +1,4 @@
-name: Manyue v9.6 release acceptance
+name: Manyue v9.7 reader headroom
 
 on:
   push:
@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: manyue-v9-final-${{ github.ref }}
+  group: manyue-v9.7-reader-headroom-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -93,6 +93,16 @@ jobs:
           git apply --directory=project manyue_v9.6_acceptance.patch
           grep -q 'versionCode = 36' project/app/build.gradle.kts
           grep -q 'versionName = "0.20.10"' project/app/build.gradle.kts
+
+      - name: Apply v9.7 reader headroom patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git apply --directory=project --check manyue_v9.7_reader_headroom.patch
+          git apply --directory=project manyue_v9.7_reader_headroom.patch
+          git diff --check
+          grep -q 'versionCode = 37' project/app/build.gradle.kts
+          grep -q 'versionName = "0.20.11"' project/app/build.gradle.kts
 
       - name: Set up JDK 21
         uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6
@@ -189,14 +199,15 @@ jobs:
 
           report_dir = Path('project/app/build/test-results/testDebugUnitTest')
           required = {
-              'ManyueWebtoonLifecycleTest': 13,
+              'ManyueWebtoonLifecycleTest': 14,
               'ManyueRegionDecoderTest': 5,
-              'ManyueSchedulerLifecycleTest': 4,
+              'ManyueAiRuntimeTest': 11,
+              'ManyueSchedulerLifecycleTest': 6,
               'ReaderMetadataPresentationTest': 6,
               'ManyueClassicBitmapTest': 3,
               'ManyueFoldableLayoutTest': 1,
               'ManyueEncodingCompatibilityTest': 1,
-              'ManyuePrefetchCoordinatorLifecycleTest': 2,
+              'ManyuePrefetchCoordinatorLifecycleTest': 3,
               'ManyueStabilityFixTest': 6,
           }
           counts = {name: 0 for name in required}
@@ -244,7 +255,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: manyue-v9.6-junit-${{ github.run_number }}
+          name: manyue-v9.7-junit-${{ github.run_number }}
           if-no-files-found: warn
           path: project/app/build/test-results/testDebugUnitTest/TEST-*.xml
 
@@ -257,7 +268,7 @@ jobs:
         if: ${{ always() && steps.android_lint.outcome != 'skipped' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: manyue-v9.6-lint-${{ github.run_number }}
+          name: manyue-v9.7-lint-${{ github.run_number }}
           if-no-files-found: error
           path: project/app/build/reports/lint-results-debug.*
 
@@ -300,15 +311,15 @@ jobs:
           apksigner="$(find "$sdk/build-tools" -maxdepth 2 -type f -name apksigner | sort -V | tail -n 1)"
           test -x "$apksigner"
           "$apksigner" verify --verbose "$apk"
-          mkdir -p "${RUNNER_TEMP}/manyue-v9-delivery/junit-xml"
-          "$apksigner" verify --verbose --print-certs "$apk" > "${RUNNER_TEMP}/manyue-v9-delivery/APK-signature.txt"
+          mkdir -p "${RUNNER_TEMP}/manyue-v9.7-delivery/junit-xml"
+          "$apksigner" verify --verbose --print-certs "$apk" > "${RUNNER_TEMP}/manyue-v9.7-delivery/APK-signature.txt"
           test -d project/app/build/test-results/testDebugUnitTest
           find project/app/build/test-results/testDebugUnitTest -maxdepth 1 -type f -name '*.xml' \
-            -exec cp {} "${RUNNER_TEMP}/manyue-v9-delivery/junit-xml/" \;
-          test -n "$(find "${RUNNER_TEMP}/manyue-v9-delivery/junit-xml" -maxdepth 1 -type f -name '*.xml' -print -quit)"
+            -exec cp {} "${RUNNER_TEMP}/manyue-v9.7-delivery/junit-xml/" \;
+          test -n "$(find "${RUNNER_TEMP}/manyue-v9.7-delivery/junit-xml" -maxdepth 1 -type f -name '*.xml' -print -quit)"
           (
-            cd "${RUNNER_TEMP}/manyue-v9-delivery/junit-xml"
-            zip -q "${RUNNER_TEMP}/manyue-v9-delivery/ManyueNext-v9.6-junit-reports.zip" ./*.xml
+            cd "${RUNNER_TEMP}/manyue-v9.7-delivery/junit-xml"
+            zip -q "${RUNNER_TEMP}/manyue-v9.7-delivery/ManyueNext-v9.7-junit-reports.zip" ./*.xml
           )
           unzip -Z1 "$apk" > "$RUNNER_TEMP/apk-files.txt"
           grep -q 'lib/arm64-v8a/libmanyue_realcugan.so' "$RUNNER_TEMP/apk-files.txt"
@@ -316,8 +327,8 @@ jobs:
           grep -q 'lib/arm64-v8a/libssiv_crop.so' "$RUNNER_TEMP/apk-files.txt"
           grep -q 'models-Real-CUGAN-se/up2x-no-denoise.bin' "$RUNNER_TEMP/apk-files.txt"
 
-          cat > project/MANYUE_V9_6_STATUS.md <<EOF
-          # Manyue v9.6 build verification
+          cat > project/MANYUE_V9_7_STATUS.md <<EOF
+          # Manyue v9.7 build verification
 
           - GitHub Actions run: ${GITHUB_RUN_ID}
           - Source commit: ${GITHUB_SHA}
@@ -325,24 +336,24 @@ jobs:
           - Manyue JVM unit tests: passed.
           - ARM64 release APK: assembled and APK signature verification passed.
           - APK contents: Real-CUGAN runner/model and Anime4K runner present.
-          - v9.6 acceptance fixes: applied after v9.5 and covered by the CI unit-test selectors listed above.
+          - v9.6 acceptance fixes: applied after v9.5; v9.7 reader headroom patch applied after v9.6 and covered by the CI unit-test selectors listed above.
           - Clean: executed before compilation. Android lint report is published separately; warnings/errors require review.
           - Device verification has not been performed; real-device visual behavior and performance remain to be checked.
           EOF
 
-          cp "$apk" "${RUNNER_TEMP}/manyue-v9-delivery/ManyueNext-v9.6-arm64-release.apk"
+          cp "$apk" "${RUNNER_TEMP}/manyue-v9.7-delivery/ManyueNext-v9.7-arm64-release.apk"
           (
             cd project
-            zip -qr "${RUNNER_TEMP}/manyue-v9-delivery/ManyueNext-v9.6-source.zip" . \
-              -x '.gradle/*' '*/.gradle/*' '*/build/*' 'build/*' '.kotlin/*' '*/.cxx/*' '.cxx/*' '.git/*'
+            zip -qr "${RUNNER_TEMP}/manyue-v9.7-delivery/ManyueNext-v9.7-source.zip" . \
+              -x '.gradle/*' '*/.gradle/*' '*/build/*' 'build/*' '.kotlin/*' '*/.kotlin/*' '*/.cxx/*' '.cxx/*' '.git/*'
           )
           (
-            cd "${RUNNER_TEMP}/manyue-v9-delivery"
-            sha256sum ManyueNext-v9.6-arm64-release.apk ManyueNext-v9.6-source.zip \
-              ManyueNext-v9.6-junit-reports.zip APK-signature.txt > SHA256SUMS.txt
+            cd "${RUNNER_TEMP}/manyue-v9.7-delivery"
+            sha256sum ManyueNext-v9.7-arm64-release.apk ManyueNext-v9.7-source.zip \
+              ManyueNext-v9.7-junit-reports.zip APK-signature.txt > SHA256SUMS.txt
           )
-          cat > "${RUNNER_TEMP}/manyue-v9-delivery/BUILD_VERIFICATION.txt" <<EOF
-          Manyue v9.6 release acceptance build
+          cat > "${RUNNER_TEMP}/manyue-v9.7-delivery/BUILD_VERIFICATION.txt" <<EOF
+          Manyue v9.7 reader headroom build
           Workflow run: ${GITHUB_RUN_ID}
           Commit: ${GITHUB_SHA}
           Unit tests: passed
@@ -351,7 +362,7 @@ jobs:
           Native/model integrity: passed
           ARM64 release APK: verified with the persistent ManyueNext release certificate.
           APK signing certificate details: included in APK-signature.txt.
-          JUnit XML reports: included in junit-xml/ and ManyueNext-v9.6-junit-reports.zip.
+          JUnit XML reports: included in junit-xml/ and ManyueNext-v9.7-junit-reports.zip.
           Device verification has not been performed; real-device visual behavior and performance remain to be checked.
           EOF
 
@@ -359,6 +370,6 @@ jobs:
         if: steps.verify_delivery.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: manyue-v9.6-acceptance-${{ github.run_number }}
+          name: manyue-v9.7-acceptance-${{ github.run_number }}
           if-no-files-found: error
-          path: ${{ runner.temp }}/manyue-v9-delivery
+          path: ${{ runner.temp }}/manyue-v9.7-delivery
