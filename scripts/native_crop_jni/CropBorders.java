@@ -61,7 +61,14 @@ public final class CropBorders {
                 () -> findCropBordersGray(new byte[1], 2, 1));
         expectIllegalArgument("null grayscale array", () -> findCropBordersGray(null, 1, 1));
 
-        System.out.println("Native crop JNI smoke passed (6 image cases, 5 invalid-input cases).");
+        expectIllegalArgument("null RGBA array", () -> findCropBorders(null, 1, 1));
+        expectIllegalArgument("RGBA zero width", () -> findCropBorders(new byte[0], 0, 1));
+        expectIllegalArgument("RGBA negative height", () -> findCropBorders(new byte[0], 1, -1));
+        expectIllegalArgument("RGBA dimensions overflow", () -> findCropBorders(new byte[0], Integer.MAX_VALUE, Integer.MAX_VALUE));
+        expectIllegalArgument("RGBA too short", () -> findCropBorders(new byte[3], 1, 1));
+        expectIllegalArgument("RGBA too long", () -> findCropBorders(new byte[5], 1, 1));
+
+        System.out.println("Native crop JNI smoke passed (6 image cases, 11 invalid-input cases).");
     }
 
     private static void assertEquivalent(String name, int width, int height,

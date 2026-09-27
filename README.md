@@ -1,51 +1,38 @@
-# ManyueNext v9.5 条漫手势与渲染修复
+# ManyueNext v9.6 发布前验收修复
 
-v9.4 确有条漫手势回归：条漫图片不接收触摸，但图片子视图记录了 `DOWN`；随后 `UP` 被 RecyclerView 接走，图片状态一直等待“手势结束”。v9.5 由 RecyclerView 统一管理条漫手势、惯性滚动和缩放状态，并处理取消、离屏返回和解码失败。
+基于 v9.5 继续修复条漫图片生命周期、AI 结果状态、预取切换、位图内存分配和折叠宽度计算。应用版本为 **0.20.10**，`versionCode` 为 **36**。本分支用于候选版验收；最终证据与限制见发布附件《验收报告.md》。
 
-## 主要变化
+## 本轮变化
 
-- 修复 AI 状态永久显示“排队中”，分别报告排队、推理和等待画面停稳。
-- 条漫替换前保留原图，等新图的基础分块就绪并停稳后再切换；固定同宽页面的项目高度，避免阅读位置跳动。
-- PNG/WebP 区域解码使用 Android `BitmapRegionDecoder`，分块边长最多 1024 像素，不让底层默认解码器长期保留整张图片的 RGBA 缓冲区。WebP 区域解码覆盖奇数起点的像素校验和采样尺寸校验；实现参考 [Skia Android `BitmapRegionDecoder` 源码](https://skia.googlesource.com/skia/+/5934f0e64066/client_utils/android/BitmapRegionDecoder.cpp)，并以 PNG/WebP 原生图像测试验证。
-- 屏幕内页面保留 AI 优先级；离屏取消的页面再次出现时可以重试。过期解码任务不能改写新图片或传递旧错误。
-- 滚动期间推迟启动新的推理和后处理；缓存访问、进程终止和文件清理移出主线程，并避免每帧创建可见页面集合。
-- 保留 1.00–2.00× 自定义输出倍率，步进 0.01×。底层模型仍按固定原生 2× 推理，降低输出倍率不会按比例缩短推理时间。
-- 裁边沿用现有算法；启用时执行一次临时全图扫描并释放临时 Bitmap/灰度数据。普通区域解码不保留全图 RGBA 数据。固定 2× 结果超过 1200 万像素的长图会保留原图并说明跳过原因。
+- 回收、重新绑定或提交新图时取消旧的延迟缩放回调，避免旧页面回调访问已销毁的视图；提交后晚到的分块读取错误有明确提示。
+- 预取任务按章节、页和设置版本管理。切换设置会重建当前窗口，取消过期载入，串行读取源图并限制输入大小；仍请求当前章节后续五页。
+- AI 原生输出必须精确为输入的 2×。Anime4KCPP 使用独立输出文件，失败保留真正的 AI 输出并说明叠加未生效；缓存保存该状态，并隔离旧的含混叠加缓存。
+- 经典增强失败不再将原图标为增强成功；锐化使用四行缓冲替代两个整图数组，保持原有像素算法。
+- Android 8–10 使用兼容的 WebP 编码枚举。折叠屏宽度计算统一使用阅读器可用宽度。RGBA crop JNI 增加输入、溢出和分配失败检查。
 
-应用版本为 **0.20.9**，`versionCode` 为 **35**。GitHub Actions 工作流依次应用 v9.1–v9.5 补丁，运行 Manyue 单元测试和 Linux host JNI smoke，再构建签名后的 ARM64 release APK，并检查签名及原生资产。
+保留 v9.5 的条漫手势修复、基础分块就绪后替换、区域解码、可见页优先级，以及 **1.00–2.00×、步进 0.01×** 的自定义输出倍率。模型固定按 2× 推理，再按输出倍率缩放；降低输出倍率不会按比例降低推理开销。
 
-## 本地准备和 JNI smoke
+## 构建和验证
 
-在全新检出中运行以下命令，源码会准备到 `.build/source`：
+在全新检出中准备源码：
 
 ```sh
-python3 scripts/prepare_manyue_v9_5.py
-```
-
-源码准备完成后，可从 delivery 仓库根目录运行 JNI smoke：
-
-```sh
+python3 scripts/prepare_manyue_v9_6.py
 bash scripts/native_crop_jni_smoke.sh .build/source
 ```
 
-该 smoke 使用 host `g++` 和 JDK JNI headers 编译实际的 crop C++ 源码，并通过 JVM 调用原生库。它覆盖 RGBA 与灰度结果一致性、白边、黑边、混色、空白、无边框，以及灰度方法的尺寸、数组长度和 null 校验；它不测 Android 设备上的速度或帧率。
+准备脚本应用 v9.1–v9.6 完整补丁链。JNI smoke 编译实际 crop C++ 并由 JVM 调用，覆盖 6 组图像与 11 组无效输入；这不是 Android 真机测试。
 
-完整 Android 构建需要 JDK 21、Android SDK、工作流中的 Real-CUGAN 资产准备和 Anime4KCPP 构建步骤。Build kit 只包含基准 `ManyueNext-v9-source.zip`、v9.1–v9.5 补丁、当前 release workflow、`scripts/` 和本 README，不包含其他历史 source ZIP、`.git`、构建目录或签名私钥。
+GitHub Actions 使用 JDK 21 和 Android SDK，准备固定版本及校验值的原生资产，执行 `clean`、Manyue/metadata 单元测试、Android lint、签名 ARM64 release 构建和 APK 内容检查。lint 报告需要单独审查，任务成功不代表没有 lint 发现。最终运行链接与实际测试计数在发布报告中记录。
 
-## 验证记录
+Build kit 仅包含基准源码 ZIP、六个补丁、工作流、准备脚本、JNI smoke 和 README，不包含签名私钥。生成的完整源码包也排除嵌套 Gradle 运行缓存。
 
-独立本地回归检查包括 23 项 UI 检查（条漫生命周期 8 项、调度生命周期 4 项、阅读器元数据展示 6 项、区域解码 5 项）和 33 项 AI 核心检查，覆盖并发入队、预取提升/降级、倍率步进和缩放位置转换。这些是本地回归记录，与下方云端 JUnit 统计分开。
+## 安装与验收边界
 
-GitHub Actions run #23 的云端 JUnit 报告为 **84 项已执行、0 失败、0 错误、0 跳过**。四个必需测试套件分别为：Webtoon 生命周期 8 项、区域解码 5 项、调度生命周期 4 项、阅读器元数据展示 6 项。它们是云端 JVM 报告中的覆盖套件数，不与本地 23 项 UI 检查或 33 项核心回归相加。
+沿用 v9.5 持久 release 签名，可覆盖安装 v9.5。证书 SHA-256：`EE3E3B5C0F648507D54D79C9A8ABB772A0448A07F884D0A92EE4599E6F4BAFD7`。
 
-已通过的完整 CI 提交为 `5b690045b96780fe1f3a5cb447498a35822af4a7`；[GitHub Actions run #23](https://github.com/QINYAN123/ManyueNext-build/actions/runs/36241525506) 已完成签名、ARM64 APK 和内容检查。该流程没有验证 Android 真机上的视觉效果、GPU 耗时或滑动帧率。
+本环境没有连接 Android 设备。自动化测试不等于 Honor Magic V2 上的真实推理、帧时间、长时内存或折叠位置验收。滚动期间仍推迟启动新的推理和后处理，持续滑动可能延迟预取；已经启动的原生推理仍可能争用 GPU，不能承诺已消除所有掉帧。
 
-为保留 CI 原始源码包及其校验值，源码 ZIP 中保留了 5 个由 Actions 生成的 Gradle 9.7.1 build-logic 运行缓存文件：`gradle/build-logic/.gradle/9.7.1/executionHistory/` 下的二进制记录和锁文件，以及 `buildOutputCleanup/` 下的锁文件、`cache.properties` 和 `outputFiles.bin`。这些是构建缓存，不是 Gradle wrapper 发行包；可复现 Build kit 内的基准源码 ZIP 不含它们。
+固定 2× 输出超过 1200 万像素的源图会保留原图并说明原因。可选 Anime4KCPP 的输入超过 300 万像素时会保留纯 AI 结果，因为其内部仍执行一次 2× 神经网络过程。叠加失败的缓存继续显示原因；一般执行失败可通过系统清理应用缓存后重试，预算超限不能通过清缓存解决。不要清除应用数据。
 
-## 安装和验收边界
-
-v9.5 使用仓库配置的持久 release 签名。证书 SHA-256 为 `EE3E3B5C0F648507D54D79C9A8ABB772A0448A07F884D0A92EE4599E6F4BAFD7`。此签名与 v9.3/v9.4 不同，**不能直接覆盖安装**。安装前先导出应用内备份并确认文件可用；卸载旧版本会删除应用数据。v9.5 起使用同一持久签名的后续版本可正常覆盖更新。
-
-自动化测试、签名及 APK 内容检查不能代替真机验收。目前没有 Android 真机安装、GPU 耗时或实际滑动帧率结果。原生 GPU 推理仍可能与滚动争用资源，因此不能承诺所有设备都没有掉帧。
-
-恢复备份后，请用曾卡住的同一条漫章节和 AI 设置复核：确认状态依次显示排队、推理、等待停稳和完成；连续上下滚动、返回旧页，并检查图片替换无空白、阅读位置不跳动。切换倍率、裁边和增强模式后重复测试；若某页失败，请提供应用内诊断文本和原图尺寸。
+[发布列表](https://github.com/QINYAN123/ManyueNext-build/releases)中的 v9.6 候选版包含完整验收报告、APK、源码、补丁、构建套件、JUnit 报告与校验清单。

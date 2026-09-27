@@ -1,0 +1,1858 @@
+diff --git a/app/build.gradle.kts b/app/build.gradle.kts
+index d895f08..24432ad 100644
+--- a/app/build.gradle.kts
++++ b/app/build.gradle.kts
+@@ -40,8 +40,8 @@ android {
+     defaultConfig {
+         applicationId = "app.mihon"
+ 
+-        versionCode = 35
+-        versionName = "0.20.9"
++        versionCode = 36
++        versionName = "0.20.10"
+ 
+         buildConfigField("String", "COMMIT_COUNT", "\"${getLatestCommitCount()}\"")
+         buildConfigField("String", "COMMIT_SHA", "\"${getLatestCommitSha()}\"")
+diff --git a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiRuntime.kt b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiRuntime.kt
+index 7ccfb2a..ac3f20a 100644
+--- a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiRuntime.kt
++++ b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiRuntime.kt
+@@ -5,6 +5,8 @@ import android.os.Build
+ import android.os.SystemClock
+ import java.io.File
+ import java.io.FileInputStream
++import java.io.RandomAccessFile
++import java.nio.charset.StandardCharsets
+ import java.security.MessageDigest
+ import java.util.concurrent.CancellationException
+ import java.util.concurrent.TimeUnit
+@@ -28,7 +30,7 @@ object ManyueAiRuntime {
+     private const val TIMEOUT_SECONDS = 240L
+     private const val OVERLAY_TIMEOUT_SECONDS = 90L
+     private const val WAIT_SLICE_MS = 250L
+-    private const val LOG_TAIL_CHARS = 4096
++    private const val LOG_TAIL_BYTES = 4096
+     // Let RealSR-NCNN choose a tile size from the actual Vulkan heap. The old fixed 64px
+     // tile produced hundreds of tiny dispatches on high-end devices such as Snapdragon 8 Gen 2.
+     private const val TILE_SIZE_AUTO = 0
+@@ -268,6 +270,7 @@ object ManyueAiRuntime {
+             Thread.currentThread().interrupt()
+             throw CancelledException()
+         }
++        if (isCancelled()) throw CancelledException()
+         if (process.exitValue() != 0 || !outputFile.isFile || outputFile.length() == 0L) {
+             logcat { "Manyue Anime4K exit=${process.exitValue()}; ${readLogTail(overlayLog)}" }
+             return false
+@@ -285,8 +288,21 @@ object ManyueAiRuntime {
+     }
+ 
+     fun readLogTail(file: File): String {
+-        val text = runCatching { file.readText() }.getOrDefault("")
+-            .takeLast(LOG_TAIL_CHARS)
++        val text = runCatching {
++            RandomAccessFile(file, "r").use { log ->
++                val length = log.length()
++                val start = (length - LOG_TAIL_BYTES).coerceAtLeast(0L)
++                val bytes = ByteArray((length - start).toInt())
++                log.seek(start)
++                var offset = 0
++                while (offset < bytes.size) {
++                    val count = log.read(bytes, offset, bytes.size - offset)
++                    if (count <= 0) break
++                    offset += count
++                }
++                String(bytes, 0, offset, StandardCharsets.UTF_8)
++            }
++        }.getOrDefault("")
+             .replace('\n', ' ')
+             .trim()
+         return text.takeIf(String::isNotBlank)?.let { "nativeLog=$it" }.orEmpty()
+diff --git a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiUpscaler.kt b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiUpscaler.kt
+index b4a6d7e..3952e51 100644
+--- a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiUpscaler.kt
++++ b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiUpscaler.kt
+@@ -76,6 +76,7 @@ object ManyueAiUpscaler {
+         @Volatile var completionState: Int = STATE_FAILED,
+         var processingStartedAt: Long = 0L,
+         @Volatile var failureDetail: String? = null,
++        @Volatile var completionDetail: String? = null,
+         val requestKey: String = "",
+         val model: ManyueAiModel = ManyueAiModel.DEFAULT,
+         val anime4kOverlay: Boolean = false,
+@@ -272,7 +273,7 @@ object ManyueAiUpscaler {
+         }
+         if (req.completed || req.cancelled) {
+             val finalState = if (req.cancelled) STATE_CANCELLED else req.completionState
+-            mainHandler.post { listener.onAiComplete(token, finalState, req.failureDetail) }
++            mainHandler.post { listener.onAiComplete(token, finalState, req.completionDetail ?: req.failureDetail) }
+             return
+         }
+         listeners.getOrPut(token) { CopyOnWriteArrayList() }.add(listener)
+@@ -284,7 +285,7 @@ object ManyueAiUpscaler {
+         // Close the tiny race where the worker finishes between the first check and add().
+         if (req.completed && listeners[token]?.remove(listener) == true) {
+             val finalState = req.completionState
+-            mainHandler.post { listener.onAiComplete(token, finalState, req.failureDetail) }
++            mainHandler.post { listener.onAiComplete(token, finalState, req.completionDetail ?: req.failureDetail) }
+         }
+     }
+ 
+@@ -310,7 +311,7 @@ object ManyueAiUpscaler {
+     }
+ 
+     @Synchronized
+-    private fun notify(req: Request, state: Int, detail: String? = req.failureDetail) {
++    private fun notify(req: Request, state: Int, detail: String? = req.completionDetail ?: req.failureDetail) {
+         val ls = listeners.remove(req.token)?.toList() ?: return
+         mainHandler.post {
+             ls.forEach { it.onAiComplete(req.token, state, detail) }
+@@ -404,7 +405,9 @@ object ManyueAiUpscaler {
+         try {
+             if (!requestIsCurrent(req)) return
+             val key = cacheKeyFor(req)
+-            if (ManyueEnhancementCache.getBundle(context, key) != null) {
++            val cachedImage = ManyueEnhancementCache.getImage(context, key)
++            if (cachedImage != null) {
++                req.completionDetail = cachedImage.detail
+                 state = STATE_READY
+                 return
+             }
+@@ -465,46 +468,15 @@ object ManyueAiUpscaler {
+             req.runningProcess = null
+             if (!requestIsCurrent(req)) return
+ 
+-            if (req.anime4kOverlay) {
+-                if (!awaitReaderIdle(req)) return
+-                // Anime4KCPP's upstream stb writer supports PNG but not WebP. The downstream
+-                // decoder identifies the image by content, so keep this temporary output PNG.
+-                val overlayFile = File(outDir, "anime4k.png")
+-                val aiBounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+-                BitmapFactory.decodeFile(outFile.absolutePath, aiBounds)
+-                val applied = ManyueAiRuntime.applyAnime4kOverlay(
+-                    context = context,
+-                    inputFile = outFile,
+-                    outputFile = overlayFile,
+-                    logFile = logFile,
+-                    isCancelled = { req.cancelled || !requestIsCurrent(req) },
+-                )
+-                if (applied && overlayFile.isFile && overlayFile.length() > 0L) {
+-                    val overlayBounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+-                    BitmapFactory.decodeFile(overlayFile.absolutePath, overlayBounds)
+-                    if (overlayBounds.outWidth == aiBounds.outWidth &&
+-                        overlayBounds.outHeight == aiBounds.outHeight
+-                    ) {
+-                        runCatching {
+-                            overlayFile.copyTo(outFile, overwrite = true)
+-                            overlayFile.delete()
+-                        }.onFailure { logcat { "Manyue Anime4K output commit failed; keeping AI output" } }
+-                    } else {
+-                        logcat {
+-                            "Manyue Anime4K dimension mismatch " +
+-                                "ai=${aiBounds.outWidth}x${aiBounds.outHeight} " +
+-                                "overlay=${overlayBounds.outWidth}x${overlayBounds.outHeight}; keeping AI output"
+-                        }
+-                    }
+-                } else {
+-                    logcat { "Manyue Anime4K overlay skipped; keeping AI output" }
+-                }
+-            }
+-
+             val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+             BitmapFactory.decodeFile(outFile.absolutePath, opts)
+             val outW = opts.outWidth
+             val outH = opts.outHeight
++            if (!hasExpectedFixed2xOutput(req.sourceWidth, req.sourceHeight, outW, outH)) {
++                req.failureDetail = "AI 原生输出尺寸不符合固定 2× 要求，已保留原图"
++                req.failedAt = System.currentTimeMillis()
++                return
++            }
+             if (!ManyueAiSafetyPolicy.isPixelBudgetSafe(
+                     outW,
+                     outH,
+@@ -513,15 +485,78 @@ object ManyueAiUpscaler {
+             ) {
+                 req.failedAt = System.currentTimeMillis(); return
+             }
++            var selectedOutputFile = outFile
++            var overlayApplied = false
++            var overlayDetail: String? = null
++            if (req.anime4kOverlay) {
++                // ACNet factor=1 still runs its CNN at 2x internally, then scales back down.
++                // Cap that intermediate to the same 12 MP display budget (input <= 3 MP).
++                if (!ManyueAiSafetyPolicy.isPredictedNativeOutputSafe(
++                        outW,
++                        outH,
++                        ManyueAiSafetyPolicy.MAX_DISPLAY_PIXELS,
++                    )
++                ) {
++                    overlayDetail = "Anime4KCPP 叠加输入超过 300 万像素上限，已保留 AI 超分"
++                } else if (!awaitReaderIdle(req)) {
++                    return
++                } else {
++                    // Anime4KCPP's upstream stb writer supports PNG but not WebP. Keep the AI
++                    // file untouched and select the verified overlay file only on full success.
++                    val overlayFile = File(outDir, "anime4k.png")
++                    val applied = try {
++                        ManyueAiRuntime.applyAnime4kOverlay(
++                            context = context,
++                            inputFile = outFile,
++                            outputFile = overlayFile,
++                            logFile = logFile,
++                            isCancelled = { req.cancelled || !requestIsCurrent(req) },
++                        )
++                    } catch (cancelled: ManyueAiRuntime.CancelledException) {
++                        throw cancelled
++                    } catch (error: Throwable) {
++                        logcat(LogPriority.WARN, error) { "Manyue Anime4K overlay failed; keeping AI output" }
++                        false
++                    }
++                    if (!requestIsCurrent(req)) return
++                    if (applied && overlayFile.isFile && overlayFile.length() > 0L) {
++                        val overlayBounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
++                        BitmapFactory.decodeFile(overlayFile.absolutePath, overlayBounds)
++                        if (overlayBounds.outWidth == outW && overlayBounds.outHeight == outH) {
++                            selectedOutputFile = overlayFile
++                            overlayApplied = true
++                        } else {
++                            overlayDetail = "Anime4KCPP 输出尺寸不匹配，已保留 AI 超分"
++                            logcat {
++                                "Manyue Anime4K dimension mismatch " +
++                                    "ai=${outW}x${outH} overlay=${overlayBounds.outWidth}x${overlayBounds.outHeight}; keeping AI output"
++                            }
++                        }
++                    } else {
++                        overlayDetail = "Anime4KCPP 处理失败，已保留 AI 超分"
++                        logcat { "Manyue Anime4K overlay failed; keeping AI output" }
++                    }
++                }
++            }
+             // Native produced the requested fixed 2x output. Keep that encoded file directly in
+             // the cache; do not decode, stitch, and re-encode it into in-memory Bitmap segments.
+             val postStartedAt = SystemClock.elapsedRealtime()
+             if (!requestIsCurrent(req)) return
+             if (resolved != outW && !awaitReaderIdle(req)) return
+-            val cachedOutput = resizeOutput(outDir, outFile, outW, outH, resolved)
++            val cachedOutput = resizeOutput(outDir, selectedOutputFile, outW, outH, resolved)
+             if (!requestIsCurrent(req)) return
+             val cachedHeight = (outH * (resolved.toDouble() / outW)).roundToInt().coerceAtLeast(1)
+-            ManyueEnhancementCache.putImage(context, key, cachedOutput, resolved, cachedHeight)
++            ManyueEnhancementCache.putImage(
++                context,
++                key,
++                cachedOutput,
++                resolved,
++                cachedHeight,
++                overlayRequested = req.anime4kOverlay,
++                overlayApplied = overlayApplied,
++                detail = overlayDetail,
++            )
++            req.completionDetail = overlayDetail
+             ManyueEnhancementCache.trimCache(context)
+             val waitMs = if (req.enqueuedAt > 0L) {
+                 (req.processingStartedAt - req.enqueuedAt).coerceAtLeast(0L)
+@@ -534,7 +569,8 @@ object ManyueAiUpscaler {
+                     "queueWaitMs=$waitMs nativeMs=$nativeElapsedMs postMs=$postElapsedMs"
+             }
+             ManyueDiagnostics.record(
+-                "第 ${req.pageIndex + 1} 页 AI 完成（排队 ${waitMs}ms，推理 ${nativeElapsedMs}ms，处理 ${postElapsedMs}ms）",
++                "第 ${req.pageIndex + 1} 页 AI 完成（排队 ${waitMs}ms，推理 ${nativeElapsedMs}ms，处理 ${postElapsedMs}ms）" +
++                    (overlayDetail?.let { "；$it" } ?: ""),
+             )
+             state = STATE_READY
+         } catch (_: ManyueAiRuntime.CancelledException) {
+@@ -575,6 +611,15 @@ object ManyueAiUpscaler {
+         return requestIsCurrent(req)
+     }
+ 
++    internal fun hasExpectedFixed2xOutput(
++        sourceWidth: Int,
++        sourceHeight: Int,
++        outputWidth: Int,
++        outputHeight: Int,
++    ): Boolean = sourceWidth > 0 && sourceHeight > 0 &&
++        outputWidth.toLong() == sourceWidth.toLong() * 2L &&
++        outputHeight.toLong() == sourceHeight.toLong() * 2L
++
+     private fun requestIsCurrent(req: Request): Boolean {
+         val mode = ManyueRuntimeState.modeInt
+         val aiMode = mode == ManyueEnhancementMode.AI_2X.value ||
+@@ -647,7 +692,7 @@ object ManyueAiUpscaler {
+             resized = Bitmap.createScaledBitmap(raw, target, targetHeight, true)
+             return File(dir, "scaled.webp").also { output ->
+                 FileOutputStream(output).use {
+-                    check(resized.compress(Bitmap.CompressFormat.WEBP_LOSSY, 95, it))
++                    check(resized.compress(ManyueBitmapEncoding.lossyWebpFormat(), 95, it))
+                 }
+             }
+         } finally {
+diff --git a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueBitmapEncoding.kt b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueBitmapEncoding.kt
+new file mode 100644
+index 0000000..24d9172
+--- /dev/null
++++ b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueBitmapEncoding.kt
+@@ -0,0 +1,12 @@
++package eu.kanade.tachiyomi.ui.reader.manyue
++
++import android.graphics.Bitmap
++import android.os.Build
++
++/** WEBP_LOSSY was added in API 30; retain lossy encoding on supported Android 8–10. */
++internal object ManyueBitmapEncoding {
++    @Suppress("DEPRECATION")
++    fun lossyWebpFormat(): Bitmap.CompressFormat =
++        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) Bitmap.CompressFormat.WEBP_LOSSY
++        else Bitmap.CompressFormat.WEBP
++}
+diff --git a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueClassicEnhancer.kt b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueClassicEnhancer.kt
+index f739754..64a1480 100644
+--- a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueClassicEnhancer.kt
++++ b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueClassicEnhancer.kt
+@@ -8,7 +8,7 @@ import android.graphics.Canvas
+ 
+ /**
+  * Classic (non-AI) bitmap enhancement: contrast/saturate/brightness + unsharp mask via 3x3 convolution.
+- * Pure Android Bitmap processing; failures return the original bitmap.
++ * Pure Android Bitmap processing; callers retain the original on failure.
+  */
+ object ManyueClassicEnhancer {
+ 
+@@ -22,9 +22,10 @@ object ManyueClassicEnhancer {
+     fun brightness(e: Double): Double = 1.0 + 0.01 * e
+ 
+     /**
+-     * Enhance the given bitmap. On any failure, returns the original bitmap.
++     * The caller owns the input and successful output. Failed temporary outputs are released.
+      */
+     fun enhance(bitmap: Bitmap, strength: Int, isAiCombined: Boolean): Bitmap {
++        var output: Bitmap? = null
+         return try {
+             val level = effectiveLevel(strength, isAiCombined)
+             if (level <= 0) return bitmap
+@@ -34,6 +35,7 @@ object ManyueClassicEnhancer {
+             val width = bitmap.width
+             val height = bitmap.height
+             val out = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
++            output = out
+ 
+             // Color matrix: apply contrast + saturate + brightness.
+             val cm = ColorMatrix()
+@@ -63,34 +65,46 @@ object ManyueClassicEnhancer {
+             }
+             out
+         } catch (t: Throwable) {
+-            bitmap
++            output?.takeIf { it !== bitmap && !it.isRecycled }?.recycle()
++            throw t
+         }
+     }
+ 
+     private fun sharpenInPlace(bmp: Bitmap, d: Float) {
+         val w = bmp.width
+         val h = bmp.height
+-        val src = IntArray(w * h)
+-        bmp.getPixels(src, 0, w, 0, 0, w, h)
+-        val dst = src.copyOf()
++        if (w < 3 || h < 3) return
++        // Keep source rows until their last convolution use. Rows below the current one
++        // have not been overwritten, so the output is identical to a full-image snapshot.
++        var previous = IntArray(w)
++        var current = IntArray(w)
++        var next = IntArray(w)
++        val result = IntArray(w)
++        bmp.getPixels(previous, 0, w, 0, 0, w, 1)
++        bmp.getPixels(current, 0, w, 0, 1, w, 1)
++        bmp.getPixels(next, 0, w, 0, 2, w, 1)
+         val c = 1f + 4f * d
+         for (y in 1 until h - 1) {
+-            val row = y * w
++            current.copyInto(result)
+             for (x in 1 until w - 1) {
+-                val i = row + x
+-                val pC = src[i]
+-                val pU = src[i - w]
+-                val pD = src[i + w]
+-                val pL = src[i - 1]
+-                val pR = src[i + 1]
++                val pC = current[x]
++                val pU = previous[x]
++                val pD = next[x]
++                val pL = current[x - 1]
++                val pR = current[x + 1]
+                 val a = (pC ushr 24) and 0xff
+                 val r = sharpenChannel(pC, pU, pD, pL, pR, c, d, 16)
+                 val g = sharpenChannel(pC, pU, pD, pL, pR, c, d, 8)
+                 val b = sharpenChannel(pC, pU, pD, pL, pR, c, d, 0)
+-                dst[i] = (a shl 24) or (r shl 16) or (g shl 8) or b
++                result[x] = (a shl 24) or (r shl 16) or (g shl 8) or b
+             }
++            bmp.setPixels(result, 0, w, 0, y, w, 1)
++            val reuse = previous
++            previous = current
++            current = next
++            next = reuse
++            if (y + 2 < h) bmp.getPixels(next, 0, w, 0, y + 2, w, 1)
+         }
+-        bmp.setPixels(dst, 0, w, 0, 0, w, h)
+     }
+ 
+     private inline fun sharpenChannel(
+diff --git a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementCache.kt b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementCache.kt
+index c773c17..39bc093 100644
+--- a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementCache.kt
++++ b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementCache.kt
+@@ -20,7 +20,14 @@ object ManyueEnhancementCache {
+     private const val MAX_CACHE_BYTES = 805_306_368L // 768 MiB
+     private const val TRIM_TO_BYTES = 671_088_640L // 640 MiB
+ 
+-    data class CachedImage(val file: File, val width: Int, val height: Int)
++    data class CachedImage(
++        val file: File,
++        val width: Int,
++        val height: Int,
++        val overlayRequested: Boolean = false,
++        val overlayApplied: Boolean = false,
++        val detail: String? = null,
++    )
+ 
+     fun cacheDir(context: Context): File =
+         File(context.cacheDir, CACHE_DIR_NAME).apply { mkdirs() }
+@@ -38,7 +45,10 @@ object ManyueEnhancementCache {
+         modelId: String = "legacy",
+         anime4kOverlay: Boolean = false,
+     ): String {
+-        val raw = "$MODEL_VERSION|$mangaId|$chapterId|$pageIndex|$mode|$targetMode|$targetWidth|$targetScaleTenths|$classicStrength|$sourceFingerprint|$modelId|overlay=$anime4kOverlay|v7"
++        // v9.5 overlay=true entries could contain a plain AI image after a silent overlay failure.
++        // Keep ordinary AI-only cache identity stable, while isolating those ambiguous entries.
++        val overlayKeyVersion = if (anime4kOverlay) "overlay-v8" else "v7"
++        val raw = "$MODEL_VERSION|$mangaId|$chapterId|$pageIndex|$mode|$targetMode|$targetWidth|$targetScaleTenths|$classicStrength|$sourceFingerprint|$modelId|overlay=$anime4kOverlay|$overlayKeyVersion"
+         val md = MessageDigest.getInstance("MD5").digest(raw.toByteArray())
+         return md.joinToString("") { "%02x".format(it) }
+     }
+@@ -69,6 +79,14 @@ object ManyueEnhancementCache {
+             .find(manifest)?.groupValues?.get(1)?.toIntOrNull() ?: return null
+         val height = Regex("\\\"height\\\"\\s*:\\s*(\\d+)")
+             .find(manifest)?.groupValues?.get(1)?.toIntOrNull() ?: return null
++        val overlayRequested = jsonBoolean(manifest, "overlayRequested") ?: false
++        val overlayApplied = overlayRequested && (jsonBoolean(manifest, "overlayApplied") ?: false)
++        val storedDetail = jsonString(manifest, "detail")
++        val detail = if (overlayRequested && !overlayApplied) {
++            storedDetail ?: OVERLAY_NOT_APPLIED_DETAIL
++        } else {
++            storedDetail
++        }
+         if (!ManyueAiSafetyPolicy.isPixelBudgetSafe(width, height, ManyueAiSafetyPolicy.MAX_DISPLAY_PIXELS)) {
+             return null
+         }
+@@ -78,7 +96,7 @@ object ManyueEnhancementCache {
+             classicVariantFile(bundle, classicStrength) ?: return null
+         }
+         if (!image.isFile || image.length() <= 0L) return null
+-        return CachedImage(image, width, height)
++        return CachedImage(image, width, height, overlayRequested, overlayApplied, detail)
+     }
+ 
+     internal fun imageFile(bundle: File): File? = cachedImage(bundle)?.file
+@@ -95,9 +113,13 @@ object ManyueEnhancementCache {
+         source: File,
+         width: Int,
+         height: Int,
++        overlayRequested: Boolean = false,
++        overlayApplied: Boolean = false,
++        detail: String? = null,
+     ) {
+         require(source.isFile && source.length() > 0L) { "AI output file is missing" }
+         require(ManyueAiSafetyPolicy.isPixelBudgetSafe(width, height, ManyueAiSafetyPolicy.MAX_DISPLAY_PIXELS))
++        require(!overlayApplied || overlayRequested) { "Anime4K overlay cannot apply unless requested" }
+         val imageName = when (source.extension.lowercase()) {
+             "png" -> "image.png"
+             "webp" -> "image.webp"
+@@ -112,9 +134,20 @@ object ManyueEnhancementCache {
+             FileOutputStream(File(pending, imageName)).use { out ->
+                 FileInputStream(source).use { it.copyTo(out) }
+             }
+-            File(pending, "manifest.json").writeText(
+-                buildJsonObject("image" to imageName, "width" to width, "height" to height),
++            val manifest = mutableListOf<Pair<String, Any>>(
++                "image" to imageName,
++                "width" to width,
++                "height" to height,
++                "overlayRequested" to overlayRequested,
++                "overlayApplied" to overlayApplied,
+             )
++            val finalDetail = detail ?: if (overlayRequested && !overlayApplied) {
++                OVERLAY_NOT_APPLIED_DETAIL
++            } else {
++                null
++            }
++            if (finalDetail != null) manifest += "detail" to finalDetail
++            File(pending, "manifest.json").writeText(buildJsonObject(*manifest.toTypedArray()))
+             if (finalDir.exists()) finalDir.deleteRecursively()
+             if (!pending.renameTo(finalDir)) error("failed to commit cache bundle $key")
+         } catch (t: Throwable) {
+@@ -147,7 +180,14 @@ object ManyueEnhancementCache {
+             check(pending.renameTo(image)) { "failed to commit classic AI image" }
+             bundle.setLastModified(System.currentTimeMillis())
+             trimCache(context)
+-            CachedImage(image, base.width, base.height)
++            CachedImage(
++                image,
++                base.width,
++                base.height,
++                base.overlayRequested,
++                base.overlayApplied,
++                base.detail,
++            )
+         } catch (t: Throwable) {
+             pending.delete()
+             null
+@@ -161,8 +201,62 @@ object ManyueEnhancementCache {
+ 
+     internal fun buildJsonObject(vararg pairs: Pair<String, Any>): String =
+         pairs.joinToString(prefix = "{", postfix = "}", separator = ",") { (key, value) ->
+-            if (value is String) "\"$key\":\"$value\"" else "\"$key\":$value"
++            if (value is String) "\"$key\":\"${escapeJsonString(value)}\"" else "\"$key\":$value"
++        }
++
++    private fun jsonBoolean(json: String, key: String): Boolean? =
++        Regex("\\\"${Regex.escape(key)}\\\"\\s*:\\s*(true|false)")
++            .find(json)?.groupValues?.get(1)?.toBooleanStrictOrNull()
++
++    private fun jsonString(json: String, key: String): String? {
++        val encoded = Regex("\\\"${Regex.escape(key)}\\\"\\s*:\\s*\\\"((?:\\\\.|[^\\\"\\\\])*)\\\"")
++            .find(json)?.groupValues?.get(1) ?: return null
++        val result = StringBuilder(encoded.length)
++        var index = 0
++        while (index < encoded.length) {
++            val char = encoded[index++]
++            if (char != '\\' || index >= encoded.length) {
++                result.append(char)
++                continue
++            }
++            when (val escaped = encoded[index++]) {
++                '"' -> result.append('"')
++                '\\' -> result.append('\\')
++                '/' -> result.append('/')
++                'b' -> result.append('\b')
++                'f' -> result.append('\u000c')
++                'n' -> result.append('\n')
++                'r' -> result.append('\r')
++                't' -> result.append('\t')
++                'u' -> {
++                    if (index + 4 <= encoded.length) {
++                        encoded.substring(index, index + 4).toIntOrNull(16)?.let { result.append(it.toChar()) }
++                        index += 4
++                    }
++                }
++                else -> result.append(escaped)
++            }
++        }
++        return result.toString()
++    }
++
++    private fun escapeJsonString(value: String): String = buildString(value.length) {
++        value.forEach { char ->
++            when (char) {
++                '"' -> append("\\\"")
++                '\\' -> append("\\\\")
++                '\b' -> append("\\b")
++                '\u000c' -> append("\\f")
++                '\n' -> append("\\n")
++                '\r' -> append("\\r")
++                '\t' -> append("\\t")
++                else -> if (char.code < 0x20) append("\\u%04x".format(char.code)) else append(char)
++            }
+         }
++    }
++
++    internal const val OVERLAY_NOT_APPLIED_DETAIL =
++        "Anime4KCPP 未生效，已保留 AI 超分"
+ 
+     fun clearCache(context: Context) {
+         cacheDir(context).deleteRecursively()
+diff --git a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueFoldableController.kt b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueFoldableController.kt
+index 3448486..2ce3b06 100644
+--- a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueFoldableController.kt
++++ b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueFoldableController.kt
+@@ -7,7 +7,7 @@ import androidx.viewpager.widget.ViewPager
+ import eu.kanade.tachiyomi.ui.reader.viewer.ReaderPageImageView
+ 
+ /**
+- * Tracks fold/unfold state and preserves current chapter/page/fraction.
++ * Tracks width configuration; the viewer owns chapter/page/scroll restoration.
+  * On regular phones this is effectively a no-op.
+  */
+ object ManyueFoldableController {
+@@ -114,9 +114,15 @@ object ManyueFoldableController {
+     /** Reapply to already-created Pager/Webtoon image views after a fold state change. */
+     fun applyToTree(root: View) {
+         val screenWidth = root.width.takeIf { it > 0 } ?: root.resources.displayMetrics.widthPixels
++        applyToTree(root, screenWidth)
++    }
++
++    private fun applyToTree(root: View, screenWidth: Int) {
++        // Preserve the viewport width through traversal. A page may still have the old
++        // manually constrained width; using that as the viewport prevents it growing again.
+         if (root is ReaderPageImageView) applyToView(root, screenWidth)
+         if (root is ViewGroup) {
+-            for (index in 0 until root.childCount) applyToTree(root.getChildAt(index))
++            for (index in 0 until root.childCount) applyToTree(root.getChildAt(index), screenWidth)
+         }
+     }
+ }
+diff --git a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueImagePipeline.kt b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueImagePipeline.kt
+index 3d13373..a286481 100644
+--- a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueImagePipeline.kt
++++ b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueImagePipeline.kt
+@@ -75,7 +75,7 @@ object ManyueImagePipeline {
+             val outputBitmap = ManyueClassicEnhancer.enhance(decoded, strength, isAiCombined)
+             enhanced = outputBitmap
+             val out = ByteArrayOutputStream()
+-            check(outputBitmap.compress(Bitmap.CompressFormat.WEBP_LOSSY, 92, out))
++            check(outputBitmap.compress(ManyueBitmapEncoding.lossyWebpFormat(), 92, out))
+             out.toByteArray()
+         } catch (t: Throwable) {
+             null
+diff --git a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePageBridge.kt b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePageBridge.kt
+index 3891f92..aa08021 100644
+--- a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePageBridge.kt
++++ b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePageBridge.kt
+@@ -40,6 +40,12 @@ class ManyuePageBridge(
+     companion object {
+         private val renderMutex = Mutex()
+         private const val SCROLL_SETTLE_MS = 300L
++        internal fun mergeDisplayDetails(vararg details: String?): String? =
++            details.mapNotNull { it?.trim()?.takeIf(String::isNotEmpty) }
++                .distinct()
++                .joinToString("；")
++                .takeIf(String::isNotEmpty)
++
+         private val classicDispatcher = java.util.concurrent.Executors.newSingleThreadExecutor { task ->
+             Thread({
+                 runCatching { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND) }
+@@ -95,7 +101,11 @@ class ManyuePageBridge(
+                 } ?: run {
+                     val capability = withContext(Dispatchers.IO) { ManyueAiRuntime.probe(context) }
+                     val detail = if (capability == ManyueAiRuntime.Capability.READY) {
+-                        "图片格式、尺寸或固定 2× 安全预算不适用"
++                        if (ManyueRuntimeState.aiScalePercent <= 100) {
++                            "倍率为 1.00×，保留原图"
++                        } else {
++                            "图片格式、尺寸或固定 2× 安全预算不适用"
++                        }
+                     } else {
+                         capability.userMessage
+                     }
+@@ -176,11 +186,12 @@ class ManyuePageBridge(
+                                 val classicSafe = ManyueAiSafetyPolicy.isPixelBudgetSafe(
+                                     baseImage.width, baseImage.height, ManyueAiSafetyPolicy.MAX_CLASSIC_PIXELS,
+                                 )
+-                                var detail = when {
++                                var displayDetail = mergeDisplayDetails(detail, baseImage.detail)
++                                displayDetail = mergeDisplayDetails(displayDetail, when {
+                                     wantClassic && strength <= 0 -> "经典增强强度为 0"
+                                     wantClassic && !classicSafe -> "经典增强超过内存限制，已保留 AI 超分"
+                                     else -> null
+-                                }
++                                })
+                                 if (wantClassic && strength > 0 && classicSafe) {
+                                     val cached = withContext(Dispatchers.IO) {
+                                         ManyueAiUpscaler.cachedClassicImage(context, tok, strength)
+@@ -192,10 +203,13 @@ class ManyuePageBridge(
+                                         image = classic
+                                         state = ManyueEnhancementState.AI_CLASSIC_READY
+                                     } else {
+-                                        detail = "经典增强失败，已保留 AI 超分"
++                                        displayDetail = mergeDisplayDetails(
++                                            displayDetail,
++                                            "经典增强失败，已保留 AI 超分",
++                                        )
+                                     }
+                                 }
+-                                DisplayResult(image, baseImage, state, detail)
++                                DisplayResult(image, baseImage, state, displayDetail)
+                             } ?: return@launch
+                             if (!awaitDisplayPause(t, identity, mode, expectedGeneration)) return@launch
+                             stageFile(
+@@ -351,12 +365,13 @@ class ManyuePageBridge(
+         onState: (ManyueEnhancementState, String?) -> Unit,
+     ) {
+         var readyState = state
+-        var readyDetail = detail
++        var readyDetail = mergeDisplayDetails(detail, baseImage.detail)
+         val recycler = findRecyclerView()
+         var quietSince = 0L
+         lateinit var beginStage: (ManyueEnhancementCache.CachedImage, Boolean) -> Unit
+         beginStage = { target, mayFallback ->
+             var callbackRanSynchronously = false
++            var displayFailureReported = false
+             val requestId = view.setTiledImagePreservingCurrent(
+                 file = target.file,
+                 config = config,
+@@ -405,7 +420,10 @@ class ManyuePageBridge(
+                             "Manyue classic cache image failed; falling back to AI output"
+                         }
+                         readyState = ManyueEnhancementState.AI_READY
+-                        readyDetail = "经典增强结果读取失败，已保留 AI 超分"
++                        readyDetail = mergeDisplayDetails(
++                            readyDetail,
++                            "经典增强结果读取失败，已保留 AI 超分",
++                        )
+                         kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch {
+                             ManyueAiUpscaler.removeClassicImage(context, token, strength)
+                         }
+@@ -418,6 +436,21 @@ class ManyuePageBridge(
+                         onState(ManyueEnhancementState.FAILED, "AI 结果显示失败")
+                     }
+                 },
++                onDisplayError = { error ->
++                    if (!displayFailureReported &&
++                        isCurrent(token, expectedIdentity, expectedMode, expectedGeneration)
++                    ) {
++                        displayFailureReported = true
++                        readyDetail = mergeDisplayDetails(
++                            readyDetail,
++                            "部分高清分块读取失败，当前保留基础画面",
++                        )
++                        logcat(LogPriority.WARN, error) {
++                            "Manyue active AI tile failed; keeping the visible base image"
++                        }
++                        onState(readyState, readyDetail)
++                    }
++                },
+             )
+             if (!callbackRanSynchronously) stagedImageId = requestId
+         }
+diff --git a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueReaderHook.kt b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueReaderHook.kt
+index 232a99d..4275130 100644
+--- a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueReaderHook.kt
++++ b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueReaderHook.kt
+@@ -3,6 +3,7 @@ package eu.kanade.tachiyomi.ui.reader.manyue
+ import android.graphics.Bitmap
+ import android.graphics.BitmapFactory
+ import kotlinx.coroutines.Dispatchers
++import kotlinx.coroutines.CancellationException
+ import kotlinx.coroutines.withContext
+ import logcat.LogPriority
+ import okio.Buffer
+@@ -54,12 +55,15 @@ object ManyueReaderHook {
+                 return@withContext source
+             }
+             val bmp: Bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+-                ?: return@withContext source
++                ?: run {
++                    onState(ManyueEnhancementState.FAILED, "原图解码失败，已保留原图")
++                    return@withContext source
++                }
+             var enhanced: Bitmap? = null
+             try {
+                 enhanced = ManyueClassicEnhancer.enhance(bmp, strength, isAiCombined = false)
+                 val out = java.io.ByteArrayOutputStream()
+-                check(enhanced.compress(Bitmap.CompressFormat.WEBP_LOSSY, 92, out))
++                check(enhanced.compress(ManyueBitmapEncoding.lossyWebpFormat(), 92, out))
+                 Buffer().write(out.toByteArray()).also {
+                     onState(ManyueEnhancementState.CLASSIC_READY, null)
+                 }
+@@ -67,6 +71,8 @@ object ManyueReaderHook {
+                 enhanced?.takeIf { it !== bmp && !it.isRecycled }?.recycle()
+                 if (!bmp.isRecycled) bmp.recycle()
+             }
++        } catch (t: CancellationException) {
++            throw t
+         } catch (t: Throwable) {
+             logcat(LogPriority.WARN, t) { "Manyue classic enhancement failed; original retained" }
+             onState(ManyueEnhancementState.FAILED, "经典增强处理错误")
+diff --git a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueReaderPrefetcher.kt b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueReaderPrefetcher.kt
+index c596f9f..d12c69a 100644
+--- a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueReaderPrefetcher.kt
++++ b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueReaderPrefetcher.kt
+@@ -4,6 +4,7 @@ import android.content.Context
+ import eu.kanade.tachiyomi.source.model.Page
+ import eu.kanade.tachiyomi.ui.reader.model.ReaderPage
+ import eu.kanade.tachiyomi.ui.reader.metadata.SourceImageBoundsDecoder
++import java.io.InputStream
+ import java.util.concurrent.ConcurrentHashMap
+ import kotlinx.coroutines.CancellationException
+ import kotlinx.coroutines.CoroutineScope
+@@ -23,6 +24,9 @@ import kotlinx.coroutines.sync.withLock
+ import kotlinx.coroutines.withContext
+ import kotlinx.coroutines.withTimeoutOrNull
+ import okio.Buffer
++import okio.buffer
++import okio.source
++import logcat.LogPriority
+ import tachiyomi.core.common.util.system.logcat
+ 
+ /**
+@@ -31,14 +35,9 @@ import tachiyomi.core.common.util.system.logcat
+  */
+ class ManyueReaderPrefetcher(context: Context) {
+ 
+-    private data class PageKey(val chapterId: Long, val pageIndex: Int)
+-
+     private val appContext = context.applicationContext
+     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+-    private val jobs = ConcurrentHashMap<PageKey, Job>()
+-    // Do not keep five full-resolution source byte arrays live at once. Each prefetch page is
+-    // loaded, fingerprinted, persisted and queued before the next one starts.
+-    private val prefetchLoadMutex = Mutex()
++    private val coordinator = ManyuePrefetchJobCoordinator(scope)
+ 
+     /**
+      * Update the page window and start background loads. Viewers may update
+@@ -54,58 +53,43 @@ class ManyueReaderPrefetcher(context: Context) {
+         if (mode != ManyueEnhancementMode.AI_2X.value &&
+             mode != ManyueEnhancementMode.AI_2X_CLASSIC.value
+         ) {
+-            cancelJobs()
++            coordinator.cancelAll()
+             return
+         }
+ 
+         val pages = current.chapter.pages ?: return
+         val generation = ManyueRuntimeState.generation
+-        val desired = ManyueAiSafetyPolicy.prefetchPlan(current.index, pages.size)
+-            .associateBy { PageKey(chapterId, it.pageIndex) }
+-        jobs.keys.filter { it !in desired }.forEach { key -> jobs.remove(key)?.cancel() }
+-
+-        desired.forEach { (key, target) ->
+-            if (jobs.containsKey(key)) return@forEach
+-            if (target.pageIndex == current.index) return@forEach
+-            val page = pages.getOrNull(target.pageIndex) ?: return@forEach
+-            val job = scope.launch(start = CoroutineStart.LAZY) {
+-                try {
+-                    ManyuePrefetchManager.awaitCurrentDecision(chapterId, current.index)
+-                    prefetchLoadMutex.withLock {
+-                        currentCoroutineContext().ensureActive()
+-                        val bytes = loadBytes(page) ?: return@withLock
+-                        val info = withContext(Dispatchers.IO) {
+-                            SourceImageBoundsDecoder.decode(Buffer().write(bytes))
+-                        }
+-                        page.updateSourceImageInfo(info)
+-                        if (ManyueRuntimeState.modeInt != mode || ManyueRuntimeState.generation != generation) return@withLock
+-                        val identity = ManyuePageBridge.Identity(
+-                            mangaId = page.chapter.chapter.manga_id ?: 0L,
+-                            chapterId = chapterId,
+-                            pageIndex = page.index,
+-                        )
+-                        logcat { "Manyue prefetch create page=${page.index} priority=${target.priority}" }
+-                        withContext(Dispatchers.IO) {
+-                            currentCoroutineContext().ensureActive()
+-                            ManyueAiRequestFactory.enqueue(
+-                                appContext,
+-                                identity,
+-                                bytes,
+-                                target.priority,
+-                                mode,
+-                                generation,
+-                            )
+-                        }
+-                    }
+-                } catch (error: Throwable) {
+-                    if (error is CancellationException) throw error
+-                    logcat { "Manyue prefetch failed page=${target.pageIndex}: ${error.javaClass.simpleName}" }
+-                } finally {
+-                    currentCoroutineContext()[Job]?.let { jobs.remove(key, it) }
+-                }
++        val plan = ManyueAiSafetyPolicy.prefetchPlan(current.index, pages.size)
++        coordinator.reconcile(chapterId, current.index, generation, plan) { target, taskGeneration ->
++            val page = pages.getOrNull(target.pageIndex) ?: return@reconcile
++            coordinator.ensureCurrent(chapterId, taskGeneration)
++            ManyuePrefetchManager.awaitCurrentDecision(chapterId, current.index)
++            val bytes = loadBytes(page) ?: return@reconcile
++            coordinator.ensureCurrent(chapterId, taskGeneration)
++            val info = withContext(Dispatchers.IO) {
++                SourceImageBoundsDecoder.decode(Buffer().write(bytes))
++            }
++            page.updateSourceImageInfo(info)
++            coordinator.ensureCurrent(chapterId, taskGeneration)
++            if (ManyueRuntimeState.modeInt != mode || ManyueRuntimeState.generation != taskGeneration) return@reconcile
++            val identity = ManyuePageBridge.Identity(
++                mangaId = page.chapter.chapter.manga_id ?: 0L,
++                chapterId = chapterId,
++                pageIndex = page.index,
++            )
++            logcat { "Manyue prefetch create page=${page.index} priority=${target.priority}" }
++            withContext(Dispatchers.IO) {
++                coordinator.ensureCurrent(chapterId, taskGeneration)
++                if (ManyueRuntimeState.modeInt != mode || ManyueRuntimeState.generation != taskGeneration) return@withContext
++                ManyueAiRequestFactory.enqueue(
++                    appContext,
++                    identity,
++                    bytes,
++                    target.priority,
++                    mode,
++                    taskGeneration,
++                )
+             }
+-            jobs[key] = job
+-            job.start()
+         }
+     }
+ 
+@@ -125,20 +109,93 @@ class ManyueReaderPrefetcher(context: Context) {
+         }
+         if (ready != Page.State.Ready) return@withContext null
+         val stream = page.stream ?: return@withContext null
+-        stream().use { Buffer().readFrom(it).readByteArray() }
++        readBoundedPrefetchBytes(stream())
+     }
+ 
+     fun reset() {
+-        cancelJobs()
++        coordinator.cancelAll()
+     }
+ 
+     fun destroy() {
+-        cancelJobs()
++        coordinator.cancelAll()
+         scope.cancel()
+     }
++}
++
++/** Tracks one cancellable job per page and generation while serializing full-resolution loads. */
++internal class ManyuePrefetchJobCoordinator(private val scope: CoroutineScope) {
++    private data class JobKey(val chapterId: Long, val pageIndex: Int, val generation: Long)
++
++    private val jobs = ConcurrentHashMap<JobKey, Job>()
++    // Avoid keeping multiple full-resolution page buffers live at the same time.
++    private val loadMutex = Mutex()
++    @Volatile private var activeWindow: Pair<Long, Long>? = null
++
++    fun reconcile(
++        chapterId: Long,
++        currentPageIndex: Int,
++        generation: Long,
++        plan: List<ManyueAiSafetyPolicy.PrefetchTarget>,
++        work: suspend (ManyueAiSafetyPolicy.PrefetchTarget, Long) -> Unit,
++    ) {
++        val desired = plan.asSequence()
++            .filter { it.pageIndex != currentPageIndex }
++            .associateBy { JobKey(chapterId, it.pageIndex, generation) }
++        val toStart = mutableListOf<Job>()
++        synchronized(this) {
++            activeWindow = chapterId to generation
++            jobs.keys.filter { it !in desired.keys }.forEach { key -> jobs.remove(key)?.cancel() }
++            desired.forEach { (key, target) ->
++                if (jobs.containsKey(key)) return@forEach
++                val job = scope.launch(start = CoroutineStart.LAZY) {
++                    try {
++                        loadMutex.withLock {
++                            ensureCurrent(chapterId, generation)
++                            work(target, generation)
++                        }
++                    } catch (error: Throwable) {
++                        if (error is CancellationException) throw error
++                        logcat { "Manyue prefetch failed page=${target.pageIndex}: ${error.javaClass.simpleName}" }
++                    } finally {
++                        currentCoroutineContext()[Job]?.let { jobs.remove(key, it) }
++                    }
++                }
++                val existing = jobs.putIfAbsent(key, job)
++                if (existing == null) toStart += job else job.cancel()
++            }
++        }
++        toStart.forEach(Job::start)
++    }
++
++    suspend fun ensureCurrent(chapterId: Long, generation: Long) {
++        currentCoroutineContext().ensureActive()
++        if (!isCurrent(chapterId, generation)) {
++            throw CancellationException("Stale Manyue prefetch generation")
++        }
++    }
++
++    fun isCurrent(chapterId: Long, generation: Long): Boolean =
++        activeWindow == (chapterId to generation)
++
++    fun cancelAll() {
++        synchronized(this) {
++            activeWindow = null
++            jobs.values.forEach(Job::cancel)
++            jobs.clear()
++        }
++    }
++}
+ 
+-    private fun cancelJobs() {
+-        jobs.values.forEach(Job::cancel)
+-        jobs.clear()
++/** Checks the AI input limit before the request factory allocates another full byte-array copy. */
++internal fun readBoundedPrefetchBytes(
++    input: InputStream,
++    maxBytes: Long = ManyueAiRuntime.MAX_INPUT_BYTES.toLong(),
++): ByteArray? = input.source().buffer().use { source ->
++    require(maxBytes >= 0)
++    if (source.request(maxBytes + 1) && source.buffer.size > maxBytes) {
++        ManyueAiRuntime.logcat(LogPriority.WARN) { "Manyue prefetch skipped source larger than $maxBytes bytes" }
++        null
++    } else {
++        source.readByteArray()
+     }
+ }
+diff --git a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/viewer/ReaderPageImageView.kt b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/viewer/ReaderPageImageView.kt
+index c5e7035..d403340 100644
+--- a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/viewer/ReaderPageImageView.kt
++++ b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/viewer/ReaderPageImageView.kt
+@@ -69,6 +69,10 @@ open class ReaderPageImageView @JvmOverloads constructor(
+     private var stagedPageView: SubsamplingScaleImageView? = null
+     private var stagedImageId = 0L
+     private val mainHandler = Handler(Looper.getMainLooper())
++    private var sourceGeneration = 0L
++    private var activeSourceGeneration: Long? = null
++    private var landscapeZoomHandler: Handler? = null
++    private var landscapeZoomRunnable: Runnable? = null
+ 
+     private var config: Config? = null
+     private var manyueTouchActive = false
+@@ -103,11 +107,26 @@ open class ReaderPageImageView @JvmOverloads constructor(
+ 
+     override fun onDetachedFromWindow() {
+         stagedCommit?.let(mainHandler::removeCallbacks)
++        cancelLandscapeZoom()
+         manyueTouchActive = false
+         manyueLastTouch = 0L
+         super.onDetachedFromWindow()
+     }
+ 
++    private fun cancelLandscapeZoom() {
++        val handler = landscapeZoomHandler
++        val runnable = landscapeZoomRunnable
++        if (handler != null && runnable != null) handler.removeCallbacks(runnable)
++        landscapeZoomHandler = null
++        landscapeZoomRunnable = null
++    }
++
++    private fun beginSourceReplacement() {
++        cancelLandscapeZoom()
++        sourceGeneration++
++        activeSourceGeneration = sourceGeneration
++    }
++
+     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+         // Strip image views deliberately reject touches. Android then sends their UP/CANCEL
+         // to the RecyclerView, so a child-local DOWN flag would stay set forever.
+@@ -195,31 +214,54 @@ open class ReaderPageImageView @JvmOverloads constructor(
+     }
+ 
+     private fun SubsamplingScaleImageView.landscapeZoom(forward: Boolean) {
++        val zoomConfig = config ?: return
++        val expectedGeneration = activeSourceGeneration ?: return
+         if (
+-            config != null &&
+-            config!!.landscapeZoom &&
+-            config!!.minimumScaleType == SCALE_TYPE_CENTER_INSIDE &&
++            zoomConfig.landscapeZoom &&
++            zoomConfig.minimumScaleType == SCALE_TYPE_CENTER_INSIDE &&
+             sWidth > sHeight &&
+             scale == minScale
+         ) {
+-            handler?.postDelayed(500) {
+-                val point = when (config!!.zoomStartPosition) {
+-                    ZoomStartPosition.LEFT -> if (forward) PointF(0F, 0F) else PointF(sWidth.toFloat(), 0F)
+-                    ZoomStartPosition.RIGHT -> if (forward) PointF(sWidth.toFloat(), 0F) else PointF(0F, 0F)
+-                    ZoomStartPosition.CENTER -> center
+-                }
++            cancelLandscapeZoom()
++            val zoomView = this
++            val handler = zoomView.handler ?: return
++            val runnable = object : Runnable {
++                override fun run() {
++                    if (landscapeZoomRunnable !== this) return
++                    landscapeZoomRunnable = null
++                    landscapeZoomHandler = null
++                    if (
++                        sourceGeneration != expectedGeneration ||
++                        activeSourceGeneration != expectedGeneration ||
++                        pageView !== zoomView ||
++                        !zoomView.isAttachedToWindow ||
++                        !zoomView.isReady ||
++                        this@ReaderPageImageView.config !== zoomConfig
++                    ) return
++
++                    val point = when (zoomConfig.zoomStartPosition) {
++                        ZoomStartPosition.LEFT -> if (forward) PointF(0F, 0F) else PointF(zoomView.sWidth.toFloat(), 0F)
++                        ZoomStartPosition.RIGHT -> if (forward) PointF(zoomView.sWidth.toFloat(), 0F) else PointF(0F, 0F)
++                        ZoomStartPosition.CENTER -> zoomView.center ?: return
++                    }
+ 
+-                val targetScale = height.toFloat() / sHeight.toFloat()
+-                animateScaleAndCenter(targetScale, point)!!
+-                    .withDuration(500)
+-                    .withEasing(EASE_IN_OUT_QUAD)
+-                    .withInterruptible(true)
+-                    .start()
++                    val targetScale = zoomView.height.toFloat() / zoomView.sHeight.toFloat()
++                    val animation = zoomView.animateScaleAndCenter(targetScale, point) ?: return
++                    animation
++                        .withDuration(500)
++                        .withEasing(EASE_IN_OUT_QUAD)
++                        .withInterruptible(true)
++                        .start()
++                }
+             }
++            landscapeZoomHandler = handler
++            landscapeZoomRunnable = runnable
++            handler.postDelayed(runnable, 500L)
+         }
+     }
+ 
+     fun setImage(drawable: Drawable, config: Config) {
++        beginSourceReplacement()
+         cancelStagedImage()
+         replacementHeight = 0
+         this.config = config
+@@ -233,6 +275,7 @@ open class ReaderPageImageView @JvmOverloads constructor(
+     }
+ 
+     fun setImage(source: BufferedSource, isAnimated: Boolean, config: Config) {
++        beginSourceReplacement()
+         cancelStagedImage()
+         replacementHeight = 0
+         this.config = config
+@@ -246,6 +289,9 @@ open class ReaderPageImageView @JvmOverloads constructor(
+     }
+ 
+     fun recycle() {
++        cancelLandscapeZoom()
++        sourceGeneration++
++        activeSourceGeneration = null
+         manyueTouchActive = false
+         manyueLastTouch = 0L
+         replacementHeight = 0
+@@ -269,6 +315,7 @@ open class ReaderPageImageView @JvmOverloads constructor(
+         maySwap: () -> Boolean,
+         onReady: (width: Int, height: Int) -> Unit,
+         onError: (Throwable?) -> Unit,
++        onDisplayError: (Throwable) -> Unit = {},
+     ): Long {
+         cancelStagedImage()
+         this.config = config
+@@ -280,6 +327,7 @@ open class ReaderPageImageView @JvmOverloads constructor(
+             replacementWidth = width
+         }
+         val nextView = createSubsamplingImageView().apply {
++            var committedGeneration: Long? = null
+             setExecutor(aiImageExecutor())
+             setMaxTileSize(1024)
+             setRegionDecoderFactory { eu.kanade.tachiyomi.ui.reader.manyue.ManyueRegionDecoder(config.cropBorders) }
+@@ -322,6 +370,10 @@ open class ReaderPageImageView @JvmOverloads constructor(
+                             if (isAttachedToWindow) mainHandler.postDelayed(retry, 80L)
+                             return
+                         }
++                        cancelLandscapeZoom()
++                        sourceGeneration++
++                        activeSourceGeneration = sourceGeneration
++                        committedGeneration = sourceGeneration
+                         val previous = pageView
+                         val old = previous as? SubsamplingScaleImageView
+                         val center = old?.center
+@@ -354,7 +406,14 @@ open class ReaderPageImageView @JvmOverloads constructor(
+                     }
+ 
+                     override fun onTileLoadError(e: Exception) {
+-                        onImageLoadError(e)
++                        if (stagedPageView === this@apply && requestId == stagedImageId) {
++                            onImageLoadError(e)
++                        } else if (
++                            pageView === this@apply &&
++                            activeSourceGeneration == committedGeneration
++                        ) {
++                            onDisplayError(e)
++                        }
+                     }
+ 
+                     override fun onImageLoadError(e: Exception) {
+diff --git a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/viewer/pager/PagerViewer.kt b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/viewer/pager/PagerViewer.kt
+index 788f8a3..cba98ac 100644
+--- a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/viewer/pager/PagerViewer.kt
++++ b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/viewer/pager/PagerViewer.kt
+@@ -156,7 +156,15 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
+         scope.cancel()
+     }
+ 
+-    override fun refreshManyue() = refreshAdapter()
++    override fun refreshManyue() {
++        manyuePrefetcher.reset()
++        ManyuePrefetchManager.reset()
++        (currentPage as? ReaderPage)?.let { page ->
++            ManyuePrefetchManager.onPageChanged(page.chapter.chapter.id ?: 0L, page.index)
++            manyuePrefetcher.onPageSelected(page, managerAlreadyUpdated = true)
++        }
++        refreshAdapter()
++    }
+ 
+     override fun reapplyManyueWidth() {
+         eu.kanade.tachiyomi.ui.reader.manyue.ManyueFoldableController.applyToTree(pager)
+diff --git a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/viewer/webtoon/WebtoonViewer.kt b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/viewer/webtoon/WebtoonViewer.kt
+index f185b60..bfb8577 100644
+--- a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/viewer/webtoon/WebtoonViewer.kt
++++ b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/viewer/webtoon/WebtoonViewer.kt
+@@ -206,7 +206,16 @@ class WebtoonViewer(val activity: ReaderActivity, val isContinuous: Boolean = tr
+         scope.cancel()
+     }
+ 
+-    override fun refreshManyue() = refreshAdapter()
++    override fun refreshManyue() {
++        manyuePrefetcher.reset()
++        ManyuePrefetchManager.reset()
++        (currentPage as? ReaderPage)?.let { page ->
++            val chapterId = page.chapter.chapter.id ?: 0L
++            ManyuePrefetchManager.onPageChanged(chapterId, page.index, visibleManyuePages())
++            manyuePrefetcher.onPageSelected(page, managerAlreadyUpdated = true)
++        }
++        refreshAdapter()
++    }
+ 
+     override fun reapplyManyueWidth() {
+         val position = layoutManager.findFirstVisibleItemPosition()
+diff --git a/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiRuntimeTest.kt b/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiRuntimeTest.kt
+index 1a5cf20..86e7627 100644
+--- a/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiRuntimeTest.kt
++++ b/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiRuntimeTest.kt
+@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Assertions.assertEquals
+ import org.junit.jupiter.api.Assertions.assertFalse
+ import org.junit.jupiter.api.Assertions.assertTrue
+ import org.junit.jupiter.api.Test
++import java.nio.file.Files
+ 
+ class ManyueAiRuntimeTest {
+ 
+@@ -34,6 +35,26 @@ class ManyueAiRuntimeTest {
+         assertEquals(4000, w)
+     }
+ 
++    @Test fun `fixed 2x native output gate requires exact dimensions`() {
++        assertTrue(ManyueAiUpscaler.hasExpectedFixed2xOutput(1200, 1800, 2400, 3600))
++        assertFalse(ManyueAiUpscaler.hasExpectedFixed2xOutput(1200, 1800, 2398, 3600))
++        assertFalse(ManyueAiUpscaler.hasExpectedFixed2xOutput(1200, 1800, 2400, 3598))
++        assertFalse(ManyueAiUpscaler.hasExpectedFixed2xOutput(Int.MAX_VALUE, 1, 2, 2))
++        assertFalse(ManyueAiUpscaler.hasExpectedFixed2xOutput(0, 1, 0, 2))
++    }
++
++    @Test fun `native log tail reads only bounded bytes`() {
++        val file = Files.createTempFile("manyue-native-log", ".log").toFile()
++        try {
++            file.writeText("x".repeat(20_000) + "\nTAIL_SENTINEL")
++            val tail = ManyueAiRuntime.readLogTail(file)
++            assertTrue(tail.length <= 4_106)
++            assertTrue(tail.endsWith("TAIL_SENTINEL"))
++        } finally {
++            file.delete()
++        }
++    }
++
+     @Test fun `real cugan selects the packaged no-denoise model`() {
+         val command = ManyueAiRuntime.buildCommand(
+             binaryPath = "/native/libmanyue_realcugan.so",
+diff --git a/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueClassicBitmapTest.kt b/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueClassicBitmapTest.kt
+new file mode 100644
+index 0000000..b350dc6
+--- /dev/null
++++ b/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueClassicBitmapTest.kt
+@@ -0,0 +1,83 @@
++package eu.kanade.tachiyomi.ui.reader.manyue
++
++import android.app.Application
++import android.graphics.Bitmap
++import kotlin.random.Random
++import org.junit.Assert.assertArrayEquals
++import org.junit.Assert.assertFalse
++import org.junit.Assert.assertNotSame
++import org.junit.Assert.assertSame
++import org.junit.Assert.assertTrue
++import org.junit.Test
++import org.junit.runner.RunWith
++import org.robolectric.RobolectricTestRunner
++import org.robolectric.annotation.Config
++import org.robolectric.annotation.GraphicsMode
++
++@RunWith(RobolectricTestRunner::class)
++@Config(application = Application::class, sdk = [34], manifest = Config.NONE)
++@GraphicsMode(GraphicsMode.Mode.NATIVE)
++class ManyueClassicBitmapTest {
++    @Test fun rowWindowMatchesOriginalFullImageConvolutionIncludingBorders() {
++        // Independent reference is the previous full-image algorithm. Compare all pixels,
++        // including thin images and a tall strip; this is not a visual-quality approximation.
++        val random = Random(95)
++        for ((w, h) in listOf(1 to 7, 9 to 2, 3 to 3, 7 to 9, 32 to 512)) {
++            for (d in listOf(0.02f, 0.18f, 0.42f)) {
++                val pixels = IntArray(w * h) { random.nextInt() or (255 shl 24) }
++                val expected = pixels.copyOf()
++                val c = 1f + 4f * d
++                for (y in 1 until h - 1) for (x in 1 until w - 1) {
++                    val i = y * w + x
++                    var color = pixels[i] and (255 shl 24)
++                    for (shift in listOf(16, 8, 0)) {
++                        fun channel(index: Int) = ((pixels[index] shr shift) and 255).toFloat()
++                        val value = channel(i) * c -
++                            (channel(i - w) + channel(i + w) + channel(i - 1) + channel(i + 1)) * d
++                        color = color or (value.coerceIn(0f, 255f).toInt() shl shift)
++                    }
++                    expected[i] = color
++                }
++                val bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888).apply {
++                    setPixels(pixels, 0, w, 0, 0, w, h)
++                }
++                try {
++                    ManyueClassicEnhancer.javaClass.getDeclaredMethod(
++                        "sharpenInPlace", Bitmap::class.java, Float::class.javaPrimitiveType,
++                    ).apply { isAccessible = true }.invoke(ManyueClassicEnhancer, bitmap, d)
++                    val actual = IntArray(w * h)
++                    bitmap.getPixels(actual, 0, w, 0, 0, w, h)
++                    assertArrayEquals("${w}x$h d=$d", expected, actual)
++                } finally {
++                    bitmap.recycle()
++                }
++            }
++        }
++    }
++
++    @Test fun enhancementFailureCannotReturnInputAsSuccessfulOutput() {
++        val input = Bitmap.createBitmap(3, 3, Bitmap.Config.ARGB_8888)
++        input.recycle()
++        var failed = false
++        try {
++            ManyueClassicEnhancer.enhance(input, 50, false)
++        } catch (_: RuntimeException) {
++            failed = true
++        }
++        assertTrue("Invalid input must propagate failure to the caller", failed)
++    }
++
++    @Test fun outputAndInputHaveSeparateOwnershipAndZeroStrengthIsExplicitNoOp() {
++        val input = Bitmap.createBitmap(8, 8, Bitmap.Config.ARGB_8888)
++        val output = ManyueClassicEnhancer.enhance(input, 50, false)
++        try {
++            assertNotSame(input, output)
++            output.recycle()
++            assertFalse(input.isRecycled)
++            assertSame(input, ManyueClassicEnhancer.enhance(input, 0, false))
++        } finally {
++            if (!output.isRecycled) output.recycle()
++            input.recycle()
++        }
++    }
++}
+diff --git a/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEncodingCompatibilityTest.kt b/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEncodingCompatibilityTest.kt
+new file mode 100644
+index 0000000..95e914c
+--- /dev/null
++++ b/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEncodingCompatibilityTest.kt
+@@ -0,0 +1,17 @@
++package eu.kanade.tachiyomi.ui.reader.manyue
++
++import android.app.Application
++import android.graphics.Bitmap
++import org.junit.Assert.assertSame
++import org.junit.Test
++import org.junit.runner.RunWith
++import org.robolectric.RobolectricTestRunner
++import org.robolectric.annotation.Config
++
++@RunWith(RobolectricTestRunner::class)
++@Config(application = Application::class, sdk = [29], manifest = Config.NONE)
++class ManyueEncodingCompatibilityTest {
++    @Test fun sdk29UsesAvailableLossyWebpFormat() {
++        assertSame(Bitmap.CompressFormat.WEBP, ManyueBitmapEncoding.lossyWebpFormat())
++    }
++}
+diff --git a/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementCacheTest.kt b/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementCacheTest.kt
+index e6cd218..4387d99 100644
+--- a/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementCacheTest.kt
++++ b/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementCacheTest.kt
+@@ -1,6 +1,7 @@
+ package eu.kanade.tachiyomi.ui.reader.manyue
+ 
+ import org.junit.jupiter.api.Assertions.assertEquals
++import org.junit.jupiter.api.Assertions.assertFalse
+ import org.junit.jupiter.api.Assertions.assertNotEquals
+ import org.junit.jupiter.api.Assertions.assertNull
+ import org.junit.jupiter.api.Assertions.assertTrue
+@@ -24,6 +25,17 @@ class ManyueEnhancementCacheTest {
+         assertNotEquals(a, b)
+     }
+ 
++    @Test fun `overlay cache key isolates v95 ambiguous entries`() {
++        val withoutOverlay = ManyueEnhancementCache.cacheKey(
++            1L, 2L, 3, 0, 2001, 2344, 0, "source", 20, "realcugan_fast", false,
++        )
++        val withOverlay = ManyueEnhancementCache.cacheKey(
++            1L, 2L, 3, 0, 2001, 2344, 0, "source", 20, "realcugan_fast", true,
++        )
++        assertEquals("68da5aa6667bd522caf2a0820de53442", withoutOverlay)
++        assertNotEquals("dd167c3d3c16b1626fdcc462159ef58f", withOverlay)
++    }
++
+     @Test fun `constants match spec`() {
+         assertEquals(48_000_000, ManyueAiRuntime.MAX_MODEL_OUTPUT_PIXELS)
+         assertEquals(67108864, ManyueAiRuntime.MAX_INPUT_BYTES)
+@@ -61,4 +73,28 @@ class ManyueEnhancementCacheTest {
+             bundle.deleteRecursively()
+         }
+     }
++
++    @Test fun `overlay failure detail round trips through manifest`() {
++        val bundle = Files.createTempDirectory("manyue-cache-overlay-test").toFile()
++        try {
++            val image = java.io.File(bundle, "image.webp").apply { writeBytes(byteArrayOf(1)) }
++            val detail = "Anime4K \"未生效\"，路径 C:\\cache\\AI\n保留\u0001原图 😀"
++            val manifest = ManyueEnhancementCache.buildJsonObject(
++                "image" to image.name,
++                "width" to 1000,
++                "height" to 2000,
++                "overlayRequested" to true,
++                "overlayApplied" to false,
++                "detail" to detail,
++            )
++            java.io.File(bundle, "manifest.json").writeText(manifest)
++
++            val cached = ManyueEnhancementCache.cachedImage(bundle)
++            assertEquals(detail, cached?.detail)
++            assertTrue(cached?.overlayRequested == true)
++            assertFalse(cached?.overlayApplied ?: true)
++        } finally {
++            bundle.deleteRecursively()
++        }
++    }
+ }
+diff --git a/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueFoldableLayoutTest.kt b/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueFoldableLayoutTest.kt
+new file mode 100644
+index 0000000..9e68f80
+--- /dev/null
++++ b/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueFoldableLayoutTest.kt
+@@ -0,0 +1,59 @@
++package eu.kanade.tachiyomi.ui.reader.manyue
++
++import android.app.Activity
++import android.app.Application
++import android.content.res.Configuration
++import android.os.Looper
++import android.view.View
++import android.widget.FrameLayout
++import eu.kanade.tachiyomi.ui.reader.viewer.ReaderPageImageView
++import org.junit.Assert.assertEquals
++import org.junit.Test
++import org.junit.runner.RunWith
++import org.robolectric.Robolectric
++import org.robolectric.RobolectricTestRunner
++import org.robolectric.Shadows.shadowOf
++import org.robolectric.annotation.Config
++import org.robolectric.annotation.LooperMode
++
++@RunWith(RobolectricTestRunner::class)
++@Config(application = Application::class, sdk = [34], manifest = Config.NONE)
++@LooperMode(LooperMode.Mode.PAUSED)
++class ManyueFoldableLayoutTest {
++    @Test fun wideningManualPageUsesViewportInsteadOfOldPageWidth() {
++        val controller = Robolectric.buildActivity(Activity::class.java).setup()
++        val activity = controller.get()
++        val viewport = FrameLayout(activity)
++        val page = ReaderPageImageView(activity)
++        viewport.addView(page, FrameLayout.LayoutParams(1400, 800))
++        activity.setContentView(viewport)
++        val oldMode = ManyueRuntimeState.foldableMode
++        val oldWidth = ManyueRuntimeState.foldableTargetWidth
++        try {
++            val exact = View.MeasureSpec.EXACTLY
++            viewport.measure(View.MeasureSpec.makeMeasureSpec(2000, exact), View.MeasureSpec.makeMeasureSpec(800, exact))
++            viewport.layout(0, 0, 2000, 800)
++            assertEquals(1400, page.width)
++            ManyueFoldableController.onConfigurationChanged(Configuration().apply { smallestScreenWidthDp = 700 })
++            ManyueRuntimeState.foldableMode = 1
++            ManyueRuntimeState.foldableTargetWidth = 1800
++            ManyueFoldableController.applyToTree(viewport)
++            shadowOf(Looper.getMainLooper()).idle()
++            val params = page.layoutParams as FrameLayout.LayoutParams
++            assertEquals(1800, params.width)
++            assertEquals(100, params.marginStart)
++            assertEquals(100, params.marginEnd)
++
++            ManyueRuntimeState.foldableMode = 0
++            ManyueFoldableController.applyToTree(viewport)
++            shadowOf(Looper.getMainLooper()).idle()
++            assertEquals(FrameLayout.LayoutParams.MATCH_PARENT, params.width)
++            assertEquals(0, params.marginStart)
++        } finally {
++            ManyueRuntimeState.foldableMode = oldMode
++            ManyueRuntimeState.foldableTargetWidth = oldWidth
++            ManyueFoldableController.onConfigurationChanged(activity.resources.configuration)
++            controller.pause().stop().destroy()
++        }
++    }
++}
+diff --git a/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePageBridgeLogicTest.kt b/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePageBridgeLogicTest.kt
+index 54372f2..aebff12 100644
+--- a/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePageBridgeLogicTest.kt
++++ b/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePageBridgeLogicTest.kt
+@@ -2,6 +2,7 @@ package eu.kanade.tachiyomi.ui.reader.manyue
+ 
+ import org.junit.jupiter.api.Assertions.assertEquals
+ import org.junit.jupiter.api.Assertions.assertFalse
++import org.junit.jupiter.api.Assertions.assertNull
+ import org.junit.jupiter.api.Assertions.assertTrue
+ import org.junit.jupiter.api.Test
+ 
+@@ -41,4 +42,16 @@ class ManyuePageBridgeLogicTest {
+         assertTrue(m.contains("\"parts\":3"))
+         assertTrue(m.contains("\"w\":2344"))
+     }
++
++    @Test fun `display details merge without losing partial result warnings`() {
++        assertEquals(
++            "Anime4KCPP 未生效；部分高清分块读取失败",
++            ManyuePageBridge.mergeDisplayDetails(
++                " Anime4KCPP 未生效 ",
++                "部分高清分块读取失败",
++                "Anime4KCPP 未生效",
++            ),
++        )
++        assertNull(ManyuePageBridge.mergeDisplayDetails(null, " "))
++    }
+ }
+diff --git a/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePrefetchCoordinatorLifecycleTest.kt b/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePrefetchCoordinatorLifecycleTest.kt
+new file mode 100644
+index 0000000..dc7d6d7
+--- /dev/null
++++ b/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePrefetchCoordinatorLifecycleTest.kt
+@@ -0,0 +1,84 @@
++package eu.kanade.tachiyomi.ui.reader.manyue
++
++import java.io.ByteArrayInputStream
++import java.util.concurrent.ConcurrentHashMap
++import java.util.concurrent.atomic.AtomicInteger
++import kotlinx.coroutines.CompletableDeferred
++import kotlinx.coroutines.CoroutineScope
++import kotlinx.coroutines.Dispatchers
++import kotlinx.coroutines.ExperimentalCoroutinesApi
++import kotlinx.coroutines.NonCancellable
++import kotlinx.coroutines.SupervisorJob
++import kotlinx.coroutines.cancel
++import kotlinx.coroutines.runBlocking
++import kotlinx.coroutines.withContext
++import kotlinx.coroutines.withTimeout
++import org.junit.jupiter.api.Assertions.assertArrayEquals
++import org.junit.jupiter.api.Assertions.assertEquals
++import org.junit.jupiter.api.Assertions.assertFalse
++import org.junit.jupiter.api.Assertions.assertNull
++import org.junit.jupiter.api.Assertions.assertTrue
++import org.junit.jupiter.api.Test
++
++class ManyuePrefetchCoordinatorLifecycleTest {
++
++    @Test
++    @OptIn(ExperimentalCoroutinesApi::class)
++    fun `same page window after generation change cancels delayed old work and starts five new jobs`() = runBlocking {
++        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default.limitedParallelism(1))
++        val coordinator = ManyuePrefetchJobCoordinator(scope)
++        val firstLoaderStarted = CompletableDeferred<Int>()
++        val releaseOldLoader = CompletableDeferred<Unit>()
++        val newGenerationQueued = ConcurrentHashMap.newKeySet<Int>()
++        val newGenerationFinished = CompletableDeferred<Unit>()
++        val oldGenerationQueued = AtomicInteger()
++        val plan = ManyueAiSafetyPolicy.prefetchPlan(currentIndex = 8, pageCount = 14)
++
++        try {
++            coordinator.reconcile(91, 8, 101, plan) { target, generation ->
++                firstLoaderStarted.complete(target.pageIndex)
++                withContext(NonCancellable) { releaseOldLoader.await() }
++                coordinator.ensureCurrent(91, generation)
++                oldGenerationQueued.incrementAndGet()
++            }
++            assertEquals(9, withTimeout(5_000) { firstLoaderStarted.await() })
++
++            coordinator.reconcile(91, 8, 102, plan) { target, generation ->
++                coordinator.ensureCurrent(91, generation)
++                newGenerationQueued += target.pageIndex
++                if (newGenerationQueued.size == 5) newGenerationFinished.complete(Unit)
++            }
++            releaseOldLoader.complete(Unit)
++            withTimeout(5_000) { newGenerationFinished.await() }
++
++            assertEquals(0, oldGenerationQueued.get(), "stale delayed load must not enqueue")
++            assertEquals(setOf(9, 10, 11, 12, 13), newGenerationQueued)
++            assertFalse(coordinator.isCurrent(91, 101))
++            assertTrue(coordinator.isCurrent(91, 102))
++        } finally {
++            coordinator.cancelAll()
++            scope.cancel()
++        }
++    }
++
++    @Test
++    fun `bounded prefetch read accepts limit and closes oversized stream after limit plus one`() {
++        val atLimit = TrackingInputStream(ByteArray(8) { it.toByte() })
++        assertArrayEquals(ByteArray(8) { it.toByte() }, readBoundedPrefetchBytes(atLimit, maxBytes = 8))
++        assertTrue(atLimit.closed)
++
++        val overLimit = TrackingInputStream(ByteArray(9) { it.toByte() })
++        assertNull(readBoundedPrefetchBytes(overLimit, maxBytes = 8))
++        assertTrue(overLimit.closed)
++    }
++
++    private class TrackingInputStream(bytes: ByteArray) : ByteArrayInputStream(bytes) {
++        var closed = false
++            private set
++
++        override fun close() {
++            closed = true
++            super.close()
++        }
++    }
++}
+diff --git a/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueWebtoonLifecycleTest.kt b/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueWebtoonLifecycleTest.kt
+index 3665c5e..feae71b 100644
+--- a/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueWebtoonLifecycleTest.kt
++++ b/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueWebtoonLifecycleTest.kt
+@@ -2,6 +2,7 @@ package eu.kanade.tachiyomi.ui.reader.manyue
+ 
+ import android.app.Activity
+ import android.app.Application
++import android.content.Context
+ import android.graphics.Bitmap
+ import android.graphics.Canvas
+ import android.graphics.drawable.BitmapDrawable
+@@ -46,6 +47,16 @@ class ManyueWebtoonLifecycleTest {
+         override fun aiImageExecutor(): Executor = Executor { }
+     }
+ 
++    private class PendingImageView(context: Context) : ReaderPageImageView(context) {
++        override fun aiImageExecutor(): Executor = Executor { }
++    }
++
++    private val landscapeConfig = ReaderPageImageView.Config(
++        zoomDuration = 1,
++        minimumScaleType = SubsamplingScaleImageView.SCALE_TYPE_CENTER_INSIDE,
++        landscapeZoom = true,
++    )
++
+     private fun touch(target: View, action: Int) {
+         val now = SystemClock.uptimeMillis()
+         MotionEvent.obtain(now, now, action, 50f, 50f, 0).let {
+@@ -68,6 +79,29 @@ class ManyueWebtoonLifecycleTest {
+         view.layout(0, 0, width, height)
+     }
+ 
++    private fun landscapeView(activity: Activity): Pair<ReaderPageImageView, SubsamplingScaleImageView> {
++        val imageView = ReaderPageImageView(activity)
++        imageView.setImage(
++            BitmapDrawable(activity.resources, Bitmap.createBitmap(400, 200, Bitmap.Config.ARGB_8888)),
++            landscapeConfig,
++        )
++        activity.setContentView(imageView, ViewGroup.LayoutParams(200, 400))
++        layout(imageView)
++        draw(imageView)
++        val image = imageView.getChildAt(0) as SubsamplingScaleImageView
++        check(image.isReady)
++        imageView.onPageSelected(forward = true)
++        return imageView to image
++    }
++
++    private fun sendTileLoadError(view: SubsamplingScaleImageView, error: Exception) {
++        val listener = SubsamplingScaleImageView::class.java
++            .getDeclaredField("onImageEventListener")
++            .apply { isAccessible = true }
++            .get(view) as SubsamplingScaleImageView.OnImageEventListener
++        listener.onTileLoadError(error)
++    }
++
+     @Test fun rejectedStripDownCannotLatchInteractionForever() {
+         val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+         val strip = Strip(activity)
+@@ -282,4 +316,135 @@ class ManyueWebtoonLifecycleTest {
+         strip.recycle()
+         activity.finish()
+     }
++
++    @Test fun delayedLandscapeZoomIsCancelledWhenThePageIsRecycled() {
++        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
++        val (imageView, image) = landscapeView(activity)
++
++        imageView.recycle()
++        assertFalse(image.isReady)
++        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(500))
++
++        activity.finish()
++    }
++
++    @Test fun delayedLandscapeZoomStillRunsForTheCurrentReadyPage() {
++        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
++        val (imageView, image) = landscapeView(activity)
++        val minimumScale = image.minScale
++        assertEquals(minimumScale, image.scale, 0.001f)
++
++        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(600))
++        draw(imageView)
++        assertTrue(image.scale > minimumScale)
++
++        imageView.recycle()
++        activity.finish()
++    }
++
++    @Test fun delayedLandscapeZoomDoesNotCarryOverToAReboundPage() {
++        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
++        val (imageView, _) = landscapeView(activity)
++        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(100))
++
++        imageView.setImage(
++            BitmapDrawable(activity.resources, Bitmap.createBitmap(400, 200, Bitmap.Config.ARGB_8888)),
++            landscapeConfig.copy(landscapeZoom = false),
++        )
++        layout(imageView)
++        draw(imageView)
++        val rebound = imageView.getChildAt(0) as SubsamplingScaleImageView
++        val reboundScale = rebound.scale
++
++        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(500))
++        draw(imageView)
++        assertEquals(reboundScale, rebound.scale, 0.001f)
++
++        imageView.recycle()
++        activity.finish()
++    }
++
++    @Test fun delayedLandscapeZoomIsCancelledWhenStagedImageReplacesThePage() {
++        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
++        val imageView = PendingImageView(activity)
++        imageView.setImage(
++            BitmapDrawable(activity.resources, Bitmap.createBitmap(400, 200, Bitmap.Config.ARGB_8888)),
++            landscapeConfig,
++        )
++        activity.setContentView(imageView, ViewGroup.LayoutParams(200, 400))
++        layout(imageView)
++        draw(imageView)
++        imageView.onPageSelected(forward = true)
++        val original = imageView.getChildAt(0) as SubsamplingScaleImageView
++        check(original.isReady)
++        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(100))
++
++        imageView.setTiledImagePreservingCurrent(
++            File(activity.cacheDir, "pending-landscape.webp"),
++            landscapeConfig,
++            { true },
++            { true },
++            { _, _ -> },
++            { error -> throw AssertionError(error) },
++        )
++        val staged = imageView.getChildAt(0) as SubsamplingScaleImageView
++        staged.setImage(ImageSource.bitmap(Bitmap.createBitmap(200, 400, Bitmap.Config.ARGB_8888)))
++        layout(imageView)
++        draw(imageView)
++        shadowOf(Looper.getMainLooper()).idle()
++        assertSame(staged, imageView.getChildAt(0))
++
++        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(500))
++
++        imageView.recycle()
++        activity.finish()
++    }
++
++    @Test fun lateTileFailureReportsForActiveImageAndIgnoresReplacedImage() {
++        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
++        val strip = Strip(activity)
++        strip.setImage(
++            BitmapDrawable(activity.resources, Bitmap.createBitmap(100, 200, Bitmap.Config.ARGB_8888)),
++            config,
++        )
++        activity.setContentView(strip, ViewGroup.LayoutParams(200, 400))
++        layout(strip)
++        draw(strip)
++        val displayErrors = mutableListOf<Throwable>()
++        var stagingErrors = 0
++
++        fun stage(onDisplayError: (Throwable) -> Unit): SubsamplingScaleImageView {
++            strip.setTiledImagePreservingCurrent(
++                File(activity.cacheDir, "pending-strip-${displayErrors.size}.webp"),
++                config,
++                { true },
++                { true },
++                { _, _ -> },
++                { stagingErrors++ },
++                onDisplayError,
++            )
++            val staged = strip.getChildAt(0) as SubsamplingScaleImageView
++            staged.setImage(ImageSource.bitmap(Bitmap.createBitmap(200, 400, Bitmap.Config.ARGB_8888)))
++            layout(strip)
++            draw(strip)
++            shadowOf(Looper.getMainLooper()).idle()
++            return staged
++        }
++
++        val first = stage { displayErrors += it }
++        val active = stage { displayErrors += it }
++        val staleFailure = IllegalStateException("replaced tile failed")
++        sendTileLoadError(first, staleFailure)
++        assertTrue(displayErrors.isEmpty())
++
++        val activeFailure = IllegalStateException("active tile failed")
++        sendTileLoadError(active, activeFailure)
++        assertEquals(listOf(activeFailure), displayErrors)
++        assertEquals(0, stagingErrors)
++        assertSame(active, strip.getChildAt(0))
++        assertEquals(1, strip.childCount)
++
++        strip.recycle()
++        activity.finish()
++    }
+ }
+diff --git a/reader-ssiv/src/main/cpp/crop/crop.cpp b/reader-ssiv/src/main/cpp/crop/crop.cpp
+index 6c82451..8c9b638 100644
+--- a/reader-ssiv/src/main/cpp/crop/crop.cpp
++++ b/reader-ssiv/src/main/cpp/crop/crop.cpp
+@@ -1,5 +1,6 @@
+ #include <jni.h>
+ #include <limits>
++#include <new>
+ #include <vector>
+ 
+ #include "borders.h"
+@@ -16,21 +17,35 @@ void throwIllegalArgument(JNIEnv* env, const char* message)
+ 
+ }  // namespace
+ 
+-// Mirror of imagedecoder's get_ptr helper – read a long "ptr" field from a Java object.
+-// Not needed here since we operate on a passed-in byte array, but kept for style parity.
+-
+ extern "C" JNIEXPORT jintArray JNICALL
+ Java_com_davemorrissey_labs_subscaleview_CropBorders_findCropBorders(
+   JNIEnv* env, jobject /* thiz */,
+   jbyteArray jpixels, jint width, jint height)
+ {
+-  jsize len = env->GetArrayLength(jpixels);
+-  jbyte* rgba = env->GetByteArrayElements(jpixels, nullptr);
++  if (jpixels == nullptr || width <= 0 || height <= 0) {
++    throwIllegalArgument(env, "RGBA pixels and positive dimensions are required");
++    return nullptr;
++  }
++  const uint64_t pixelCount = static_cast<uint64_t>(width) * static_cast<uint64_t>(height);
++  if (pixelCount > static_cast<uint64_t>(std::numeric_limits<jsize>::max()) / 4 ||
++      static_cast<uint64_t>(env->GetArrayLength(jpixels)) != pixelCount * 4) {
++    throwIllegalArgument(env, "RGBA array length must equal width * height * 4");
++    return nullptr;
++  }
+ 
+   // Convert RGBA -> grayscale (single channel) using BT.601 luminance coefficients.
+   // borders.cpp expects one byte per pixel.
+-  std::vector<uint8_t> gray(width * height);
+-  for (jint i = 0; i < width * height; i++) {
++  std::vector<uint8_t> gray;
++  try {
++    gray.resize(static_cast<size_t>(pixelCount));
++  } catch (const std::bad_alloc&) {
++    jclass errorClass = env->FindClass("java/lang/OutOfMemoryError");
++    if (errorClass != nullptr) env->ThrowNew(errorClass, "Unable to allocate crop grayscale buffer");
++    return nullptr;
++  }
++  jbyte* rgba = env->GetByteArrayElements(jpixels, nullptr);
++  if (rgba == nullptr) return nullptr;
++  for (size_t i = 0; i < pixelCount; i++) {
+     uint8_t r = (uint8_t)rgba[i * 4 + 0];
+     uint8_t g = (uint8_t)rgba[i * 4 + 1];
+     uint8_t b = (uint8_t)rgba[i * 4 + 2];
+@@ -42,6 +57,7 @@ Java_com_davemorrissey_labs_subscaleview_CropBorders_findCropBorders(
+   Rect rect = findBorders(gray.data(), (uint32_t)width, (uint32_t)height);
+ 
+   jintArray result = env->NewIntArray(4);
++  if (result == nullptr) return nullptr;
+   jint buf[4] = {
+     (jint)rect.x,
+     (jint)rect.y,
