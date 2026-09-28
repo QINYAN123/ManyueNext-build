@@ -24,6 +24,12 @@ bash scripts/native_crop_jni_smoke.sh .build/source
 
 构建套件包含基准源码和 v9.1–v9.7 七个补丁。GitHub Actions 保留 clean、单元测试必需数量门禁、零 lint Error/Fatal 门禁、原生/模型校验、签名 release 构建及 APK 检查。实际结果和证据见发布附件中的完整验收报告。
 
+### v9.7 CI 结果
+
+GitHub Actions [run 36341396602](https://github.com/QINYAN123/ManyueNext-build/actions/runs/36341396602) 对已测试交付提交 `bca8c64869ebaa39644c766469283c9238bf4270` 成功：21 个 JUnit suite 共 **107 项，0 failure、0 error、0 skipped**；Webtoon lifecycle 14、scheduler 6、prefetch coordinator 3、AI runtime 11。Lint 为 **0 Error/Fatal、70 Warning**，Warning issue ID 计数与 v9.6 一致。清洁构建、native/model integrity、持久证书 ARM64 APK 构建与交付门禁均通过。
+
+APK SHA-256：`ca6ee231fb2ce5ad4121ffa44a8212e482d48e6fa4536fc97a1189b88b6bf617`。源码 ZIP SHA-256：`21ebc5fa94e07b953c61da3c0d859506c9ebbe8a929397357b18ca01b93fefb3`。这些结果证明 CI 和产物检查通过，不代表 Honor Magic V2 真机、完整 Viewer 集成或性能验收完成。
+
 ## 安装
 
 沿用 v9.5/v9.6 持久签名，可覆盖安装。证书 SHA-256：`EE3E3B5C0F648507D54D79C9A8ABB772A0448A07F884D0A92EE4599E6F4BAFD7`。
