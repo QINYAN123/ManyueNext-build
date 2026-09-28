@@ -1,3 +1,30 @@
+# ManyueNext v9.8 连续 AI 处理
+
+应用版本 **0.20.12**，`versionCode` **38**。v9.8 将条漫 AI 预处理改为按章推进的单一有界 cursor，逐页等待 worker 的真实终态；缓存按阅读位置保护当前、邻近和可见页面，并按 **768 MiB** 预算管理预读。正常触摸和普通滚动期间仍允许新 AI 工作；快速滚动、连续帧压力或严重热状态会暂缓新的后台工作。generation、章节和模式变化可以取消等待中的任务。
+
+## 已知限制
+
+- CUGAN/ESRGAN 仍按图片启动命令行进程。本轮未实现常驻 native engine 或模型 session，也不宣称推理加速。
+- 压力 gate 只暂停新后台工作；已经运行的 native/GPU 运算不能随滚动即时暂停。
+- 损坏的经典变体在 bundle pin 保护期间可能暂不删除，后续仍可能回退到基础 AI 图；这是已知 P2。
+- 没有 Honor Magic V2 或等效设备的真机验收，因此没有设备帧时间、温度、功耗或流畅度结论。
+
+## v9.8 CI 结果
+
+GitHub Actions [run 36443081293](https://github.com/QINYAN123/ManyueNext-build/actions/runs/36443081293) 对交付提交 `da557f41dc3d27563788df7fe2df0b6f28349b60` 成功：23 个 JUnit suite 共 **124 项，0 failure、0 error、0 skipped**。Lint 门禁通过，**0 Error/Fatal**；完整 warning 计数与 issue-level 报告见 v9.8 验收附件。签名 ARM64 release APK 构建及 package delivery 验证通过。自动化与产物检查不代表目标设备性能通过。
+
+本地独立回归另有 120 项通过：核心 JVM 76 项，UI/Robolectric 44 项。SDK 34 和 encoding 29 target 已运行；SDK 36/37 未请求，本轮不作其测试结论。完整测试、lint、APK 与源码证据见发布附件中的《验收报告》。
+
+## v9.8 构建
+
+```sh
+python3 scripts/prepare_manyue_v9_8.py
+bash scripts/native_crop_jni_smoke.sh .build/source
+```
+
+构建套件包含基准源码及 v9.1–v9.8 八个补丁。自动化检查通过的最终版本为 **PASS WITH ISSUES**，设备验收仍未完成。
+
+---
 # ManyueNext v9.7 条漫跨章与后台负载修复
 
 基于 v9.6 继续修复荣耀 Magic V2 上反馈的无缝跨章增强被取消，以及阅读时后台任务竞争资源的问题。应用版本 **0.20.11**，`versionCode` **37**。
