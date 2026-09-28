@@ -1,0 +1,3518 @@
+diff --git a/app/build.gradle.kts b/app/build.gradle.kts
+index 3bf5e50..4d42ab9 100644
+--- a/app/build.gradle.kts
++++ b/app/build.gradle.kts
+@@ -40,8 +40,8 @@ android {
+     defaultConfig {
+         applicationId = "app.mihon"
+ 
+-        versionCode = 37
+-        versionName = "0.20.11"
++        versionCode = 38
++        versionName = "0.20.12"
+ 
+         buildConfigField("String", "COMMIT_COUNT", "\"${getLatestCommitCount()}\"")
+         buildConfigField("String", "COMMIT_SHA", "\"${getLatestCommitSha()}\"")
+diff --git a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiRequestFactory.kt b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiRequestFactory.kt
+index c703b86..9c85194 100644
+--- a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiRequestFactory.kt
++++ b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiRequestFactory.kt
+@@ -7,7 +7,7 @@ import java.util.UUID
+ import logcat.LogPriority
+ import tachiyomi.core.common.util.system.logcat
+ 
+-/** Creates validated native requests for visible holders and the explicit +1..+5 prefetcher. */
++/** Creates validated native requests for visible holders and the bounded chapter prefetch cursor. */
+ object ManyueAiRequestFactory {
+ 
+     fun enqueue(
+diff --git a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiSafetyPolicy.kt b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiSafetyPolicy.kt
+index 71367b9..84ddeda 100644
+--- a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiSafetyPolicy.kt
++++ b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiSafetyPolicy.kt
+@@ -6,7 +6,9 @@ object ManyueAiSafetyPolicy {
+     const val MAX_DISPLAY_PIXELS = 12_000_000
+     const val MAX_CLASSIC_PIXELS = 6_000_000
+ 
+-    data class PrefetchTarget(val pageIndex: Int, val priority: Int)
++    const val PREFETCH_LOOK_BACK_PAGES = 2
++    const val ACTIVE_COMPLETION_LOOK_BACK_PAGES = 5
++    const val CONTINUOUS_PREFETCH_PRIORITY = 1
+ 
+     fun priorityFor(pageIndex: Int, currentIndex: Int): Int? = when (pageIndex - currentIndex) {
+         0 -> 100
+@@ -18,11 +20,15 @@ object ManyueAiSafetyPolicy {
+         else -> null
+     }
+ 
+-    fun prefetchPlan(currentIndex: Int, pageCount: Int): List<PrefetchTarget> {
+-        if (currentIndex < 0 || pageCount <= 0 || currentIndex >= pageCount) return emptyList()
+-        val last = minOf(pageCount - 1, currentIndex + 5)
+-        return (currentIndex..last).map { index ->
+-            PrefetchTarget(index, requireNotNull(priorityFor(index, currentIndex)))
++    /** Priority for the one cursor target, including pages more than five pages ahead. */
++    fun continuousPrefetchPriority(pageIndex: Int, currentIndex: Int): Int {
++        val distance = pageIndex - currentIndex
++        return when {
++            distance == 0 -> 100
++            distance in 1..5 -> requireNotNull(priorityFor(pageIndex, currentIndex))
++            distance > 5 -> CONTINUOUS_PREFETCH_PRIORITY
++            distance in -PREFETCH_LOOK_BACK_PAGES until 0 -> 5
++            else -> CONTINUOUS_PREFETCH_PRIORITY
+         }
+     }
+ 
+diff --git a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiUpscaler.kt b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiUpscaler.kt
+index 6da2408..2d1ce31 100644
+--- a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiUpscaler.kt
++++ b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiUpscaler.kt
+@@ -16,6 +16,7 @@ import java.util.concurrent.PriorityBlockingQueue
+ import java.util.concurrent.TimeUnit
+ import kotlin.concurrent.thread
+ import kotlin.math.roundToInt
++import kotlinx.coroutines.CompletableDeferred
+ import logcat.LogPriority
+ import tachiyomi.core.common.util.system.logcat
+ 
+@@ -81,6 +82,8 @@ object ManyueAiUpscaler {
+         val model: ManyueAiModel = ManyueAiModel.DEFAULT,
+         val anime4kOverlay: Boolean = false,
+     ) : Comparable<Request> {
++        internal val terminal = CompletableDeferred<Int>()
++
+         override fun compareTo(other: Request): Int =
+             other.priority.compareTo(this.priority)
+ 
+@@ -294,6 +297,22 @@ object ManyueAiUpscaler {
+         listeners.remove(token)
+     }
+ 
++    /** Await worker completion independently of View listeners and the main looper. */
++    suspend fun awaitCompletion(token: String): Int {
++        val req = requests[token] ?: return STATE_FAILED
++        if (req.cancelled) return STATE_CANCELLED
++        if (req.completed) return req.completionState
++        return req.terminal.await()
++    }
++
++    fun isProcessing(token: String): Boolean = requests[token]?.let {
++        it.processing && !it.cancelled && !it.completed
++    } == true
++
++    fun isFinished(token: String): Boolean = requests[token]?.let {
++        it.completed || it.cancelled
++    } ?: true
++
+     fun removeListener(token: String, listener: OnAiCompleteListener) {
+         listeners[token]?.let { current ->
+             current.remove(listener)
+@@ -313,6 +332,7 @@ object ManyueAiUpscaler {
+ 
+     @Synchronized
+     private fun notify(req: Request, state: Int, detail: String? = req.completionDetail ?: req.failureDetail) {
++        if (state != STATE_PROCESSING) req.terminal.complete(state)
+         val ls = listeners.remove(req.token)?.toList() ?: return
+         mainHandler.post {
+             ls.forEach { it.onAiComplete(req.token, state, detail) }
+@@ -347,6 +367,15 @@ object ManyueAiUpscaler {
+         return ManyueEnhancementCache.getImage(context, cacheKeyFor(req))
+     }
+ 
++    fun pinnedCachedImage(
++        context: Context,
++        token: String,
++        strength: Int? = null,
++    ): ManyueEnhancementCache.PinnedCachedImage? {
++        val req = requests[token] ?: return null
++        return ManyueEnhancementCache.pinCachedImage(context, cacheKeyFor(req), strength)
++    }
++
+     fun cachedClassicImage(
+         context: Context,
+         token: String,
+@@ -374,8 +403,8 @@ object ManyueAiUpscaler {
+     /** Decode the cached full image for the optional classic pass. Call only off the main thread. */
+     fun loadCachedBitmap(context: Context, token: String): Bitmap? {
+         return try {
+-            val image = cachedImage(context, token) ?: return null
+-            BitmapFactory.decodeFile(image.file.absolutePath)
++            val pinned = pinnedCachedImage(context, token) ?: return null
++            pinned.lease.use { BitmapFactory.decodeFile(pinned.image.file.absolutePath) }
+         } catch (t: Throwable) {
+             null
+         }
+@@ -549,7 +578,7 @@ object ManyueAiUpscaler {
+             val cachedOutput = resizeOutput(outDir, selectedOutputFile, outW, outH, resolved)
+             if (!requestIsCurrent(req)) return
+             val cachedHeight = (outH * (resolved.toDouble() / outW)).roundToInt().coerceAtLeast(1)
+-            ManyueEnhancementCache.putImage(
++            val cacheCommitted = ManyueEnhancementCache.putImage(
+                 context,
+                 key,
+                 cachedOutput,
+@@ -558,7 +587,10 @@ object ManyueAiUpscaler {
+                 overlayRequested = req.anime4kOverlay,
+                 overlayApplied = overlayApplied,
+                 detail = overlayDetail,
++                readingIdentity = ManyueEnhancementCache.ReadingIdentity(req.mangaId, req.chapterId, req.pageIndex),
++                consumeSource = true,
+             )
++            check(cacheCommitted) { "AI 缓存预算不足，暂时保留原图" }
+             req.completionDetail = overlayDetail
+             ManyueEnhancementCache.trimCache(context)
+             val waitMs = if (req.enqueuedAt > 0L) {
+@@ -594,7 +626,9 @@ object ManyueAiUpscaler {
+             }
+             ManyueDiagnostics.record("${req.failureDetail}；已保留原图")
+         } finally {
+-            expensiveWorkStartedAt?.let(workPacer::afterWork)
++            expensiveWorkStartedAt?.let {
++                workPacer.afterWork(it, pressureActive = ManyueReaderWorkGate.isBlocked())
++            }
+             req.runningProcess = null
+             req.queued = false
+             if (req.cancelled) state = STATE_CANCELLED
+diff --git a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementCache.kt b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementCache.kt
+index de75afc..875630b 100644
+--- a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementCache.kt
++++ b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementCache.kt
+@@ -7,6 +7,15 @@ import java.io.File
+ import java.io.FileInputStream
+ import java.io.FileOutputStream
+ import java.security.MessageDigest
++import java.util.concurrent.atomic.AtomicBoolean
++import kotlinx.coroutines.CancellableContinuation
++import kotlinx.coroutines.CoroutineScope
++import kotlinx.coroutines.Dispatchers
++import kotlinx.coroutines.SupervisorJob
++import kotlinx.coroutines.launch
++import kotlinx.coroutines.suspendCancellableCoroutine
++import kotlinx.coroutines.withContext
++import kotlin.coroutines.resume
+ 
+ /**
+  * Disk cache for complete AI-enhanced images.
+@@ -19,6 +28,51 @@ object ManyueEnhancementCache {
+     private const val LEGACY_CACHE_DIR_NAME = "manyue_ai_anime_fixed2_v6"
+     private const val MAX_CACHE_BYTES = 805_306_368L // 768 MiB
+     private const val TRIM_TO_BYTES = 671_088_640L // 640 MiB
++    private const val NEAR_PREVIOUS_PAGES = 2
++    const val DEFAULT_PREFETCH_RESERVATION_BYTES = 64_777_216L // 12 MP RGBA + 16 MiB overhead
++
++    private val cacheLock = Any()
++    private val diskLock = Any()
++    private val waitersLock = Any()
++    private val leasesByBundle = mutableMapOf<String, Int>()
++    private val deletingBundles = mutableSetOf<String>()
++    private val reservations = linkedMapOf<Long, ReservationRecord>()
++    private val budgetWaiters = mutableListOf<CancellableContinuation<Unit>>()
++    private var nextReservationId = 1L
++    private var budgetEventVersion = 0L
++    private var readingPosition: ReadingPosition? = null
++    private var protectedPageSnapshot: Set<Pair<Long, Int>> = emptySet()
++    private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
++
++    data class ReadingIdentity(val mangaId: Long, val chapterId: Long, val pageIndex: Int)
++
++    private data class ReadingPosition(val mangaId: Long, val chapterId: Long, val pageIndex: Int)
++
++    private data class ReservationRecord(val identity: ReadingIdentity, val bytes: Long)
++
++    /** A reservation prevents other prefetches from spending this page's cache budget. */
++    class PrefetchReservation internal constructor(
++        private val id: Long?,
++    ) : AutoCloseable {
++        private val closed = AtomicBoolean(false)
++
++        override fun close() {
++            if (closed.compareAndSet(false, true)) id?.let(::releaseReservation)
++        }
++    }
++
++    /** Pins a cache bundle while an image view or decoder may still read it. */
++    class CacheLease internal constructor(
++        private val bundleKey: String?,
++    ) : AutoCloseable {
++        private val closed = AtomicBoolean(false)
++
++        override fun close() {
++            if (closed.compareAndSet(false, true)) bundleKey?.let(::releaseBundleLease)
++        }
++    }
++
++    data class PinnedCachedImage(val image: CachedImage, val lease: CacheLease)
+ 
+     data class CachedImage(
+         val file: File,
+@@ -27,11 +81,175 @@ object ManyueEnhancementCache {
+         val overlayRequested: Boolean = false,
+         val overlayApplied: Boolean = false,
+         val detail: String? = null,
++        val readingIdentity: ReadingIdentity? = null,
+     )
+ 
+     fun cacheDir(context: Context): File =
+         File(context.cacheDir, CACHE_DIR_NAME).apply { mkdirs() }
+ 
++    /** Small in-memory reader snapshot; safe to call from the reader thread. */
++    fun updateReadingPosition(mangaId: Long, chapterId: Long, pageIndex: Int) {
++        synchronized(cacheLock) {
++            readingPosition = ReadingPosition(mangaId, chapterId, pageIndex.coerceAtLeast(0))
++        }
++        signalBudgetWaiters()
++    }
++
++    fun clearReadingPosition(mangaId: Long? = null, chapterId: Long? = null) {
++        synchronized(cacheLock) {
++            val current = readingPosition ?: return
++            if (mangaId != null && current.mangaId != mangaId) return
++            if (chapterId != null && current.chapterId != chapterId) return
++            readingPosition = null
++            protectedPageSnapshot = emptySet()
++        }
++        signalBudgetWaiters()
++    }
++
++    /** Visible pairs are `(chapterId, pageIndex)` within the active manga. */
++    fun updateProtectedPages(visiblePages: Set<Pair<Long, Int>>) {
++        synchronized(cacheLock) {
++            protectedPageSnapshot = visiblePages.toSet()
++        }
++        signalBudgetWaiters()
++    }
++
++    /**
++     * Reserve disk budget before starting a prefetch. This may suspend while protected results
++     * occupy the budget; cancellation removes the waiter and returns immediately.
++     */
++    suspend fun awaitPrefetchBudget(
++        context: Context,
++        mangaId: Long,
++        chapterId: Long,
++        pageIndex: Int,
++        estimatedBytes: Long = DEFAULT_PREFETCH_RESERVATION_BYTES,
++    ): PrefetchReservation {
++        require(estimatedBytes in 1..MAX_CACHE_BYTES) { "Invalid prefetch budget reservation" }
++        val identity = ReadingIdentity(mangaId, chapterId, pageIndex)
++        var acquired: PrefetchReservation? = null
++        try {
++            return withContext(Dispatchers.IO) {
++                acquirePrefetchReservation(context, identity, estimatedBytes) { acquired = it }
++            }
++        } catch (error: Throwable) {
++            acquired?.close()
++            throw error
++        }
++    }
++
++    /**
++     * Pin a cache-owned file before handing it to an image view or decoder. Files outside this
++     * AI cache receive a no-op lease; a bundle currently being deleted returns null.
++     */
++    fun pinFile(context: Context, file: File): CacheLease? {
++        val key = managedBundleKey(context, file) ?: return CacheLease(null)
++        synchronized(cacheLock) {
++            if (key in deletingBundles) return null
++            leasesByBundle[key] = (leasesByBundle[key] ?: 0) + 1
++        }
++        val lease = CacheLease(key)
++        if (!file.isFile) {
++            lease.close()
++            return null
++        }
++        return lease
++    }
++
++    /** Atomically pins a cache bundle before reading its manifest/image paths. */
++    fun pinCachedImage(context: Context, key: String, classicStrength: Int? = null): PinnedCachedImage? {
++        if (!key.matches(Regex("[0-9a-f]{32}"))) return null
++        val lease = synchronized(cacheLock) {
++            if (key in deletingBundles) return null
++            leasesByBundle[key] = (leasesByBundle[key] ?: 0) + 1
++            CacheLease(key)
++        }
++        val image = runCatching { cachedImage(File(cacheDir(context), key), classicStrength) }.getOrNull()
++        if (image == null || !image.file.isFile) {
++            lease.close()
++            return null
++        }
++        File(image.file.parentFile, "").setLastModified(System.currentTimeMillis())
++        return PinnedCachedImage(image, lease)
++    }
++
++    internal fun isManagedCacheFile(context: Context, file: File): Boolean =
++        managedBundleKey(context, file) != null
++
++    private fun managedBundleKey(context: Context, file: File): String? {
++        val rootPath = File(context.cacheDir, CACHE_DIR_NAME).absoluteFile.path.trimEnd(File.separatorChar)
++        val filePath = file.absoluteFile.path
++        val prefix = rootPath + File.separator
++        if (!filePath.startsWith(prefix)) return null
++        val parts = filePath.removePrefix(prefix).split(File.separatorChar)
++        val key = parts.firstOrNull() ?: return null
++        if (parts.size < 2 || parts.any { it.isEmpty() || it == "." || it == ".." }) return null
++        return key.takeIf { it.matches(Regex("[0-9a-f]{32}")) }
++    }
++
++    private fun releaseBundleLease(key: String) {
++        synchronized(cacheLock) {
++            val count = leasesByBundle[key] ?: return
++            if (count <= 1) leasesByBundle.remove(key) else leasesByBundle[key] = count - 1
++        }
++        signalBudgetWaiters()
++    }
++
++    private fun releaseReservation(id: Long) {
++        synchronized(cacheLock) { reservations.remove(id) } ?: return
++        signalBudgetWaiters()
++    }
++
++    private suspend fun acquirePrefetchReservation(
++        context: Context,
++        identity: ReadingIdentity,
++        estimatedBytes: Long,
++        onAcquired: (PrefetchReservation) -> Unit,
++    ): PrefetchReservation {
++        while (true) {
++            val observedVersion = synchronized(waitersLock) { budgetEventVersion }
++            val reservation = synchronized(diskLock) {
++                if (!ensureCapacity(context, estimatedBytes, identity)) {
++                    null
++                } else {
++                    synchronized(cacheLock) {
++                        val id = nextReservationId++
++                        reservations[id] = ReservationRecord(identity, estimatedBytes)
++                        PrefetchReservation(id)
++                    }
++                }
++            }
++            if (reservation != null) {
++                onAcquired(reservation)
++                return reservation
++            }
++            awaitBudgetChange(observedVersion)
++        }
++    }
++
++    private suspend fun awaitBudgetChange(observedVersion: Long) = suspendCancellableCoroutine<Unit> { continuation ->
++        synchronized(waitersLock) {
++            if (budgetEventVersion != observedVersion) {
++                continuation.resume(Unit)
++            } else {
++                budgetWaiters += continuation
++            }
++        }
++        continuation.invokeOnCancellation {
++            synchronized(waitersLock) { budgetWaiters.remove(continuation) }
++        }
++    }
++
++    private fun signalBudgetWaiters() {
++        val waiters = synchronized(waitersLock) {
++            budgetEventVersion++
++            budgetWaiters.toList().also { budgetWaiters.clear() }
++        }
++        waiters.forEach { continuation ->
++            if (continuation.isActive) continuation.resume(Unit)
++        }
++    }
++
+     fun cacheKey(
+         mangaId: Long,
+         chapterId: Long,
+@@ -56,6 +274,7 @@ object ManyueEnhancementCache {
+     /** Returns the bundle dir if its complete image and dimension manifest exist. */
+     fun getBundle(context: Context, key: String): File? {
+         val dir = File(cacheDir(context), key)
++        if (isBundleDeleting(key)) return null
+         if (cachedImage(dir) == null) return null
+         dir.setLastModified(System.currentTimeMillis())
+         return dir
+@@ -87,6 +306,7 @@ object ManyueEnhancementCache {
+         } else {
+             storedDetail
+         }
++        val readingIdentity = parseReadingIdentity(manifest)
+         if (!ManyueAiSafetyPolicy.isPixelBudgetSafe(width, height, ManyueAiSafetyPolicy.MAX_DISPLAY_PIXELS)) {
+             return null
+         }
+@@ -96,7 +316,7 @@ object ManyueEnhancementCache {
+             classicVariantFile(bundle, classicStrength) ?: return null
+         }
+         if (!image.isFile || image.length() <= 0L) return null
+-        return CachedImage(image, width, height, overlayRequested, overlayApplied, detail)
++        return CachedImage(image, width, height, overlayRequested, overlayApplied, detail, readingIdentity)
+     }
+ 
+     internal fun imageFile(bundle: File): File? = cachedImage(bundle)?.file
+@@ -116,7 +336,9 @@ object ManyueEnhancementCache {
+         overlayRequested: Boolean = false,
+         overlayApplied: Boolean = false,
+         detail: String? = null,
+-    ) {
++        readingIdentity: ReadingIdentity? = null,
++        consumeSource: Boolean = false,
++    ): Boolean {
+         require(source.isFile && source.length() > 0L) { "AI output file is missing" }
+         require(ManyueAiSafetyPolicy.isPixelBudgetSafe(width, height, ManyueAiSafetyPolicy.MAX_DISPLAY_PIXELS))
+         require(!overlayApplied || overlayRequested) { "Anime4K overlay cannot apply unless requested" }
+@@ -128,45 +350,78 @@ object ManyueEnhancementCache {
+         val base = cacheDir(context)
+         val finalDir = File(base, key)
+         val pending = File(base, "$key.pending")
+-        if (pending.exists()) pending.deleteRecursively()
+-        pending.mkdirs()
+-        try {
+-            FileOutputStream(File(pending, imageName)).use { out ->
+-                FileInputStream(source).use { it.copyTo(out) }
++        val manifest = mutableListOf<Pair<String, Any>>(
++            "image" to imageName,
++            "width" to width,
++            "height" to height,
++            "overlayRequested" to overlayRequested,
++            "overlayApplied" to overlayApplied,
++        )
++        val finalDetail = detail ?: if (overlayRequested && !overlayApplied) {
++            OVERLAY_NOT_APPLIED_DETAIL
++        } else {
++            null
++        }
++        if (finalDetail != null) manifest += "detail" to finalDetail
++        readingIdentity?.let {
++            manifest += "mangaId" to it.mangaId
++            manifest += "chapterId" to it.chapterId
++            manifest += "pageIndex" to it.pageIndex
++        }
++        val manifestText = buildJsonObject(*manifest.toTypedArray())
++        val bundleBytes = source.length() + manifestText.toByteArray(Charsets.UTF_8).size
++        return synchronized(diskLock) {
++            if (cachedImage(finalDir) != null) {
++                consumeOneReservation(readingIdentity)
++                finalDir.setLastModified(System.currentTimeMillis())
++                return true
+             }
+-            val manifest = mutableListOf<Pair<String, Any>>(
+-                "image" to imageName,
+-                "width" to width,
+-                "height" to height,
+-                "overlayRequested" to overlayRequested,
+-                "overlayApplied" to overlayApplied,
+-            )
+-            val finalDetail = detail ?: if (overlayRequested && !overlayApplied) {
+-                OVERLAY_NOT_APPLIED_DETAIL
+-            } else {
+-                null
++            if (finalDir.exists() && !deleteBundleIfUnleased(
++                    context,
++                    key,
++                    parseReadingIdentity(manifestText),
++                    respectReadingProtection = false,
++                )
++            ) {
++                return false
++            }
++            val ownReservedBytes = reservationBytes(readingIdentity)
++            if (!ensureCapacity(context, bundleBytes, readingIdentity, ownReservedBytes)) return false
++            if (pending.exists()) pending.deleteRecursively()
++            pending.mkdirs()
++            try {
++                val pendingImage = File(pending, imageName)
++                val consumed = consumeSource && isGeneratedWorkOutput(context, source) && source.renameTo(pendingImage)
++                if (!consumed) {
++                    FileOutputStream(pendingImage).use { out ->
++                        FileInputStream(source).use { it.copyTo(out) }
++                    }
++                }
++                File(pending, "manifest.json").writeText(manifestText)
++                if (!pending.renameTo(finalDir)) error("failed to commit cache bundle $key")
++                consumeOneReservation(readingIdentity)
++                signalBudgetWaiters()
++                true
++            } catch (t: Throwable) {
++                pending.deleteRecursively()
++                throw t
+             }
+-            if (finalDetail != null) manifest += "detail" to finalDetail
+-            File(pending, "manifest.json").writeText(buildJsonObject(*manifest.toTypedArray()))
+-            if (finalDir.exists()) finalDir.deleteRecursively()
+-            if (!pending.renameTo(finalDir)) error("failed to commit cache bundle $key")
+-        } catch (t: Throwable) {
+-            pending.deleteRecursively()
+-            throw t
+         }
+     }
+ 
+     /** Atomically cache a classic-enhanced AI variant beside its base output. */
+     fun putClassicImage(context: Context, key: String, strength: Int, bitmap: Bitmap): CachedImage? {
+         if (strength !in 1..100) return null
+-        val bundle = getBundle(context, key) ?: return null
+-        val base = cachedImage(bundle) ?: return null
+-        if (bitmap.width != base.width || bitmap.height != base.height) return null
+-        val image = classicVariantFile(bundle, strength) ?: return null
+-        val pending = File(bundle, "${image.name}.pending")
+-        pending.delete()
++        val pinnedBase = pinCachedImage(context, key) ?: return null
++        var temporary: File? = null
+         return try {
+-            val encoded = FileOutputStream(pending).use {
++            val bundle = File(cacheDir(context), key)
++            val base = pinnedBase.image
++            if (bitmap.width != base.width || bitmap.height != base.height) return null
++            val image = classicVariantFile(bundle, strength) ?: return null
++            if (image.isFile && image.length() > 0L) return cachedImage(bundle, strength)
++            temporary = File.createTempFile("manyue-ai-classic-", ".tmp", context.cacheDir)
++            val encoded = FileOutputStream(temporary).use {
+                 @Suppress("DEPRECATION")
+                 val format = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                     Bitmap.CompressFormat.WEBP_LOSSY
+@@ -175,28 +430,48 @@ object ManyueEnhancementCache {
+                 }
+                 bitmap.compress(format, 96, it)
+             }
+-            check(encoded && pending.length() > 0L) { "classic AI cache encoding failed" }
+-            if (image.exists()) image.delete()
+-            check(pending.renameTo(image)) { "failed to commit classic AI image" }
+-            bundle.setLastModified(System.currentTimeMillis())
+-            trimCache(context)
+-            CachedImage(
+-                image,
+-                base.width,
+-                base.height,
+-                base.overlayRequested,
+-                base.overlayApplied,
+-                base.detail,
+-            )
++            check(encoded && temporary.length() > 0L) { "classic AI cache encoding failed" }
++            synchronized(diskLock) {
++                if (!ensureCapacity(context, temporary.length(), base.readingIdentity)) return null
++                if (image.exists() && isBundleLeased(key)) return null
++                val pending = File(bundle, "${image.name}.pending")
++                if (pending.exists()) pending.delete()
++                if (image.exists() && !image.delete()) return null
++                if (!temporary.renameTo(pending)) {
++                    FileOutputStream(pending).use { out -> FileInputStream(temporary).use { it.copyTo(out) } }
++                }
++                check(pending.length() > 0L && pending.renameTo(image)) { "failed to commit classic AI image" }
++                bundle.setLastModified(System.currentTimeMillis())
++                signalBudgetWaiters()
++                cachedImage(bundle, strength)
++            }
+         } catch (t: Throwable) {
+-            pending.delete()
+             null
++        } finally {
++            temporary?.delete()
++            pinnedBase.lease.close()
+         }
+     }
+ 
+     fun removeClassicImage(context: Context, key: String, strength: Int) {
+-        val bundle = getBundle(context, key) ?: return
+-        classicVariantFile(bundle, strength)?.delete()
++        synchronized(diskLock) {
++            val bundle = getBundle(context, key) ?: return
++            val marked = synchronized(cacheLock) {
++                if (key in deletingBundles || (leasesByBundle[key] ?: 0) > 0) {
++                    false
++                } else {
++                    deletingBundles += key
++                    true
++                }
++            }
++            if (!marked) return
++            val deleted = try {
++                classicVariantFile(bundle, strength)?.delete() == true
++            } finally {
++                synchronized(cacheLock) { deletingBundles.remove(key) }
++            }
++            if (deleted) signalBudgetWaiters()
++        }
+     }
+ 
+     internal fun buildJsonObject(vararg pairs: Pair<String, Any>): String =
+@@ -240,6 +515,17 @@ object ManyueEnhancementCache {
+         return result.toString()
+     }
+ 
++    private fun jsonLong(json: String, key: String): Long? =
++        Regex("\\\"${Regex.escape(key)}\\\"\\s*:\\s*(-?\\d+)")
++            .find(json)?.groupValues?.get(1)?.toLongOrNull()
++
++    private fun parseReadingIdentity(json: String): ReadingIdentity? {
++        val mangaId = jsonLong(json, "mangaId") ?: return null
++        val chapterId = jsonLong(json, "chapterId") ?: return null
++        val pageIndex = jsonLong(json, "pageIndex")?.takeIf { it in 0..Int.MAX_VALUE }?.toInt() ?: return null
++        return ReadingIdentity(mangaId, chapterId, pageIndex)
++    }
++
+     private fun escapeJsonString(value: String): String = buildString(value.length) {
+         value.forEach { char ->
+             when (char) {
+@@ -259,16 +545,32 @@ object ManyueEnhancementCache {
+         "Anime4KCPP 未生效，已保留 AI 超分"
+ 
+     fun clearCache(context: Context) {
+-        cacheDir(context).deleteRecursively()
+-        File(context.cacheDir, LEGACY_CACHE_DIR_NAME).deleteRecursively()
++        ioScope.launch {
++            synchronized(diskLock) {
++                val current = cacheDir(context)
++                current.listFiles()?.forEach { entry ->
++                    val key = entry.name.takeIf { it.matches(Regex("[0-9a-f]{32}")) }
++                    if (key == null) {
++                        entry.deleteRecursively()
++                    } else {
++                        deleteBundleIfUnleased(
++                            context,
++                            key,
++                            cachedImage(entry)?.readingIdentity,
++                            respectReadingProtection = false,
++                        )
++                    }
++                }
++                File(context.cacheDir, LEGACY_CACHE_DIR_NAME).deleteRecursively()
++            }
++            signalBudgetWaiters()
++        }
+     }
+ 
+     fun cacheSizeBytes(context: Context): Long {
+         val current = File(context.cacheDir, CACHE_DIR_NAME)
+         val legacy = File(context.cacheDir, LEGACY_CACHE_DIR_NAME)
+-        return listOf(current, legacy)
+-            .filter { it.exists() }
+-            .sumOf { dir -> dir.walkTopDown().filter { it.isFile }.sumOf { it.length() } }
++        return directoryBytes(current) + directoryBytes(legacy)
+     }
+ 
+     fun cacheSizeText(context: Context): String {
+@@ -277,23 +579,189 @@ object ManyueEnhancementCache {
+         return String.format(java.util.Locale.getDefault(), "%.1f MiB", mb)
+     }
+ 
+-    /** LRU trim to TRIM_TO_BYTES when over MAX_CACHE_BYTES. */
++    /** Schedule cache scanning and trimming away from the reader/main thread. */
+     fun trimCache(context: Context) {
+-        // v7 uses complete encoded files and a different layout. Remove the retired v6 cache
+-        // during the worker-side trim so old segmented files do not permanently consume space.
+-        File(context.cacheDir, LEGACY_CACHE_DIR_NAME).deleteRecursively()
+-        val dir = cacheDir(context)
+-        if (!dir.isDirectory) return
+-        var size = cacheSizeBytes(context)
+-        if (size <= MAX_CACHE_BYTES) return
+-        val entries = dir.listFiles()
+-            ?.filter { it.isDirectory }
+-            ?.sortedBy { it.lastModified() }
+-            ?: return
+-        for (entry in entries) {
+-            if (size <= TRIM_TO_BYTES) break
+-            size -= entry.walkTopDown().filter { it.isFile }.sumOf { it.length() }
+-            entry.deleteRecursively()
++        ioScope.launch {
++            synchronized(diskLock) { trimCacheOnIo(context) }
++        }
++    }
++
++    private fun trimCacheOnIo(context: Context) {
++        val reserved = reservedBytes()
++        val currentSize = cacheSizeBytes(context)
++        if (currentSize + reserved <= MAX_CACHE_BYTES) return
++        evictUntil(
++            roots = listOf(cacheDir(context), File(context.cacheDir, LEGACY_CACHE_DIR_NAME)),
++            startingBytes = currentSize,
++            targetBytes = TRIM_TO_BYTES - reserved,
++        )
++    }
++
++    /** Called only while diskLock is held, from IO or a worker-side cache write. */
++    private fun ensureCapacity(
++        context: Context,
++        incomingBytes: Long,
++        incomingIdentity: ReadingIdentity?,
++        ownReservationBytes: Long = 0L,
++    ): Boolean {
++        if (incomingBytes < 0L || incomingBytes > MAX_CACHE_BYTES) return false
++        val currentSize = cacheSizeBytes(context)
++        val reserved = (reservedBytes() - ownReservationBytes).coerceAtLeast(0L)
++        if (currentSize + reserved + incomingBytes <= MAX_CACHE_BYTES) return true
++        val target = minOf(TRIM_TO_BYTES, MAX_CACHE_BYTES - reserved - incomingBytes)
++        evictUntil(
++            roots = listOf(cacheDir(context), File(context.cacheDir, LEGACY_CACHE_DIR_NAME)),
++            startingBytes = currentSize,
++            targetBytes = target,
++        )
++        return cacheSizeBytes(context) + reserved + incomingBytes <= MAX_CACHE_BYTES
++    }
++
++    private data class EvictionCandidate(
++        val file: File,
++        val key: String?,
++        val identity: ReadingIdentity?,
++        val lastModified: Long,
++        val rank: Int,
++        val pageOrder: Int,
++        val bytes: Long,
++    )
++
++    private fun evictUntil(
++        roots: List<File>,
++        startingBytes: Long,
++        targetBytes: Long,
++    ) {
++        val state = readingSnapshot()
++        val candidates = roots.flatMap { root ->
++            root.listFiles().orEmpty().map { entry ->
++                val isCurrentBundle = root.name == CACHE_DIR_NAME && entry.isDirectory &&
++                    entry.name.matches(Regex("[0-9a-f]{32}"))
++                val image = if (isCurrentBundle) cachedImage(entry) else null
++                val identity = image?.readingIdentity
++                val rank = evictionRank(identity, state.first, state.second)
++                EvictionCandidate(
++                    file = entry,
++                    key = entry.name.takeIf { isCurrentBundle },
++                    identity = identity,
++                    lastModified = entry.lastModified(),
++                    rank = rank.first,
++                    pageOrder = rank.second,
++                    bytes = directoryBytes(entry),
++                )
++            }
++        }.sortedWith(compareBy<EvictionCandidate>({ it.rank }, { it.pageOrder }, { it.lastModified }))
++        var size = startingBytes
++        for (candidate in candidates) {
++            if (size <= targetBytes) break
++            if (deleteCandidate(candidate)) size -= candidate.bytes
++        }
++    }
++
++    private fun evictionRank(
++        identity: ReadingIdentity?,
++        position: ReadingPosition?,
++        visiblePages: Set<Pair<Long, Int>>,
++    ): Pair<Int, Int> {
++        if (identity == null) return 0 to 0 // old manifests and interrupted temp entries first
++        if (position == null || identity.mangaId != position.mangaId) return 1 to 0
++        if (identity.chapterId != position.chapterId) return 1 to 0
++        if (isIdentityProtected(identity, position, visiblePages)) return 5 to 0
++        return 2 to identity.pageIndex // farthest-read (smallest page index) first
++    }
++
++    private fun isIdentityProtected(
++        identity: ReadingIdentity?,
++        position: ReadingPosition?,
++        visiblePages: Set<Pair<Long, Int>>,
++    ): Boolean {
++        if (identity == null) return false
++        if (position != null && identity.mangaId == position.mangaId && identity.chapterId == position.chapterId &&
++            identity.pageIndex >= position.pageIndex - NEAR_PREVIOUS_PAGES
++        ) return true
++        return position?.mangaId?.let { mangaId ->
++            identity.mangaId == mangaId && (identity.chapterId to identity.pageIndex) in visiblePages
++        } ?: false
++    }
++
++    private fun deleteCandidate(
++        candidate: EvictionCandidate,
++        respectReadingProtection: Boolean = true,
++    ): Boolean {
++        val key = candidate.key
++        if (key == null) {
++            val deleted = candidate.file.deleteRecursively()
++            if (deleted) signalBudgetWaiters()
++            return deleted
++        }
++        synchronized(cacheLock) {
++            if (key in deletingBundles || (leasesByBundle[key] ?: 0) > 0) return false
++            if (respectReadingProtection &&
++                isIdentityProtected(candidate.identity, readingPosition, protectedPageSnapshot)
++            ) return false
++            deletingBundles += key
++        }
++        val deleted = try {
++            candidate.file.deleteRecursively()
++        } finally {
++            synchronized(cacheLock) { deletingBundles.remove(key) }
++        }
++        if (deleted) signalBudgetWaiters()
++        return deleted
++    }
++
++    private fun deleteBundleIfUnleased(
++        context: Context,
++        key: String,
++        identity: ReadingIdentity?,
++        respectReadingProtection: Boolean = true,
++    ): Boolean {
++        val bundle = File(cacheDir(context), key)
++        if (!bundle.exists()) return true
++        val candidate = EvictionCandidate(bundle, key, identity, bundle.lastModified(), 0, 0, directoryBytes(bundle))
++        return deleteCandidate(candidate, respectReadingProtection)
++    }
++
++    private fun isBundleDeleting(key: String): Boolean = synchronized(cacheLock) { key in deletingBundles }
++
++    private fun isBundleLeased(key: String): Boolean = synchronized(cacheLock) { (leasesByBundle[key] ?: 0) > 0 }
++
++    private fun readingSnapshot(): Pair<ReadingPosition?, Set<Pair<Long, Int>>> = synchronized(cacheLock) {
++        readingPosition to protectedPageSnapshot
++    }
++
++    private fun reservedBytes(): Long = synchronized(cacheLock) { reservations.values.sumOf { it.bytes } }
++
++    internal fun pendingBudgetWaiterCountForTest(): Int = synchronized(waitersLock) {
++        budgetWaiters.count { it.isActive }
++    }
++
++    private fun reservationBytes(identity: ReadingIdentity?): Long {
++        if (identity == null) return 0L
++        return synchronized(cacheLock) { reservations.values.filter { it.identity == identity }.sumOf { it.bytes } }
++    }
++
++    private fun consumeOneReservation(identity: ReadingIdentity?) {
++        if (identity == null) return
++        val removed = synchronized(cacheLock) {
++            val id = reservations.entries.firstOrNull { it.value.identity == identity }?.key ?: return
++            reservations.remove(id)
+         }
++        if (removed != null) signalBudgetWaiters()
+     }
++
++    private fun directoryBytes(file: File): Long = when {
++        !file.exists() -> 0L
++        file.isFile -> file.length()
++        else -> file.walkTopDown().filter { it.isFile }.sumOf { it.length() }
++    }
++
++    private fun isGeneratedWorkOutput(context: Context, source: File): Boolean = runCatching {
++        val canonical = source.canonicalFile
++        val parent = canonical.parentFile ?: return false
++        val cacheRoot = context.cacheDir.canonicalFile
++        parent.parentFile?.canonicalFile == cacheRoot &&
++            parent.name.matches(Regex("manyue_work_[A-Za-z0-9_-]+"))
++    }.getOrDefault(false)
++
+ }
+diff --git a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePageBridge.kt b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePageBridge.kt
+index aa08021..f19dd0c 100644
+--- a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePageBridge.kt
++++ b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePageBridge.kt
+@@ -167,6 +167,8 @@ class ManyuePageBridge(
+                     onState(ManyueEnhancementState.AI_WAITING_DISPLAY, null)
+                     renderJob?.cancel()
+                     renderJob = scope.launch {
++                        var baseCacheLease: ManyueEnhancementCache.CacheLease? = null
++                        var imageCacheLease: ManyueEnhancementCache.CacheLease? = null
+                         try {
+                             if (!awaitDisplayPause(t, identity, mode, expectedGeneration)) return@launch
+                             // Never hold the global decode lock while waiting for visibility:
+@@ -174,7 +176,9 @@ class ManyuePageBridge(
+                             val display = renderMutex.withLock {
+                                 if (!isCurrent(t, identity, mode, expectedGeneration)) return@withLock null
+                                 val baseImage = withContext(Dispatchers.IO) {
+-                                    ManyueAiUpscaler.cachedImage(context, tok)
++                                    val pinned = ManyueAiUpscaler.pinnedCachedImage(context, tok)
++                                    if (pinned != null) baseCacheLease = pinned.lease
++                                    pinned?.image
+                                 } ?: run {
+                                     if (isCurrent(t, identity, mode, expectedGeneration)) {
+                                         onState(ManyueEnhancementState.FAILED, "AI 结果读取失败")
+@@ -193,11 +197,22 @@ class ManyuePageBridge(
+                                     else -> null
+                                 })
+                                 if (wantClassic && strength > 0 && classicSafe) {
+-                                    val cached = withContext(Dispatchers.IO) {
+-                                        ManyueAiUpscaler.cachedClassicImage(context, tok, strength)
++                                    var classic = withContext(Dispatchers.IO) {
++                                        val pinned = ManyueAiUpscaler.pinnedCachedImage(context, tok, strength)
++                                        if (pinned != null) imageCacheLease = pinned.lease
++                                        pinned?.image
+                                     }
+-                                    val classic = cached ?: withContext(classicDispatcher) {
+-                                        buildClassicVariant(context, tok, strength)
++                                    if (classic == null) {
++                                        val created = withContext(classicDispatcher) {
++                                            buildClassicVariant(context, tok, strength)
++                                        }
++                                        if (created != null) {
++                                            classic = withContext(Dispatchers.IO) {
++                                                val pinned = ManyueAiUpscaler.pinnedCachedImage(context, tok, strength)
++                                                if (pinned != null) imageCacheLease = pinned.lease
++                                                pinned?.image
++                                            }
++                                        }
+                                     }
+                                     if (classic != null) {
+                                         image = classic
+@@ -234,6 +249,9 @@ class ManyuePageBridge(
+                             if (isCurrent(t, identity, mode, expectedGeneration)) {
+                                 onState(ManyueEnhancementState.FAILED, "AI 结果显示失败")
+                             }
++                        } finally {
++                            imageCacheLease?.close()
++                            baseCacheLease?.close()
+                         }
+                     }
+                 }
+diff --git a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePrefetchManager.kt b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePrefetchManager.kt
+index 89c3530..4f04d42 100644
+--- a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePrefetchManager.kt
++++ b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePrefetchManager.kt
+@@ -4,40 +4,32 @@ import kotlinx.coroutines.CompletableDeferred
+ import kotlinx.coroutines.withTimeoutOrNull
+ 
+ /**
+- * Tracks per-page AI tokens and adjusts priorities when the current page changes.
+- *
+- * Priority scheme:
+- *   current        = 100
+- *   current + 1    = 50
+- *   current + 2    = 40
+- *   current + 3    = 30
+- *   current + 4    = 20
+- *   current + 5    = 10
+- *   beyond +5      -> cancelled if not started
+- *
+- * PagerPageHolder / WebtoonPageHolder call [register] after starting an AI job.
+- * The viewer calls [onPageChanged] when the visible page changes.
++ * Tracks active page requests, protects visible results, and adjusts priorities as the reader
++ * moves. The prefetch cursor may work through the whole chapter; completed request tokens are
++ * pruned here while their disk cache entries remain reusable.
+  */
+ object ManyuePrefetchManager {
+ 
+-    private const val WINDOW = 5
+     private const val CURRENT_DECISION_TIMEOUT_MS = 15_000L
++    private const val MAX_REMEMBERED_CURRENT_DECISIONS = 32
+ 
+     private data class PageKey(val chapterId: Long, val pageIndex: Int)
+ 
+     private var visiblePages = emptySet<PageKey>()
+     private val tokens = java.util.concurrent.ConcurrentHashMap<PageKey, MutableSet<String>>()
+     private val currentDecisions = java.util.concurrent.ConcurrentHashMap<PageKey, CompletableDeferred<Unit>>()
++    private val rememberedCurrentDecisions = linkedSetOf<PageKey>()
+     @Volatile private var currentChapterId: Long = Long.MIN_VALUE
+     @Volatile private var currentPage: Int = -1
+ 
+     fun reset() {
+         synchronized(this) {
+-            tokens.values.flatten().forEach { ManyueAiUpscaler.cancel(it) }
++            tokens.values.flatten().forEach(ManyueAiUpscaler::cancel)
+             tokens.clear()
+             visiblePages = emptySet()
+             currentDecisions.values.forEach { it.complete(Unit) }
+             currentDecisions.clear()
++            rememberedCurrentDecisions.clear()
+             currentChapterId = Long.MIN_VALUE
+             currentPage = -1
+         }
+@@ -52,7 +44,9 @@ object ManyuePrefetchManager {
+         synchronized(this) {
+             val key = PageKey(chapterId, pageIndex)
+             tokens.getOrPut(key) { linkedSetOf() }.add(token)
++            if (chapterId == currentChapterId && pageIndex == currentPage) rememberCurrentDecision(key)
+             applyPriorities()
++            if (chapterId == currentChapterId && pageIndex == currentPage) completeCurrentDecision(key)
+         }
+     }
+ 
+@@ -63,7 +57,8 @@ object ManyuePrefetchManager {
+ 
+     fun onPageChanged(chapterId: Long, current: Int, visible: Set<Pair<Long, Int>> = emptySet()) {
+         synchronized(this) {
+-            visiblePages = visible.map { PageKey(it.first, it.second) }.toSet()
++            visiblePages = visible.mapTo(linkedSetOf()) { PageKey(it.first, it.second) }
++                .apply { add(PageKey(chapterId, current)) }
+             if (currentChapterId != Long.MIN_VALUE && currentChapterId != chapterId) {
+                 tokens.entries.filter { it.key !in visiblePages }.forEach { (key, pageTokens) ->
+                     pageTokens.forEach(ManyueAiUpscaler::cancel)
+@@ -77,8 +72,18 @@ object ManyuePrefetchManager {
+             val selectedKey = PageKey(chapterId, current)
+             currentDecisions.keys.filter { it != selectedKey }
+                 .forEach { key -> currentDecisions.remove(key)?.complete(Unit) }
+-            currentDecisions.putIfAbsent(selectedKey, CompletableDeferred())
++            if (selectedKey !in rememberedCurrentDecisions) {
++                currentDecisions.putIfAbsent(selectedKey, CompletableDeferred())
++            }
++            // A retained or already-bound holder can have registered before selection changed.
++            if (tokens[selectedKey]?.isNotEmpty() == true) {
++                rememberCurrentDecision(selectedKey)
++                completeCurrentDecision(selectedKey)
++            } else if (selectedKey in rememberedCurrentDecisions) {
++                completeCurrentDecision(selectedKey)
++            }
+             applyPriorities()
++            updateCacheProtection()
+         }
+     }
+ 
+@@ -92,11 +97,12 @@ object ManyuePrefetchManager {
+         // diff. The selected page is still part of the new window and must survive that handoff.
+         onPageChanged(chapterId, current, visible + (chapterId to current))
+         // A retained holder may already have registered its current request and released the
+-        // old decision gate before the adapter diff. Do not make the next-page prefetch wait for
+-        // a holder bind that will not happen again.
++        // old decision gate before the adapter diff. Do not make the next-page cursor wait again.
+         synchronized(this) {
+-            if (tokens[PageKey(chapterId, current)]?.isNotEmpty() == true) {
+-                currentDecisions.remove(PageKey(chapterId, current))?.complete(Unit)
++            val key = PageKey(chapterId, current)
++            if (tokens[key]?.isNotEmpty() == true || key in rememberedCurrentDecisions) {
++                rememberCurrentDecision(key)
++                completeCurrentDecision(key)
+             }
+         }
+     }
+@@ -108,12 +114,17 @@ object ManyuePrefetchManager {
+             if (next == visiblePages) return
+             visiblePages = next
+             applyPriorities()
++            updateCacheProtection()
+         }
+     }
+ 
+     /** Release the selected-page gate after its visible holder has decided its AI request. */
+     fun releaseCurrent(chapterId: Long, pageIndex: Int) {
+-        currentDecisions.remove(PageKey(chapterId, pageIndex))?.complete(Unit)
++        synchronized(this) {
++            val key = PageKey(chapterId, pageIndex)
++            rememberCurrentDecision(key)
++            completeCurrentDecision(key)
++        }
+     }
+ 
+     /** Wait briefly for the visible request to be created before read-ahead enqueues work. */
+@@ -124,30 +135,62 @@ object ManyuePrefetchManager {
+ 
+     private fun applyPriorities() {
+         if (currentPage < 0) return
+-        val priorityFor = { idx: Int ->
+-            when (val d = idx - currentPage) {
+-                0 -> 100
+-                1 -> 50
+-                2 -> 40
+-                3 -> 30
+-                4 -> 20
+-                5 -> 10
+-                else -> Int.MAX_VALUE
+-            }
+-        }
+-        val it = tokens.entries.iterator()
+-        while (it.hasNext()) {
+-            val (key, pageTokens) = it.next()
+-            val idx = key.pageIndex
+-            val d = idx - currentPage
+-            if (key in visiblePages) {
+-                pageTokens.forEach { token -> ManyueAiUpscaler.updatePriority(token, 100) }
+-            } else if (key.chapterId != currentChapterId || d < 0 || d > WINDOW) {
+-                pageTokens.forEach(ManyueAiUpscaler::cancel)
++        val iterator = tokens.entries.iterator()
++        while (iterator.hasNext()) {
++            val (key, pageTokens) = iterator.next()
++            // This removes only manager bookkeeping. Ready, failed, and cancelled disk results
++            // stay in the upscaler/cache for reuse and are never cancelled by this prune.
++            pageTokens.removeAll(ManyueAiUpscaler::isFinished)
++            if (pageTokens.isEmpty()) {
+                 tokens.remove(key, pageTokens)
+-            } else {
+-                pageTokens.forEach { token -> ManyueAiUpscaler.updatePriority(token, priorityFor(idx)) }
++                continue
+             }
++
++            val distance = key.pageIndex - currentPage
++            when {
++                key in visiblePages -> pageTokens.forEach { ManyueAiUpscaler.updatePriority(it, 100) }
++                key.chapterId != currentChapterId -> {
++                    pageTokens.forEach(ManyueAiUpscaler::cancel)
++                    tokens.remove(key, pageTokens)
++                }
++                distance >= 0 -> {
++                    val priority = ManyueAiSafetyPolicy.continuousPrefetchPriority(key.pageIndex, currentPage)
++                    pageTokens.forEach { ManyueAiUpscaler.updatePriority(it, priority) }
++                }
++                distance >= -ManyueAiSafetyPolicy.PREFETCH_LOOK_BACK_PAGES -> {
++                    val priority = ManyueAiSafetyPolicy.continuousPrefetchPriority(key.pageIndex, currentPage)
++                    pageTokens.forEach { ManyueAiUpscaler.updatePriority(it, priority) }
++                }
++                distance >= -ManyueAiSafetyPolicy.ACTIVE_COMPLETION_LOOK_BACK_PAGES &&
++                    pageTokens.any(ManyueAiUpscaler::isProcessing) -> {
++                    // Let a request that has already reached the worker finish. This preserves a
++                    // nearby result through fast scrolling without keeping queued stale work.
++                    pageTokens.forEach { ManyueAiUpscaler.updatePriority(it, 1) }
++                }
++                else -> {
++                    pageTokens.forEach(ManyueAiUpscaler::cancel)
++                    tokens.remove(key, pageTokens)
++                }
++            }
++        }
++    }
++
++    private fun updateCacheProtection() {
++        ManyueEnhancementCache.updateProtectedPages(
++            visiblePages.mapTo(linkedSetOf()) { it.chapterId to it.pageIndex },
++        )
++    }
++
++    private fun rememberCurrentDecision(key: PageKey) {
++        rememberedCurrentDecisions.remove(key)
++        rememberedCurrentDecisions.add(key)
++        while (rememberedCurrentDecisions.size > MAX_REMEMBERED_CURRENT_DECISIONS) {
++            val oldest = rememberedCurrentDecisions.first()
++            rememberedCurrentDecisions.remove(oldest)
+         }
+     }
++
++    private fun completeCurrentDecision(key: PageKey) {
++        currentDecisions.remove(key)?.complete(Unit)
++    }
+ }
+diff --git a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueReaderPrefetcher.kt b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueReaderPrefetcher.kt
+index a459396..f99a58f 100644
+--- a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueReaderPrefetcher.kt
++++ b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueReaderPrefetcher.kt
+@@ -5,13 +5,13 @@ import eu.kanade.tachiyomi.source.model.Page
+ import eu.kanade.tachiyomi.ui.reader.model.ReaderPage
+ import eu.kanade.tachiyomi.ui.reader.metadata.SourceImageBoundsDecoder
+ import java.io.InputStream
+-import java.util.concurrent.ConcurrentHashMap
+-import kotlinx.coroutines.CancellationException
++import java.util.concurrent.CancellationException
+ import kotlinx.coroutines.CoroutineScope
+ import kotlinx.coroutines.CoroutineStart
+ import kotlinx.coroutines.Dispatchers
+ import kotlinx.coroutines.Job
+ import kotlinx.coroutines.SupervisorJob
++import kotlinx.coroutines.async
+ import kotlinx.coroutines.cancel
+ import kotlinx.coroutines.coroutineScope
+ import kotlinx.coroutines.currentCoroutineContext
+@@ -23,7 +23,6 @@ import kotlinx.coroutines.launch
+ import kotlinx.coroutines.sync.Mutex
+ import kotlinx.coroutines.sync.withLock
+ import kotlinx.coroutines.withContext
+-import kotlinx.coroutines.withTimeoutOrNull
+ import okio.Buffer
+ import okio.buffer
+ import okio.source
+@@ -31,25 +30,32 @@ import logcat.LogPriority
+ import tachiyomi.core.common.util.system.logcat
+ 
+ /**
+- * Explicitly creates AI work for the next five chapter pages. The visible holder creates the
+- * current-page request at priority 100; this coordinator creates +1..+5 at 50/40/30/20/10.
++ * Drives one lightweight forward cursor for the active chapter. At most one page is loaded or
++ * waiting on the AI worker at a time; the cursor moves only after that request reaches a terminal
++ * state. Page selection updates the cursor's reading head and priorities without restarting it.
+  */
+ class ManyueReaderPrefetcher(context: Context) {
+ 
+     private val appContext = context.applicationContext
+     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+     private val coordinator = ManyuePrefetchJobCoordinator(scope)
++    @Volatile private var lastMangaId: Long? = null
++    @Volatile private var lastChapterId: Long? = null
+ 
+     /**
+-     * Update the page window and start background loads. Viewers may update
+-     * [ManyuePrefetchManager] before the visible holder is rebound so a backward
+-     * swipe cannot have its just-created current request cancelled as stale.
++     * Update the reading head and continue the chapter cursor. Viewers may update the manager
++     * first so a just-created visible request is not mistaken for stale background work.
+      */
+     fun onPageSelected(current: ReaderPage, managerAlreadyUpdated: Boolean = false) {
+         val chapterId = current.chapter.chapter.id ?: 0L
++        val mangaId = current.chapter.chapter.manga_id ?: 0L
++        lastMangaId = mangaId
++        lastChapterId = chapterId
+         if (!managerAlreadyUpdated) {
+             ManyuePrefetchManager.onPageChanged(chapterId, current.index)
+         }
++        ManyueEnhancementCache.updateReadingPosition(mangaId, chapterId, current.index)
++
+         val mode = ManyueRuntimeState.modeInt
+         if (mode != ManyueEnhancementMode.AI_2X.value &&
+             mode != ManyueEnhancementMode.AI_2X_CLASSIC.value
+@@ -60,48 +66,90 @@ class ManyueReaderPrefetcher(context: Context) {
+ 
+         val pages = current.chapter.pages ?: return
+         val generation = ManyueRuntimeState.generation
+-        val plan = ManyueAiSafetyPolicy.prefetchPlan(current.index, pages.size)
+-        coordinator.reconcile(chapterId, current.index, generation, plan) { target, taskGeneration ->
+-            val page = pages.getOrNull(target.pageIndex) ?: return@reconcile
+-            coordinator.ensureCurrent(chapterId, taskGeneration)
+-            ManyuePrefetchManager.awaitCurrentDecision(chapterId, current.index)
+-            coordinator.awaitReaderWork(chapterId, taskGeneration)
+-            val bytes = loadBytes(page) ?: return@reconcile
+-            coordinator.ensureCurrent(chapterId, taskGeneration)
+-            val info = withContext(Dispatchers.IO) {
+-                SourceImageBoundsDecoder.decode(Buffer().write(bytes))
+-            }
+-            page.updateSourceImageInfo(info)
+-            coordinator.ensureCurrent(chapterId, taskGeneration)
+-            if (ManyueRuntimeState.modeInt != mode || ManyueRuntimeState.generation != taskGeneration) return@reconcile
+-            val identity = ManyuePageBridge.Identity(
+-                mangaId = page.chapter.chapter.manga_id ?: 0L,
+-                chapterId = chapterId,
+-                pageIndex = page.index,
+-            )
+-            logcat { "Manyue prefetch create page=${page.index} priority=${target.priority}" }
+-            withContext(Dispatchers.IO) {
+-                coordinator.awaitReaderWork(chapterId, taskGeneration)
+-                coordinator.ensureCurrent(chapterId, taskGeneration)
+-                if (ManyueRuntimeState.modeInt != mode || ManyueRuntimeState.generation != taskGeneration) return@withContext
+-                ManyueAiRequestFactory.enqueue(
+-                    appContext,
+-                    identity,
+-                    bytes,
+-                    target.priority,
+-                    mode,
+-                    taskGeneration,
++        coordinator.reconcile(chapterId, current.index, generation, pages.size) { pageIndex, taskGeneration ->
++            val page = pages.getOrNull(pageIndex) ?: return@reconcile
++            coordinator.ensureCurrent(chapterId, taskGeneration, mode)
++
++            val currentMangaId = page.chapter.chapter.manga_id ?: mangaId
++
++            coordinator.awaitReaderWork(chapterId, taskGeneration, mode)
++            coordinator.awaitWhileCurrent(chapterId, taskGeneration, mode) {
++                val reservation = ManyueEnhancementCache.awaitPrefetchBudget(
++                    context = appContext,
++                    mangaId = currentMangaId,
++                    chapterId = chapterId,
++                    pageIndex = pageIndex,
+                 )
++                try {
++                    coordinator.ensureCurrent(chapterId, taskGeneration, mode)
++                    coordinator.awaitReaderWork(chapterId, taskGeneration, mode)
++                    val token = loadAndEnqueue(
++                        page = page,
++                        pageIndex = pageIndex,
++                        chapterId = chapterId,
++                        mangaId = currentMangaId,
++                        generation = taskGeneration,
++                        mode = mode,
++                    )
++                    if (token != null) {
++                        // The returned token may be shared with a visible holder. Cancelling this
++                        // waiter must leave that request intact; the next page starts only on terminal.
++                        coordinator.awaitWorkerCompletion(chapterId, taskGeneration, mode, token)
++                    }
++                } finally {
++                    // Keep resource ownership inside the polled child so cancellation after budget
++                    // acquisition cannot strand an unclosed reservation.
++                    reservation.close()
++                }
+             }
+         }
+     }
+ 
++    /** Keeps the full byte array local to this helper so it is out of scope before worker wait. */
++    private suspend fun loadAndEnqueue(
++        page: ReaderPage,
++        pageIndex: Int,
++        chapterId: Long,
++        mangaId: Long,
++        generation: Long,
++        mode: Int,
++    ): String? {
++        val bytes = coordinator.awaitWhileCurrent(chapterId, generation, mode) { loadBytes(page) } ?: return null
++        coordinator.ensureCurrent(chapterId, generation, mode)
++        val info = withContext(Dispatchers.IO) {
++            SourceImageBoundsDecoder.decode(Buffer().write(bytes))
++        }
++        page.updateSourceImageInfo(info)
++        coordinator.ensureCurrent(chapterId, generation, mode)
++
++        val identity = ManyuePageBridge.Identity(
++            mangaId = mangaId,
++            chapterId = chapterId,
++            pageIndex = page.index,
++        )
++        val readingHead = coordinator.selectedPageIndex(chapterId, generation)
++            ?: throw CancellationException("Stale Manyue prefetch cursor")
++        val priority = ManyueAiSafetyPolicy.continuousPrefetchPriority(pageIndex, readingHead)
++        logcat { "Manyue prefetch create page=$pageIndex priority=$priority" }
++        return withContext(Dispatchers.IO) {
++            coordinator.ensureCurrent(chapterId, generation, mode)
++            ManyueAiRequestFactory.enqueue(
++                appContext,
++                identity,
++                bytes,
++                priority,
++                mode,
++                generation,
++            )
++        }
++    }
++
+     private suspend fun loadBytes(page: ReaderPage): ByteArray? = withContext(Dispatchers.IO) {
+         val loader = page.chapter.pageLoader ?: return@withContext null
+         val ready = coroutineScope {
+             val loadJob = launch { loader.loadPage(page) }
+             try {
+-                withTimeoutOrNull(60_000L) {
++                kotlinx.coroutines.withTimeoutOrNull(60_000L) {
+                     page.statusFlow
+                         .filter { it == Page.State.Ready || it is Page.State.Error }
+                         .first()
+@@ -122,83 +170,192 @@ class ManyueReaderPrefetcher(context: Context) {
+     fun destroy() {
+         coordinator.cancelAll()
+         scope.cancel()
++        ManyueEnhancementCache.updateProtectedPages(emptySet())
++        ManyueEnhancementCache.clearReadingPosition(lastMangaId, lastChapterId)
+     }
+ }
+ 
+-/** Tracks one cancellable job per page and generation while serializing full-resolution loads. */
++/** A single cancellable chapter cursor; scrolling changes its head, never its active work job. */
+ internal class ManyuePrefetchJobCoordinator(private val scope: CoroutineScope) {
+-    private data class JobKey(val chapterId: Long, val pageIndex: Int, val generation: Long)
+ 
+-    private val jobs = ConcurrentHashMap<JobKey, Job>()
+-    // Avoid keeping multiple full-resolution page buffers live at the same time.
+-    private val loadMutex = Mutex()
+-    @Volatile private var activeWindow: Pair<Long, Long>? = null
++    private data class CursorKey(val chapterId: Long, val generation: Long, val mode: Int)
++
++    @Volatile private var activeKey: CursorKey? = null
++    @Volatile private var selectedPage: Int = -1
++    @Volatile private var activeJob: Job? = null
++    private var pageCount: Int = 0
++    private var nextPageIndex: Int = -1
++
++    internal val activeCursorCount: Int
++        get() = if (activeJob?.isActive == true) 1 else 0
++
++    internal suspend fun awaitCursorIdle() {
++        activeJob?.join()
++    }
+ 
+     fun reconcile(
+         chapterId: Long,
+         currentPageIndex: Int,
+         generation: Long,
+-        plan: List<ManyueAiSafetyPolicy.PrefetchTarget>,
+-        work: suspend (ManyueAiSafetyPolicy.PrefetchTarget, Long) -> Unit,
++        pageCount: Int,
++        mode: Int = ManyueRuntimeState.modeInt,
++        work: suspend (pageIndex: Int, generation: Long) -> Unit,
+     ) {
+-        val desired = plan.asSequence()
+-            .filter { it.pageIndex != currentPageIndex }
+-            .associateBy { JobKey(chapterId, it.pageIndex, generation) }
+-        val toStart = mutableListOf<Job>()
++        if (pageCount <= 0 || currentPageIndex !in 0 until pageCount) {
++            cancelAll()
++            return
++        }
++
++        val key = CursorKey(chapterId, generation, mode)
++        var start: Job? = null
+         synchronized(this) {
+-            activeWindow = chapterId to generation
+-            jobs.keys.filter { it !in desired.keys }.forEach { key -> jobs.remove(key)?.cancel() }
+-            desired.forEach { (key, target) ->
+-                if (jobs.containsKey(key)) return@forEach
+-                val job = scope.launch(start = CoroutineStart.LAZY) {
++            if (activeKey != key) {
++                activeJob?.cancel()
++                activeJob = null
++                activeKey = key
++                selectedPage = currentPageIndex
++                this.pageCount = pageCount
++                nextPageIndex = currentPageIndex + 1
++            } else {
++                selectedPage = currentPageIndex
++                this.pageCount = pageCount
++            }
++
++            if (activeJob?.isActive != true && nextPageIndex < this.pageCount) {
++                val cursorJob = scope.launch(start = CoroutineStart.LAZY) {
+                     try {
+-                        loadMutex.withLock {
+-                            ensureCurrent(chapterId, generation)
+-                            work(target, generation)
+-                        }
+-                    } catch (error: Throwable) {
+-                        if (error is CancellationException) throw error
+-                        logcat { "Manyue prefetch failed page=${target.pageIndex}: ${error.javaClass.simpleName}" }
++                        runCursor(key, work)
+                     } finally {
+-                        currentCoroutineContext()[Job]?.let { jobs.remove(key, it) }
++                        val completedJob = currentCoroutineContext()[Job]
++                        synchronized(this@ManyuePrefetchJobCoordinator) {
++                            if (activeJob === completedJob) activeJob = null
++                        }
+                     }
+                 }
+-                val existing = jobs.putIfAbsent(key, job)
+-                if (existing == null) toStart += job else job.cancel()
++                activeJob = cursorJob
++                start = cursorJob
++            }
++        }
++        start?.start()
++    }
++
++    private suspend fun runCursor(
++        key: CursorKey,
++        work: suspend (pageIndex: Int, generation: Long) -> Unit,
++    ) {
++        // The holder for the page selected when this cursor starts gets one bounded opportunity
++        // to create its high-priority request. Later pages do not each wait on a new 15s gate.
++        val initialPage = selectedPageIndex(key.chapterId, key.generation) ?: return
++        awaitCurrentDecision(key, initialPage)
++
++        while (true) {
++            ensureCurrent(key.chapterId, key.generation, key.mode)
++            val pageIndex = claimNextPage(key) ?: return
++            var advance = false
++            try {
++                work(pageIndex, key.generation)
++                advance = true
++            } catch (error: CancellationException) {
++                throw error
++            } catch (error: Throwable) {
++                logcat { "Manyue prefetch failed page=$pageIndex: ${error.javaClass.simpleName}" }
++                advance = true
++            } finally {
++                if (advance) completePage(key, pageIndex)
+             }
+         }
+-        toStart.forEach(Job::start)
+     }
+ 
+-    suspend fun ensureCurrent(chapterId: Long, generation: Long) {
++    private suspend fun awaitCurrentDecision(key: CursorKey, pageIndex: Int) = coroutineScope {
++        val waiter = async { ManyuePrefetchManager.awaitCurrentDecision(key.chapterId, pageIndex) }
++        while (!waiter.isCompleted) {
++            ensureCurrent(key.chapterId, key.generation, key.mode)
++            delay(STATE_POLL_MS)
++        }
++        waiter.await()
++    }
++
++    private fun claimNextPage(key: CursorKey): Int? = synchronized(this) {
++        if (activeKey != key) throw CancellationException("Stale Manyue prefetch cursor")
++        while (nextPageIndex < pageCount) {
++            val candidate = nextPageIndex
++            val head = selectedPage
++            if (candidate == head || candidate < head - ManyueAiSafetyPolicy.PREFETCH_LOOK_BACK_PAGES) {
++                // A visible page belongs to its holder. Old pages outside the small revisit
++                // margin are already behind the reader and must not delay the forward cursor.
++                nextPageIndex++
++                continue
++            }
++            return@synchronized candidate
++        }
++        null
++    }
++
++    private fun completePage(key: CursorKey, pageIndex: Int) = synchronized(this) {
++        if (activeKey == key && nextPageIndex == pageIndex) nextPageIndex++
++    }
++
++    fun selectedPageIndex(chapterId: Long, generation: Long): Int? = synchronized(this) {
++        activeKey?.takeIf { it.chapterId == chapterId && it.generation == generation }?.let { selectedPage }
++    }
++
++    fun isCurrent(chapterId: Long, generation: Long, mode: Int): Boolean {
++        return activeKey == CursorKey(chapterId, generation, mode) &&
++            ManyueRuntimeState.generation == generation &&
++            ManyueRuntimeState.modeInt == mode &&
++            (mode == ManyueEnhancementMode.AI_2X.value || mode == ManyueEnhancementMode.AI_2X_CLASSIC.value)
++    }
++
++    suspend fun ensureCurrent(chapterId: Long, generation: Long, mode: Int) {
+         currentCoroutineContext().ensureActive()
+-        if (!isCurrent(chapterId, generation)) {
++        if (!isCurrent(chapterId, generation, mode)) {
+             throw CancellationException("Stale Manyue prefetch generation")
+         }
+     }
+ 
+-    /** Wait without pinning a thread, and stop promptly if this page window is replaced. */
+-    suspend fun awaitReaderWork(chapterId: Long, generation: Long) {
++    /** Wait without pinning a thread, while mode/generation changes remain promptly cancellable. */
++    suspend fun awaitReaderWork(chapterId: Long, generation: Long, mode: Int) {
+         while (ManyueReaderWorkGate.isBlocked()) {
+-            ensureCurrent(chapterId, generation)
++            ensureCurrent(chapterId, generation, mode)
+             delay(READER_WORK_GATE_POLL_MS)
+         }
+-        ensureCurrent(chapterId, generation)
++        ensureCurrent(chapterId, generation, mode)
+     }
+ 
+-    fun isCurrent(chapterId: Long, generation: Long): Boolean =
+-        activeWindow == (chapterId to generation)
++    /** Polling races only the waiter; cancelling it never cancels a shared worker request. */
++    suspend fun awaitWorkerCompletion(chapterId: Long, generation: Long, mode: Int, token: String): Int =
++        awaitWhileCurrent(chapterId, generation, mode) {
++            ManyueAiUpscaler.awaitCompletion(token)
++        }
++
++    suspend fun <T> awaitWhileCurrent(
++        chapterId: Long,
++        generation: Long,
++        mode: Int,
++        stage: suspend () -> T,
++    ): T = coroutineScope {
++        val waiter = async { stage() }
++        while (!waiter.isCompleted) {
++            ensureCurrent(chapterId, generation, mode)
++            delay(STATE_POLL_MS)
++        }
++        waiter.await()
++    }
+ 
+     fun cancelAll() {
+         synchronized(this) {
+-            activeWindow = null
+-            jobs.values.forEach(Job::cancel)
+-            jobs.clear()
++            activeKey = null
++            selectedPage = -1
++            pageCount = 0
++            nextPageIndex = -1
++            activeJob?.cancel()
++            activeJob = null
+         }
+     }
+ 
+     private companion object {
+         const val READER_WORK_GATE_POLL_MS = 80L
++        const val STATE_POLL_MS = 100L
+     }
+ }
+ 
+diff --git a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueReaderPressurePolicy.kt b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueReaderPressurePolicy.kt
+new file mode 100644
+index 0000000..7940af0
+--- /dev/null
++++ b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueReaderPressurePolicy.kt
+@@ -0,0 +1,168 @@
++package eu.kanade.tachiyomi.ui.reader.manyue
++
++import kotlin.math.hypot
++
++/** Pure, clock-injectable policy behind [ManyueReaderWorkGate]. */
++internal class ManyueReaderPressurePolicy(
++    private val nanoTime: () -> Long = System::nanoTime,
++) {
++    private var owner: Any? = null
++    private var thermalPressure = false
++    private var fastScrollUntilNanos: Long? = null
++    private var badFrameUntilNanos: Long? = null
++    private var lastScrollAtNanos: Long? = null
++    private var scrollWindowStartNanos: Long? = null
++    private var scrollWindowDistancePx = 0.0
++    private var fastScrollSamples = 0
++    private var badFrameSamples = 0
++    private var goodFrameSamples = 0
++
++    @Synchronized
++    fun update(reader: Any, active: Boolean) {
++        if (owner !== reader) {
++            clearSignals()
++            owner = reader
++        }
++        if (!active) resetScrollSampling()
++    }
++
++    @Synchronized
++    fun release(reader: Any) {
++        if (owner !== reader) return
++        owner = null
++        clearSignals()
++    }
++
++    @Synchronized
++    fun reportScroll(reader: Any, dx: Int, dy: Int, viewportHeightPx: Int) {
++        if (owner !== reader) return
++
++        val now = nanoTime()
++        val previous = lastScrollAtNanos
++        if (previous != null && now <= previous) {
++            // Reject clock regressions instead of interpreting them as a very fast fling.
++            resetScrollSampling()
++            return
++        }
++        lastScrollAtNanos = now
++
++        val distancePx = hypot(dx.toDouble(), dy.toDouble())
++        if (viewportHeightPx <= 0 || distancePx <= 0.0 || previous == null) {
++            fastScrollSamples = 0
++            scrollWindowStartNanos = now
++            scrollWindowDistancePx = 0.0
++            return
++        }
++
++        val elapsedNanos = now - previous
++        if (elapsedNanos > MAX_SCROLL_SAMPLE_NANOS) {
++            fastScrollSamples = 0
++            scrollWindowStartNanos = now
++            scrollWindowDistancePx = 0.0
++            return
++        }
++
++        val windowStart = scrollWindowStartNanos ?: previous
++        scrollWindowDistancePx += distancePx
++        val windowElapsedNanos = now - windowStart
++        if (windowElapsedNanos < MIN_SCROLL_SAMPLE_NANOS) return
++
++        val viewportsPerSecond = scrollWindowDistancePx * NANOS_PER_SECOND /
++            (viewportHeightPx.toDouble() * windowElapsedNanos.toDouble())
++        scrollWindowStartNanos = now
++        scrollWindowDistancePx = 0.0
++        if (viewportsPerSecond >= FAST_SCROLL_VIEWPORTS_PER_SECOND) {
++            fastScrollSamples++
++            // Two consecutive fast samples avoid gating on a single layout jump. A very fast
++            // measured sample can gate immediately so a real fling gets prompt headroom.
++            if (fastScrollSamples >= FAST_SCROLL_REQUIRED_SAMPLES ||
++                viewportsPerSecond >= IMMEDIATE_FAST_SCROLL_VIEWPORTS_PER_SECOND
++            ) {
++                fastScrollUntilNanos = now + FAST_SCROLL_HOLD_NANOS
++            }
++        } else {
++            fastScrollSamples = 0
++        }
++    }
++
++    @Synchronized
++    fun reportFrame(reader: Any, frameIntervalNanos: Long, expectedIntervalNanos: Long) {
++        if (owner !== reader) return
++
++        if (frameIntervalNanos <= 0L || expectedIntervalNanos <= 0L) {
++            badFrameSamples = 0
++            goodFrameSamples = 0
++            return
++        }
++
++        val now = nanoTime()
++        val isBadFrame = frameIntervalNanos.toDouble() >
++            expectedIntervalNanos.toDouble() * BAD_FRAME_MULTIPLIER
++        if (isBadFrame) {
++            badFrameSamples++
++            goodFrameSamples = 0
++            if (badFrameSamples >= BAD_FRAME_REQUIRED_SAMPLES) {
++                badFrameUntilNanos = now + FRAME_PRESSURE_HOLD_NANOS
++            }
++        } else {
++            badFrameSamples = 0
++            goodFrameSamples++
++            if (goodFrameSamples >= GOOD_FRAME_SAMPLES_TO_CLEAR) {
++                badFrameUntilNanos = null
++            }
++        }
++    }
++
++    /** Starts a fresh frame streak after the view becomes idle or detached from sampling. */
++    @Synchronized
++    fun resetFrameSampling(reader: Any) {
++        if (owner !== reader) return
++        badFrameSamples = 0
++        goodFrameSamples = 0
++    }
++
++    @Synchronized
++    fun reportThermalStatus(reader: Any, status: Int) {
++        if (owner !== reader) return
++        thermalPressure = status >= THERMAL_STATUS_SEVERE
++    }
++
++    @Synchronized
++    fun isBlocked(): Boolean {
++        val now = nanoTime()
++        return thermalPressure || isBefore(now, fastScrollUntilNanos) || isBefore(now, badFrameUntilNanos)
++    }
++
++    private fun resetScrollSampling() {
++        lastScrollAtNanos = null
++        scrollWindowStartNanos = null
++        scrollWindowDistancePx = 0.0
++        fastScrollSamples = 0
++    }
++
++    private fun clearSignals() {
++        thermalPressure = false
++        fastScrollUntilNanos = null
++        badFrameUntilNanos = null
++        resetScrollSampling()
++        badFrameSamples = 0
++        goodFrameSamples = 0
++    }
++
++    private fun isBefore(now: Long, deadline: Long?): Boolean = deadline?.let { now - it < 0L } == true
++
++    companion object {
++        const val THERMAL_STATUS_SEVERE = 3
++        const val NANOS_PER_SECOND = 1_000_000_000.0
++        const val MIN_SCROLL_SAMPLE_NANOS = 8_000_000L
++        const val MAX_SCROLL_SAMPLE_NANOS = 250_000_000L
++        const val FAST_SCROLL_VIEWPORTS_PER_SECOND = 1.5
++        const val IMMEDIATE_FAST_SCROLL_VIEWPORTS_PER_SECOND = 4.0
++        const val FAST_SCROLL_REQUIRED_SAMPLES = 2
++        const val FAST_SCROLL_HOLD_NANOS = 250_000_000L
++        const val BAD_FRAME_MULTIPLIER = 1.75
++        const val BAD_FRAME_REQUIRED_SAMPLES = 3
++        const val GOOD_FRAME_SAMPLES_TO_CLEAR = 2
++        const val FRAME_PRESSURE_HOLD_NANOS = 350_000_000L
++    }
++}
+diff --git a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueReaderWorkGate.kt b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueReaderWorkGate.kt
+index 4ec06ea..c9d2c67 100644
+--- a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueReaderWorkGate.kt
++++ b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueReaderWorkGate.kt
+@@ -1,41 +1,72 @@
+ package eu.kanade.tachiyomi.ui.reader.manyue
+ 
+-/** Do not launch another GPU inference while the strip reader is handling a gesture/fling. */
++/**
++ * Signals reader pressure to background AI and prefetch work.
++ *
++ * Touch and ordinary scrolling alone are not a reason to stop work. The attached reader reports
++ * measured fast movement, sustained missed frame intervals, and thermal status instead.
++ */
+ object ManyueReaderWorkGate {
+-    @Volatile private var owner: Any? = null
+-    @Volatile private var busy = false
+-    @Volatile private var quietAfterNanos = 0L
++    const val THERMAL_STATUS_SEVERE = ManyueReaderPressurePolicy.THERMAL_STATUS_SEVERE
+ 
++    private val policy = ManyueReaderPressurePolicy()
++
++    /** Keeps the current reader owner. [active] resets motion sampling when interaction ends. */
+     @Synchronized
+     fun update(reader: Any, active: Boolean) {
+-        owner = reader
+-        busy = active
+-        quietAfterNanos = System.nanoTime() + 300_000_000L
++        policy.update(reader, active)
+     }
+ 
+     @Synchronized
+     fun release(reader: Any) {
+-        if (owner !== reader) return
+-        owner = null
+-        busy = false
+-        quietAfterNanos = 0L
++        policy.release(reader)
+     }
+ 
+-    fun isBlocked(): Boolean = busy || System.nanoTime() < quietAfterNanos
++    @Synchronized
++    fun reportScroll(reader: Any, dx: Int, dy: Int, viewportHeightPx: Int) {
++        policy.reportScroll(reader, dx, dy, viewportHeightPx)
++    }
++
++    @Synchronized
++    fun reportFrame(reader: Any, frameIntervalNanos: Long, expectedIntervalNanos: Long) {
++        policy.reportFrame(reader, frameIntervalNanos, expectedIntervalNanos)
++    }
++
++    @Synchronized
++    fun resetFrameSampling(reader: Any) {
++        policy.resetFrameSampling(reader)
++    }
++
++    @Synchronized
++    fun reportThermalStatus(reader: Any, status: Int) {
++        policy.reportThermalStatus(reader, status)
++    }
++
++    @Synchronized
++    fun isBlocked(): Boolean = policy.isBlocked()
+ }
+ 
+-/** Spaces expensive jobs without sleeping on the UI thread or changing image quality. */
++/** Spaces native jobs only when the caller reports active reader pressure. */
+ internal class ManyueWorkPacer(private val nanoTime: () -> Long = System::nanoTime) {
+     @Volatile private var readyAtNanos: Long? = null
+ 
+     fun isBlocked(): Boolean = readyAtNanos?.let { nanoTime() - it < 0L } ?: false
+ 
+-    fun afterWork(startedAtNanos: Long) {
++    /** Normal reading continues immediately; pressure adds only a short, bounded gap. */
++    fun afterWork(startedAtNanos: Long, pressureActive: Boolean = false) {
+         val now = nanoTime()
++        if (!pressureActive) {
++            readyAtNanos = now
++            return
++        }
++
+         val elapsed = (now - startedAtNanos).coerceAtLeast(0L)
+-        // Let the renderer and device catch up between pages. This is a scheduling gap,
+-        // not a claimed percentage cap on a running native GPU kernel.
+-        val rest = (elapsed / 2).coerceIn(500_000_000L, 2_000_000_000L)
++        val rest = (elapsed / 4).coerceIn(MIN_PRESSURE_GAP_NANOS, MAX_PRESSURE_GAP_NANOS)
+         readyAtNanos = now + rest
+     }
++
++    private companion object {
++        const val MIN_PRESSURE_GAP_NANOS = 8_000_000L
++        const val MAX_PRESSURE_GAP_NANOS = 100_000_000L
++    }
+ }
+diff --git a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueRegionDecoder.kt b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueRegionDecoder.kt
+index 417bf33..74fcfb5 100644
+--- a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueRegionDecoder.kt
++++ b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueRegionDecoder.kt
+@@ -16,42 +16,55 @@ import com.davemorrissey.labs.subscaleview.provider.InputProvider
+ 
+ /** AI output is PNG/WebP: keep encoded data and decode only requested tiles. */
+ @Suppress("DEPRECATION")
+-class ManyueRegionDecoder(private val cropBorders: Boolean = false) : ImageRegionDecoder {
++class ManyueRegionDecoder(
++    private val cropBorders: Boolean = false,
++    private val cacheLease: ManyueEnhancementCache.CacheLease? = null,
++) : ImageRegionDecoder {
+     private var decoder: BitmapRegionDecoder? = null
+     private var crop = Rect()
+     private var webp = false
++    private var pendingCacheLease: ManyueEnhancementCache.CacheLease? = cacheLease
++    private var activeCacheLease: ManyueEnhancementCache.CacheLease? = null
+ 
+     @Synchronized
+     override fun init(context: Context, provider: InputProvider): Point {
+-        recycle()
+-        val next = provider.openStream().use { stream ->
+-            checkNotNull(stream) { "Missing AI image stream" }
+-            val input = stream.buffered()
+-            input.mark(12)
+-            val header = ByteArray(12)
+-            var count = 0
+-            while (count < header.size) {
+-                val value = input.read()
+-                if (value < 0) break
+-                header[count++] = value.toByte()
+-            }
+-            input.reset()
+-            webp = count == 12 && header[0] == 'R'.code.toByte() && header[1] == 'I'.code.toByte() &&
+-                header[2] == 'F'.code.toByte() && header[3] == 'F'.code.toByte() &&
+-                header[8] == 'W'.code.toByte() && header[9] == 'E'.code.toByte() &&
+-                header[10] == 'B'.code.toByte() && header[11] == 'P'.code.toByte()
+-            checkNotNull(BitmapRegionDecoder.newInstance(input, false)) { "Unsupported AI image" }
+-        }
++        var createdDecoder: BitmapRegionDecoder? = null
+         try {
++            recycleDecoder()
++            activeCacheLease?.close()
++            activeCacheLease = pendingCacheLease.also { pendingCacheLease = null }
++            val next = provider.openStream().use { stream ->
++                checkNotNull(stream) { "Missing AI image stream" }
++                val input = stream.buffered()
++                input.mark(12)
++                val header = ByteArray(12)
++                var count = 0
++                while (count < header.size) {
++                    val value = input.read()
++                    if (value < 0) break
++                    header[count++] = value.toByte()
++                }
++                input.reset()
++                webp = count == 12 && header[0] == 'R'.code.toByte() && header[1] == 'I'.code.toByte() &&
++                    header[2] == 'F'.code.toByte() && header[3] == 'F'.code.toByte() &&
++                    header[8] == 'W'.code.toByte() && header[9] == 'E'.code.toByte() &&
++                    header[10] == 'B'.code.toByte() && header[11] == 'P'.code.toByte()
++                checkNotNull(BitmapRegionDecoder.newInstance(input, false)) { "Unsupported AI image" }
++            }
++            createdDecoder = next
+             check(ManyueAiSafetyPolicy.isPixelBudgetSafe(next.width, next.height, ManyueAiSafetyPolicy.MAX_DISPLAY_PIXELS)) {
+                 "AI image exceeds display pixel budget"
+             }
+             crop = Rect(0, 0, next.width, next.height)
+             if (cropBorders) crop = findCrop(next)
+             decoder = next
++            createdDecoder = null
+             return Point(crop.width(), crop.height())
+         } catch (error: Throwable) {
+-            next.recycle()
++            createdDecoder?.let { runCatching { it.recycle() } }
++            runCatching { recycleDecoder() }
++            activeCacheLease?.close()
++            activeCacheLease = null
+             throw error
+         }
+     }
+@@ -152,6 +165,17 @@ class ManyueRegionDecoder(private val cropBorders: Boolean = false) : ImageRegio
+ 
+     @Synchronized
+     override fun recycle() {
++        try {
++            recycleDecoder()
++        } finally {
++            pendingCacheLease?.close()
++            pendingCacheLease = null
++            activeCacheLease?.close()
++            activeCacheLease = null
++        }
++    }
++
++    private fun recycleDecoder() {
+         decoder?.recycle()
+         decoder = null
+         crop = Rect()
+diff --git a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/viewer/ReaderPageImageView.kt b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/viewer/ReaderPageImageView.kt
+index b8e1f3d..33a66a9 100644
+--- a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/viewer/ReaderPageImageView.kt
++++ b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/viewer/ReaderPageImageView.kt
+@@ -2,6 +2,7 @@ package eu.kanade.tachiyomi.ui.reader.viewer
+ 
+ import android.content.Context
+ import android.os.SystemClock
++import eu.kanade.tachiyomi.ui.reader.manyue.ManyueEnhancementCache
+ import eu.kanade.tachiyomi.ui.reader.manyue.ManyueViewportPolicy
+ import android.graphics.PointF
+ import android.graphics.RectF
+@@ -67,6 +68,8 @@ open class ReaderPageImageView @JvmOverloads constructor(
+ 
+     private var pageView: View? = null
+     private var stagedPageView: SubsamplingScaleImageView? = null
++    private var stagedCacheLease: ManyueEnhancementCache.CacheLease? = null
++    private var pageCacheLease: ManyueEnhancementCache.CacheLease? = null
+     private var stagedImageId = 0L
+     private val mainHandler = Handler(Looper.getMainLooper())
+     private var sourceGeneration = 0L
+@@ -304,12 +307,18 @@ open class ReaderPageImageView @JvmOverloads constructor(
+         manyueLastTouch = 0L
+         replacementHeight = 0
+         cancelStagedImage()
+-        val current = pageView ?: return
+-        when (current) {
+-            is SubsamplingScaleImageView -> current.recycle()
+-            is AppCompatImageView -> current.dispose()
++        val current = pageView
++        if (current != null) try {
++            when (current) {
++                is SubsamplingScaleImageView -> current.recycle()
++                is AppCompatImageView -> current.dispose()
++            }
++        } finally {
++            current.isVisible = false
++            val lease = pageCacheLease
++            pageCacheLease = null
++            if (lease != null) mainHandler.postDelayed(32L) { lease.close() }
+         }
+-        current.isVisible = false
+     }
+ 
+     /**
+@@ -328,121 +337,149 @@ open class ReaderPageImageView @JvmOverloads constructor(
+         cancelStagedImage()
+         this.config = config
+         val requestId = ++stagedImageId
+-        if (isWebtoon && height > 0) {
+-            // Keep the same RecyclerView item geometry while both views are measured and
+-            // after the swap. Tiny aspect-ratio rounding differences must not move the strip.
+-            replacementHeight = height
+-            replacementWidth = width
++        val stagedLease = ManyueEnhancementCache.pinFile(context, file)
++        if (stagedLease == null || !file.isFile) {
++            stagedLease?.close()
++            onError(IllegalStateException("Cached AI image is being removed or is missing"))
++            return requestId
+         }
+-        val nextView = createSubsamplingImageView().apply {
+-            var committedGeneration: Long? = null
+-            setExecutor(aiImageExecutor())
+-            setMaxTileSize(1024)
+-            setRegionDecoderFactory { eu.kanade.tachiyomi.ui.reader.manyue.ManyueRegionDecoder(config.cropBorders) }
+-            setDoubleTapZoomDuration(config.zoomDuration.getSystemScaledDuration())
+-            setMinimumScaleType(config.minimumScaleType)
+-            setMinimumDpi(1)
+-            setCropBorders(config.cropBorders)
+-            setOnImageEventListener(
+-                object : SubsamplingScaleImageView.DefaultOnImageEventListener() {
+-                    override fun onReady() {
+-                        // A small image can finish decoding before its first measured layout.
+-                        scheduleCommit()
+-                    }
+-
+-                    override fun onImageLoaded() {
+-                        // onReady only guarantees source dimensions; tiles can still be empty.
+-                        // Retain the original until the complete base layer has been decoded.
+-                        scheduleCommit()
+-                    }
+-
+-                    private fun scheduleCommit() {
+-                        if (!isImageLoaded || !isReady || stagedCommit != null) return
+-                        // SSIV may emit onReady from onDraw. Mutating FrameLayout children
+-                        // during dispatchDraw can skip a child or dereference a removed child.
+-                        val commit = Runnable { stagedCommit = null; tryCommit() }
+-                        stagedCommit = commit
+-                        if (isAttachedToWindow) mainHandler.post(commit)
++        stagedCacheLease = stagedLease
++        try {
++            if (isWebtoon && height > 0) {
++                // Keep the same RecyclerView item geometry while both views are measured and
++                // after the swap. Tiny aspect-ratio rounding differences must not move the strip.
++                replacementHeight = height
++                replacementWidth = width
++            }
++            val nextView = createSubsamplingImageView().apply {
++                var committedGeneration: Long? = null
++                setExecutor(aiImageExecutor())
++                setMaxTileSize(1024)
++                setRegionDecoderFactory {
++                    val decoderLease = ManyueEnhancementCache.pinFile(context, file)
++                        ?: error("Cached AI image is being removed")
++                    try {
++                        eu.kanade.tachiyomi.ui.reader.manyue.ManyueRegionDecoder(config.cropBorders, decoderLease)
++                    } catch (error: Throwable) {
++                        decoderLease.close()
++                        throw error
+                     }
+-
+-                    private fun tryCommit() {
+-                        if (stagedPageView !== this@apply || requestId != stagedImageId || !shouldCommit()) {
+-                            cancelStagedImage(requestId)
+-                            return
++                }
++                setDoubleTapZoomDuration(config.zoomDuration.getSystemScaledDuration())
++                setMinimumScaleType(config.minimumScaleType)
++                setMinimumDpi(1)
++                setCropBorders(config.cropBorders)
++                setOnImageEventListener(
++                    object : SubsamplingScaleImageView.DefaultOnImageEventListener() {
++                        override fun onReady() {
++                            // A small image can finish decoding before its first measured layout.
++                            scheduleCommit()
+                         }
+-                        if (!isImageLoaded || !isReady) return
+-                        if (!maySwap()) {
+-                            stagedCommit?.let(mainHandler::removeCallbacks)
+-                            val retry = Runnable { stagedCommit = null; tryCommit() }
+-                            stagedCommit = retry
+-                            if (isAttachedToWindow) mainHandler.postDelayed(retry, 80L)
+-                            return
++
++                        override fun onImageLoaded() {
++                            // onReady only guarantees source dimensions; tiles can still be empty.
++                            // Retain the original until the complete base layer has been decoded.
++                            scheduleCommit()
+                         }
+-                        cancelLandscapeZoom()
+-                        sourceGeneration++
+-                        activeSourceGeneration = sourceGeneration
+-                        committedGeneration = sourceGeneration
+-                        val previous = pageView
+-                        val old = previous as? SubsamplingScaleImageView
+-                        val center = old?.center
+-                        val viewport = if (old?.isReady == true && center != null) {
+-                            ManyueViewportPolicy.rescale(
+-                                old.scale, center.x, center.y, old.sWidth, old.sHeight, sWidth, sHeight,
+-                            )
+-                        } else null
+-                        setupZoom(config)
+-                        if (viewport != null) {
+-                            setScaleAndCenter(viewport.scale, PointF(viewport.centerX, viewport.centerY))
+-                        } else if (isVisibleOnScreen()) {
+-                            landscapeZoom(true)
++
++                        private fun scheduleCommit() {
++                            if (!isImageLoaded || !isReady || stagedCommit != null) return
++                            // SSIV may emit onReady from onDraw. Mutating FrameLayout children
++                            // during dispatchDraw can skip a child or dereference a removed child.
++                            val commit = Runnable { stagedCommit = null; tryCommit() }
++                            stagedCommit = commit
++                            if (isAttachedToWindow) mainHandler.post(commit)
+                         }
+-                        pageView = this@apply
+-                        stagedPageView = null
+-                        previous?.let { old ->
+-                            removeView(old)
+-                            mainHandler.postDelayed(32L) {
+-                                when (old) {
+-                                    is SubsamplingScaleImageView -> old.recycle()
+-                                    is AppCompatImageView -> old.dispose()
++
++                        private fun tryCommit() {
++                            if (stagedPageView !== this@apply || requestId != stagedImageId || !shouldCommit()) {
++                                cancelStagedImage(requestId)
++                                return
++                            }
++                            if (!isImageLoaded || !isReady) return
++                            if (!maySwap()) {
++                                stagedCommit?.let(mainHandler::removeCallbacks)
++                                val retry = Runnable { stagedCommit = null; tryCommit() }
++                                stagedCommit = retry
++                                if (isAttachedToWindow) mainHandler.postDelayed(retry, 80L)
++                                return
++                            }
++                            cancelLandscapeZoom()
++                            sourceGeneration++
++                            activeSourceGeneration = sourceGeneration
++                            committedGeneration = sourceGeneration
++                            val previous = pageView
++                            val old = previous as? SubsamplingScaleImageView
++                            val center = old?.center
++                            val viewport = if (old?.isReady == true && center != null) {
++                                ManyueViewportPolicy.rescale(
++                                    old.scale, center.x, center.y, old.sWidth, old.sHeight, sWidth, sHeight,
++                                )
++                            } else null
++                            setupZoom(config)
++                            if (viewport != null) {
++                                setScaleAndCenter(viewport.scale, PointF(viewport.centerX, viewport.centerY))
++                            } else if (isVisibleOnScreen()) {
++                                landscapeZoom(true)
++                            }
++                            pageView = this@apply
++                            stagedPageView = null
++                            stagedCacheLease = null
++                            val previousLease = pageCacheLease
++                            pageCacheLease = stagedLease
++                            previous?.let { old ->
++                                try {
++                                    removeView(old)
++                                } finally {
++                                    mainHandler.postDelayed(32L) {
++                                        try {
++                                            when (old) {
++                                                is SubsamplingScaleImageView -> old.recycle()
++                                                is AppCompatImageView -> old.dispose()
++                                            }
++                                        } finally {
++                                            previousLease?.close()
++                                        }
++                                    }
+                                 }
+                             }
++                            if (previous == null) previousLease?.close()
++                            // Image replacement is not a first-load event: do not reapply foldable
++                            // layout/zoom callbacks to the whole RecyclerView during a swap.
++                            background = pageBackground
++                            onReady(sWidth, sHeight)
+                         }
+-                        // Image replacement is not a first-load event: do not reapply foldable
+-                        // layout/zoom callbacks to the whole RecyclerView during a swap.
+-                        background = pageBackground
+-                        onReady(sWidth, sHeight)
+-                    }
+ 
+-                    override fun onTileLoadError(e: Exception) {
+-                        if (stagedPageView === this@apply && requestId == stagedImageId) {
+-                            onImageLoadError(e)
+-                        } else if (
+-                            pageView === this@apply &&
+-                            activeSourceGeneration == committedGeneration
+-                        ) {
+-                            onDisplayError(e)
++                        override fun onTileLoadError(e: Exception) {
++                            if (stagedPageView === this@apply && requestId == stagedImageId) {
++                                onImageLoadError(e)
++                            } else if (
++                                pageView === this@apply &&
++                                activeSourceGeneration == committedGeneration
++                            ) {
++                                onDisplayError(e)
++                            }
+                         }
+-                    }
+ 
+-                    override fun onImageLoadError(e: Exception) {
+-                        if (stagedPageView === this@apply && requestId == stagedImageId) {
+-                            cancelStagedImage(requestId)
+-                            onError(e)
++                        override fun onImageLoadError(e: Exception) {
++                            if (stagedPageView === this@apply && requestId == stagedImageId) {
++                                cancelStagedImage(requestId)
++                                onError(e)
++                            }
+                         }
+-                    }
+-                },
+-            )
+-            isVisible = true
+-        }
+-        stagedPageView = nextView
+-        // Keep the old view above this one while the decoder builds the base layer. The staged
+-        // view remains visible to Android and therefore continues to receive onDraw callbacks.
+-        addView(nextView, 0, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+-        runCatching { nextView.setImage(ImageSource.uri(context, Uri.fromFile(file))) }
+-            .onFailure {
+-                cancelStagedImage(requestId)
+-                onError(it)
++                    },
++                )
++                isVisible = true
+             }
++            stagedPageView = nextView
++            // Keep the old view above this one while the decoder builds the base layer. The staged
++            // view remains visible to Android and therefore continues to receive onDraw callbacks.
++            addView(nextView, 0, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
++            nextView.setImage(ImageSource.uri(context, Uri.fromFile(file)))
++        } catch (error: Throwable) {
++            cancelStagedImage(requestId)
++            onError(error)
++        }
+         return requestId
+     }
+ 
+@@ -452,12 +489,23 @@ open class ReaderPageImageView @JvmOverloads constructor(
+         stagedCommit?.let(mainHandler::removeCallbacks)
+         stagedCommit = null
+         val staged = stagedPageView
++        val lease = stagedCacheLease
+         stagedPageView = null
++        stagedCacheLease = null
+         if (staged != null) {
+-            removeView(staged)
+-            mainHandler.postDelayed(32L) {
+-                staged.recycle()
++            try {
++                removeView(staged)
++            } finally {
++                mainHandler.postDelayed(32L) {
++                    try {
++                        staged.recycle()
++                    } finally {
++                        lease?.close()
++                    }
++                }
+             }
++        } else {
++            lease?.close()
+         }
+     }
+ 
+@@ -523,6 +571,12 @@ open class ReaderPageImageView @JvmOverloads constructor(
+         addView(pageView, MATCH_PARENT, MATCH_PARENT)
+     }
+ 
++    private fun releasePageCacheLeaseAfterDecoderReset() {
++        val lease = pageCacheLease ?: return
++        pageCacheLease = null
++        mainHandler.postDelayed(32L) { lease.close() }
++    }
++
+     protected open fun aiImageExecutor(): Executor = aiTileExecutor
+ 
+     private fun createSubsamplingImageView(): SubsamplingScaleImageView =
+@@ -583,11 +637,13 @@ open class ReaderPageImageView @JvmOverloads constructor(
+         when (data) {
+             is BitmapDrawable -> {
+                 setImage(ImageSource.bitmap(data.bitmap))
++                releasePageCacheLeaseAfterDecoderReset()
+                 isVisible = true
+             }
+             is BufferedSource -> {
+                 if (!isWebtoon) {
+                     setImage(ImageSource.inputStream(data.inputStream()))
++                    releasePageCacheLeaseAfterDecoderReset()
+                     isVisible = true
+                     return@apply
+                 }
+@@ -600,6 +656,7 @@ open class ReaderPageImageView @JvmOverloads constructor(
+                         onSuccess = { result ->
+                             val image = result as BitmapImage
+                             setImage(ImageSource.bitmap(image.bitmap))
++                            releasePageCacheLeaseAfterDecoderReset()
+                             isVisible = true
+                         },
+                     )
+@@ -624,7 +681,19 @@ open class ReaderPageImageView @JvmOverloads constructor(
+ 
+     private fun prepareAnimatedImageView() {
+         if (pageView is AppCompatImageView) return
+-        removeView(pageView)
++        val previous = pageView
++        removeView(previous)
++        if (previous is SubsamplingScaleImageView) {
++            val lease = pageCacheLease
++            pageCacheLease = null
++            mainHandler.postDelayed(32L) {
++                try {
++                    previous.recycle()
++                } finally {
++                    lease?.close()
++                }
++            }
++        }
+ 
+         pageView = if (isWebtoon) {
+             AppCompatImageView(context)
+diff --git a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/viewer/webtoon/WebtoonRecyclerView.kt b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/viewer/webtoon/WebtoonRecyclerView.kt
+index 5b04164..ba2d389 100644
+--- a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/viewer/webtoon/WebtoonRecyclerView.kt
++++ b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/viewer/webtoon/WebtoonRecyclerView.kt
+@@ -2,10 +2,13 @@ package eu.kanade.tachiyomi.ui.reader.viewer.webtoon
+ 
+ import android.animation.AnimatorSet
+ import android.animation.ValueAnimator
++import android.os.Build
++import android.os.PowerManager
+ import android.content.Context
+ import android.os.SystemClock
+ import eu.kanade.tachiyomi.ui.reader.manyue.ManyueReaderWorkGate
+ import android.util.AttributeSet
++import android.view.Choreographer
+ import android.view.HapticFeedbackConstants
+ import android.view.MotionEvent
+ import android.view.ViewConfiguration
+@@ -29,6 +32,31 @@ class WebtoonRecyclerView @JvmOverloads constructor(
+     private var manyueTouchActive = false
+     private var manyueLastInteraction = 0L
+     private var manyueAnimating = 0
++    private var thermalPowerManager: PowerManager? = null
++    private var thermalStatusListener: PowerManager.OnThermalStatusChangedListener? = null
++    private var frameCallbackPosted = false
++    private var previousFrameTimeNanos = 0L
++
++    private val manyueFrameCallback = Choreographer.FrameCallback { frameTimeNanos ->
++        frameCallbackPosted = false
++        if (!isFrameSamplingActive()) {
++            previousFrameTimeNanos = 0L
++            ManyueReaderWorkGate.resetFrameSampling(this)
++            return@FrameCallback
++        }
++
++        if (previousFrameTimeNanos > 0L && frameTimeNanos > previousFrameTimeNanos) {
++            ManyueReaderWorkGate.reportFrame(
++                this,
++                frameTimeNanos - previousFrameTimeNanos,
++                expectedFrameIntervalNanos(),
++            )
++        } else {
++            ManyueReaderWorkGate.resetFrameSampling(this)
++        }
++        previousFrameTimeNanos = frameTimeNanos
++        updateFrameSampling()
++    }
+ 
+     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+         when (event.actionMasked) {
+@@ -48,6 +76,13 @@ class WebtoonRecyclerView @JvmOverloads constructor(
+     fun isManyueInteractionActive(): Boolean = manyueTouchActive || manyueAnimating > 0 ||
+         scrollState != SCROLL_STATE_IDLE || SystemClock.uptimeMillis() - manyueLastInteraction < 300L
+ 
++    override fun onAttachedToWindow() {
++        super.onAttachedToWindow()
++        updateManyueWorkGate()
++        startThermalStatusMonitoring()
++        updateFrameSampling()
++    }
++
+     private fun updateManyueWorkGate() {
+         if (!isAttachedToWindow) {
+             ManyueReaderWorkGate.release(this)
+@@ -56,11 +91,62 @@ class WebtoonRecyclerView @JvmOverloads constructor(
+         ManyueReaderWorkGate.update(this, manyueTouchActive || manyueAnimating > 0 || scrollState != SCROLL_STATE_IDLE)
+     }
+ 
++    private fun isFrameSamplingActive(): Boolean = isAttachedToWindow && scrollState != SCROLL_STATE_IDLE
++
++    private fun updateFrameSampling() {
++        if (!isFrameSamplingActive()) {
++            stopFrameSampling()
++            return
++        }
++        if (!frameCallbackPosted) {
++            frameCallbackPosted = true
++            Choreographer.getInstance().postFrameCallback(manyueFrameCallback)
++        }
++    }
++
++    private fun stopFrameSampling() {
++        if (frameCallbackPosted) Choreographer.getInstance().removeFrameCallback(manyueFrameCallback)
++        frameCallbackPosted = false
++        previousFrameTimeNanos = 0L
++        ManyueReaderWorkGate.resetFrameSampling(this)
++    }
++
++    private fun expectedFrameIntervalNanos(): Long {
++        val refreshRate = display?.refreshRate?.takeIf { it in 30f..240f } ?: 60f
++        return (1_000_000_000.0 / refreshRate).toLong()
++    }
++
++    private fun startThermalStatusMonitoring() {
++        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return
++        val powerManager = context.applicationContext.getSystemService(PowerManager::class.java) ?: return
++        val listener = PowerManager.OnThermalStatusChangedListener { status ->
++            ManyueReaderWorkGate.reportThermalStatus(this, status)
++        }
++        powerManager.addThermalStatusListener(listener)
++        thermalPowerManager = powerManager
++        thermalStatusListener = listener
++        ManyueReaderWorkGate.reportThermalStatus(this, powerManager.currentThermalStatus)
++    }
++
++    private fun stopThermalStatusMonitoring() {
++        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
++            val powerManager = thermalPowerManager
++            val listener = thermalStatusListener
++            if (powerManager != null && listener != null) {
++                powerManager.removeThermalStatusListener(listener)
++            }
++        }
++        thermalPowerManager = null
++        thermalStatusListener = null
++    }
++
+     override fun onDetachedFromWindow() {
+         manyueTouchActive = false
+         manyueLastInteraction = 0L
+-        super.onDetachedFromWindow()
++        stopFrameSampling()
++        stopThermalStatusMonitoring()
+         ManyueReaderWorkGate.release(this)
++        super.onDetachedFromWindow()
+     }
+     private var atLastPosition = false
+     private var atFirstPosition = false
+@@ -115,7 +201,9 @@ class WebtoonRecyclerView @JvmOverloads constructor(
+     override fun onScrolled(dx: Int, dy: Int) {
+         super.onScrolled(dx, dy)
+         manyueLastInteraction = SystemClock.uptimeMillis()
++        ManyueReaderWorkGate.reportScroll(this, dx, dy, height)
+         updateManyueWorkGate()
++        updateFrameSampling()
+         val layoutManager = layoutManager
+         lastVisibleItemPosition =
+             (layoutManager as LinearLayoutManager).findLastVisibleItemPosition()
+@@ -126,6 +214,7 @@ class WebtoonRecyclerView @JvmOverloads constructor(
+         super.onScrollStateChanged(state)
+         manyueLastInteraction = SystemClock.uptimeMillis()
+         updateManyueWorkGate()
++        updateFrameSampling()
+         val layoutManager = layoutManager
+         val visibleItemCount = layoutManager?.childCount ?: 0
+         val totalItemCount = layoutManager?.itemCount ?: 0
+diff --git a/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiRuntimeTest.kt b/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiRuntimeTest.kt
+index 47a1dbe..9edc305 100644
+--- a/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiRuntimeTest.kt
++++ b/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiRuntimeTest.kt
+@@ -18,22 +18,24 @@ class ManyueAiRuntimeTest {
+         }
+     }
+ 
+-    @Test fun `pacing leaves bounded gaps without blocking the first request`() {
++    @Test fun `normal work continues immediately and pressure adds only a bounded short gap`() {
+         var now = -1_000_000_000L
+         val pacer = ManyueWorkPacer { now }
+         assertFalse(pacer.isBlocked())
+         pacer.afterWork(now - 100_000_000L)
+-        now += 499_999_999L
+-        assertTrue(pacer.isBlocked())
+-        now += 1L
+         assertFalse(pacer.isBlocked())
++
+         pacer.afterWork(now - 20_000_000_000L)
+-        now += 1_999_999_999L
++        assertFalse(pacer.isBlocked(), "idle reading should allow the next AI request to continue")
++
++        pacer.afterWork(now - 20_000_000_000L, pressureActive = true)
++        now += 99_999_999L
+         assertTrue(pacer.isBlocked())
+         now += 1L
+         assertFalse(pacer.isBlocked())
+-        pacer.afterWork(now - 2_000_000_000L)
+-        now += 999_999_999L
++
++        pacer.afterWork(now - 100_000_000L, pressureActive = true)
++        now += 24_999_999L
+         assertTrue(pacer.isBlocked())
+         now += 1L
+         assertFalse(pacer.isBlocked())
+diff --git a/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementCacheBehaviorTest.kt b/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementCacheBehaviorTest.kt
+new file mode 100644
+index 0000000..17a086f
+--- /dev/null
++++ b/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueEnhancementCacheBehaviorTest.kt
+@@ -0,0 +1,242 @@
++package eu.kanade.tachiyomi.ui.reader.manyue
++
++import android.app.Application
++import android.content.Context
++import android.content.ContextWrapper
++import java.io.File
++import java.io.RandomAccessFile
++import java.nio.file.Files
++import kotlinx.coroutines.CoroutineStart
++import kotlinx.coroutines.async
++import kotlinx.coroutines.cancelAndJoin
++import kotlinx.coroutines.delay
++import kotlinx.coroutines.runBlocking
++import kotlinx.coroutines.withTimeout
++import org.junit.Assert.assertFalse
++import org.junit.Assert.assertNotNull
++import org.junit.Assert.assertNull
++import org.junit.Assert.assertTrue
++import org.junit.Test
++import org.junit.runner.RunWith
++import org.robolectric.RuntimeEnvironment
++import org.robolectric.RobolectricTestRunner
++import org.robolectric.annotation.Config
++
++@RunWith(RobolectricTestRunner::class)
++@Config(application = Application::class, sdk = [34], manifest = Config.NONE)
++class ManyueEnhancementCacheBehaviorTest {
++
++    @Test fun `clear removes unleased current pages but keeps a live displayed image`() = runBlocking {
++        val root = Files.createTempDirectory("manyue-cache-clear-test").toFile()
++        val context = IsolatedCacheContext(RuntimeEnvironment.getApplication(), root)
++        val identity = ManyueEnhancementCache.ReadingIdentity(701L, 801L, 6)
++        ManyueEnhancementCache.updateReadingPosition(identity.mangaId, identity.chapterId, identity.pageIndex)
++        try {
++            val displayedKey = putImage(context, identity, "displayed")
++            val otherKey = putImage(context, identity.copy(pageIndex = 7), "other")
++            val displayed = ManyueEnhancementCache.pinCachedImage(context, displayedKey)
++            val otherBundle = File(ManyueEnhancementCache.cacheDir(context), otherKey)
++            val displayedBundle = File(ManyueEnhancementCache.cacheDir(context), displayedKey)
++            assertNotNull(displayed)
++            try {
++                ManyueEnhancementCache.clearCache(context)
++                awaitCondition { !otherBundle.exists() }
++                assertNotNull(ManyueEnhancementCache.getImage(context, displayedKey))
++            } finally {
++                displayed?.lease?.close()
++            }
++
++            ManyueEnhancementCache.clearCache(context)
++            awaitCondition { !displayedBundle.exists() }
++        } finally {
++            ManyueEnhancementCache.clearReadingPosition(identity.mangaId, identity.chapterId)
++            root.deleteRecursively()
++        }
++    }
++
++    @Test fun `prefetch reservation gates writes and a cancelled waiter releases its slot`() = runBlocking {
++        val root = Files.createTempDirectory("manyue-cache-budget-test").toFile()
++        val context = IsolatedCacheContext(RuntimeEnvironment.getApplication(), root)
++        val identity = ManyueEnhancementCache.ReadingIdentity(702L, 802L, 3)
++        val reservation = ManyueEnhancementCache.awaitPrefetchBudget(
++            context,
++            identity.mangaId,
++            identity.chapterId,
++            identity.pageIndex,
++            estimatedBytes = MAX_CACHE_BYTES,
++        )
++        try {
++            val other = identity.copy(pageIndex = 4)
++            val blockedSource = File(root, "blocked.webp").apply { writeBytes(byteArrayOf(1, 2, 3)) }
++            val blockedKey = cacheKey(other)
++            assertFalse(
++                ManyueEnhancementCache.putImage(
++                    context,
++                    blockedKey,
++                    blockedSource,
++                    2,
++                    2,
++                    readingIdentity = other,
++                ),
++            )
++            assertNull(ManyueEnhancementCache.getImage(context, blockedKey))
++
++            val waiter = async(start = CoroutineStart.UNDISPATCHED) {
++                ManyueEnhancementCache.awaitPrefetchBudget(
++                    context,
++                    other.mangaId,
++                    other.chapterId,
++                    other.pageIndex,
++                    estimatedBytes = 1L,
++                )
++            }
++            assertFalse(waiter.isCompleted)
++            awaitCondition { ManyueEnhancementCache.pendingBudgetWaiterCountForTest() > 0 }
++            waiter.cancelAndJoin()
++        } finally {
++            reservation.close()
++        }
++
++        val afterRelease = ManyueEnhancementCache.awaitPrefetchBudget(
++            context,
++            identity.mangaId,
++            identity.chapterId,
++            identity.pageIndex,
++            estimatedBytes = MAX_CACHE_BYTES,
++        )
++        afterRelease.close()
++        root.deleteRecursively()
++        Unit
++    }
++
++    @Test fun `reading progress releases a waiter blocked by a full protected cache`() = runBlocking {
++        val root = Files.createTempDirectory("manyue-cache-protected-budget-test").toFile()
++        val context = IsolatedCacheContext(RuntimeEnvironment.getApplication(), root)
++        val unread = ManyueEnhancementCache.ReadingIdentity(704L, 804L, 5)
++        ManyueEnhancementCache.updateReadingPosition(unread.mangaId, unread.chapterId, unread.pageIndex)
++        try {
++            val protectedKey = putImage(context, unread, "unread")
++            val bundle = ManyueEnhancementCache.cacheDir(context).resolve(protectedKey)
++            val padding = File(bundle, "budget-padding.bin")
++            val currentBytes = ManyueEnhancementCache.cacheSizeBytes(context)
++            RandomAccessFile(padding, "rw").use { it.setLength(MAX_CACHE_BYTES - currentBytes) }
++            assertTrue(ManyueEnhancementCache.cacheSizeBytes(context) >= MAX_CACHE_BYTES)
++
++            val next = unread.copy(pageIndex = 10)
++            val waiter = async(start = CoroutineStart.UNDISPATCHED) {
++                ManyueEnhancementCache.awaitPrefetchBudget(
++                    context,
++                    next.mangaId,
++                    next.chapterId,
++                    next.pageIndex,
++                    estimatedBytes = 1L,
++                )
++            }
++            assertFalse(waiter.isCompleted)
++            awaitCondition { ManyueEnhancementCache.pendingBudgetWaiterCountForTest() == 1 }
++            assertNotNull(ManyueEnhancementCache.getImage(context, protectedKey))
++
++            ManyueEnhancementCache.updateReadingPosition(unread.mangaId, unread.chapterId, 8)
++            val acquired = withTimeout(5_000L) { waiter.await() }
++            acquired.close()
++            assertNull(ManyueEnhancementCache.getImage(context, protectedKey))
++        } finally {
++            ManyueEnhancementCache.clearReadingPosition(unread.mangaId, unread.chapterId)
++            root.deleteRecursively()
++        }
++    }
++
++    @Test fun `a damaged active cache bundle can be rebuilt for its current page`() {
++        val root = Files.createTempDirectory("manyue-cache-repair-test").toFile()
++        val context = IsolatedCacheContext(RuntimeEnvironment.getApplication(), root)
++        val identity = ManyueEnhancementCache.ReadingIdentity(705L, 805L, 4)
++        ManyueEnhancementCache.updateReadingPosition(identity.mangaId, identity.chapterId, identity.pageIndex)
++        try {
++            val key = putImage(context, identity, "first")
++            val damaged = ManyueEnhancementCache.getImage(context, key) ?: error("cache image not created")
++            assertTrue(damaged.file.delete())
++
++            val repairedSource = File(root, "repair.webp").apply { writeBytes(byteArrayOf(4, 5, 6)) }
++            assertTrue(
++                ManyueEnhancementCache.putImage(
++                    context,
++                    key,
++                    repairedSource,
++                    2,
++                    2,
++                    readingIdentity = identity,
++                ),
++            )
++            assertNotNull(ManyueEnhancementCache.getImage(context, key))
++        } finally {
++            ManyueEnhancementCache.clearReadingPosition(identity.mangaId, identity.chapterId)
++            root.deleteRecursively()
++        }
++    }
++
++    @Test fun `trim counts legacy disk bytes and preserves the active unread cache bundle`() = runBlocking {
++        val root = Files.createTempDirectory("manyue-cache-trim-test").toFile()
++        val context = IsolatedCacheContext(RuntimeEnvironment.getApplication(), root)
++        val identity = ManyueEnhancementCache.ReadingIdentity(703L, 803L, 9)
++        ManyueEnhancementCache.updateReadingPosition(identity.mangaId, identity.chapterId, identity.pageIndex)
++        try {
++            val key = putImage(context, identity, "protected")
++            val legacy = File(root, "manyue_ai_anime_fixed2_v6").apply { mkdirs() }
++            val oldEntry = File(legacy, "old-output.bin")
++            RandomAccessFile(oldEntry, "rw").use { it.setLength(MAX_CACHE_BYTES + 1L) }
++            assertTrue(ManyueEnhancementCache.cacheSizeBytes(context) > MAX_CACHE_BYTES)
++
++            ManyueEnhancementCache.trimCache(context)
++            awaitCondition { !oldEntry.exists() }
++            assertNotNull(ManyueEnhancementCache.getImage(context, key))
++        } finally {
++            ManyueEnhancementCache.clearReadingPosition(identity.mangaId, identity.chapterId)
++            root.deleteRecursively()
++        }
++    }
++
++    private suspend fun awaitCondition(condition: () -> Boolean) {
++        withTimeout(5_000L) {
++            while (!condition()) delay(10L)
++        }
++    }
++
++    private fun putImage(
++        context: Context,
++        identity: ManyueEnhancementCache.ReadingIdentity,
++        suffix: String,
++    ): String {
++        val source = File(context.cacheDir, "$suffix.webp").apply { writeBytes(byteArrayOf(1, 2, 3)) }
++        val key = cacheKey(identity)
++        assertTrue(
++            ManyueEnhancementCache.putImage(
++                context,
++                key,
++                source,
++                2,
++                2,
++                readingIdentity = identity,
++            ),
++        )
++        return key
++    }
++
++    private fun cacheKey(identity: ManyueEnhancementCache.ReadingIdentity): String =
++        ManyueEnhancementCache.cacheKey(
++            identity.mangaId,
++            identity.chapterId,
++            identity.pageIndex,
++            0,
++            0,
++            2,
++            0,
++        )
++
++    private class IsolatedCacheContext(base: Context, private val isolatedCacheDir: File) : ContextWrapper(base) {
++        override fun getCacheDir(): File = isolatedCacheDir.apply { mkdirs() }
++    }
++
++    private companion object {
++        const val MAX_CACHE_BYTES = 805_306_368L
++    }
++}
+diff --git a/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePrefetchCoordinatorLifecycleTest.kt b/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePrefetchCoordinatorLifecycleTest.kt
+index 15c1432..568b6ab 100644
+--- a/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePrefetchCoordinatorLifecycleTest.kt
++++ b/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePrefetchCoordinatorLifecycleTest.kt
+@@ -1,22 +1,20 @@
+ package eu.kanade.tachiyomi.ui.reader.manyue
+ 
+ import java.io.ByteArrayInputStream
+-import java.util.concurrent.ConcurrentHashMap
++import java.nio.file.Files
++import java.util.Collections
+ import java.util.concurrent.atomic.AtomicInteger
+ import kotlinx.coroutines.CompletableDeferred
+ import kotlinx.coroutines.CoroutineScope
+ import kotlinx.coroutines.Dispatchers
+ import kotlinx.coroutines.ExperimentalCoroutinesApi
+-import kotlinx.coroutines.NonCancellable
+ import kotlinx.coroutines.SupervisorJob
+ import kotlinx.coroutines.cancel
+ import kotlinx.coroutines.delay
+ import kotlinx.coroutines.runBlocking
+-import kotlinx.coroutines.withContext
+ import kotlinx.coroutines.withTimeout
+ import org.junit.jupiter.api.Assertions.assertArrayEquals
+ import org.junit.jupiter.api.Assertions.assertEquals
+-import org.junit.jupiter.api.Assertions.assertFalse
+ import org.junit.jupiter.api.Assertions.assertNull
+ import org.junit.jupiter.api.Assertions.assertTrue
+ import org.junit.jupiter.api.Test
+@@ -25,39 +23,239 @@ class ManyuePrefetchCoordinatorLifecycleTest {
+ 
+     @Test
+     @OptIn(ExperimentalCoroutinesApi::class)
+-    fun `same page window after generation change cancels delayed old work and starts five new jobs`() = runBlocking {
++    fun `one cursor completes more than five pages while selection moves without restarting`() = runBlocking {
+         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default.limitedParallelism(1))
+         val coordinator = ManyuePrefetchJobCoordinator(scope)
+-        val firstLoaderStarted = CompletableDeferred<Int>()
+-        val releaseOldLoader = CompletableDeferred<Unit>()
+-        val newGenerationQueued = ConcurrentHashMap.newKeySet<Int>()
+-        val newGenerationFinished = CompletableDeferred<Unit>()
+-        val oldGenerationQueued = AtomicInteger()
+-        val plan = ManyueAiSafetyPolicy.prefetchPlan(currentIndex = 8, pageCount = 14)
++        val firstStarted = CompletableDeferred<Unit>()
++        val finished = CompletableDeferred<Unit>()
++        val startedByPage = (1..11).associateWith { CompletableDeferred<Unit>() }
++        val terminalByPage = (1..11).associateWith { CompletableDeferred<Unit>() }
++        val completedByPage = (1..11).associateWith { CompletableDeferred<Unit>() }
++        val active = AtomicInteger()
++        val maxActive = AtomicInteger()
++        val completed = Collections.synchronizedList(mutableListOf<Int>())
++        val oldMode = ManyueRuntimeState.modeInt
++        ManyueRuntimeState.updateMode(ManyueEnhancementMode.AI_2X.value)
++        val generation = ManyueRuntimeState.generation
++        lateinit var work: suspend (Int, Long) -> Unit
++
++        work = { pageIndex, generation ->
++            val running = active.incrementAndGet()
++            maxActive.updateAndGet { maxOf(it, running) }
++            try {
++                startedByPage.getValue(pageIndex).complete(Unit)
++                if (pageIndex == 1) firstStarted.complete(Unit)
++                terminalByPage.getValue(pageIndex).await()
++                // Simulate continuous reading. reconcile must update only the reading head while
++                // this same cursor job continues through the rest of the chapter.
++                coordinator.reconcile(91, pageIndex, generation, 12, ManyueEnhancementMode.AI_2X.value, work)
++                completed += pageIndex
++                completedByPage.getValue(pageIndex).complete(Unit)
++                if (pageIndex == 11) finished.complete(Unit)
++            } finally {
++                active.decrementAndGet()
++            }
++        }
++
++        try {
++            coordinator.reconcile(91, 0, generation, 12, ManyueEnhancementMode.AI_2X.value, work)
++            withTimeout(5_000) { firstStarted.await() }
++            assertEquals(1, coordinator.activeCursorCount)
++            coordinator.reconcile(91, 1, generation, 12, ManyueEnhancementMode.AI_2X.value, work)
++            for (pageIndex in 1..11) {
++                withTimeout(5_000) { startedByPage.getValue(pageIndex).await() }
++                assertEquals(1, coordinator.activeCursorCount)
++                if (pageIndex < 11) {
++                    assertTrue(!startedByPage.getValue(pageIndex + 1).isCompleted,
++                        "page ${pageIndex + 1} must wait for page $pageIndex worker terminal")
++                }
++                terminalByPage.getValue(pageIndex).complete(Unit)
++                withTimeout(5_000) { completedByPage.getValue(pageIndex).await() }
++                if (pageIndex < 11) withTimeout(5_000) { startedByPage.getValue(pageIndex + 1).await() }
++            }
++            withTimeout(5_000) { finished.await() }
++            withTimeout(5_000) {
++                while (coordinator.activeCursorCount != 0) delay(10)
++            }
++
++            assertEquals((1..11).toList(), completed.toList())
++            assertEquals(1, maxActive.get(), "only one prefetch page may be unfinished")
++            assertEquals(0, coordinator.activeCursorCount)
++
++            // A later reverse/forward selection never rewinds the completed cursor.
++            coordinator.reconcile(91, 3, generation, 12, ManyueEnhancementMode.AI_2X.value, work)
++            coordinator.reconcile(91, 11, generation, 12, ManyueEnhancementMode.AI_2X.value, work)
++            coordinator.awaitCursorIdle()
++            assertEquals((1..11).toList(), completed.toList())
++        } finally {
++            coordinator.cancelAll()
++            scope.cancel()
++            ManyueRuntimeState.updateMode(oldMode)
++        }
++    }
++
++    @Test
++    @OptIn(ExperimentalCoroutinesApi::class)
++    fun `forward jump keeps an active request then redirects once and reverse scroll does not replay`() = runBlocking {
++        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default.limitedParallelism(1))
++        val coordinator = ManyuePrefetchJobCoordinator(scope)
++        val firstStarted = CompletableDeferred<Unit>()
++        val releaseFirst = CompletableDeferred<Unit>()
++        val finished = CompletableDeferred<Unit>()
++        val completed = Collections.synchronizedList(mutableListOf<Int>())
++        val oldMode = ManyueRuntimeState.modeInt
++        ManyueRuntimeState.updateMode(ManyueEnhancementMode.AI_2X.value)
++        val generation = ManyueRuntimeState.generation
++        lateinit var work: suspend (Int, Long) -> Unit
++
++        work = { pageIndex, _ ->
++            if (pageIndex == 1) {
++                firstStarted.complete(Unit)
++                releaseFirst.await()
++            }
++            completed += pageIndex
++            if (pageIndex == 19) finished.complete(Unit)
++        }
++
++        try {
++            coordinator.reconcile(92, 0, generation, 20, ManyueEnhancementMode.AI_2X.value, work)
++            withTimeout(5_000) { firstStarted.await() }
++            coordinator.reconcile(92, 10, generation, 20, ManyueEnhancementMode.AI_2X.value, work)
++            assertTrue(coordinator.isCurrent(92, generation, ManyueEnhancementMode.AI_2X.value))
++            releaseFirst.complete(Unit)
++            withTimeout(5_000) { finished.await() }
++            coordinator.awaitCursorIdle()
++
++            assertEquals(listOf(1, 8, 9, 11, 12, 13, 14, 15, 16, 17, 18, 19), completed.toList())
++            coordinator.reconcile(92, 2, generation, 20, ManyueEnhancementMode.AI_2X.value, work)
++            coordinator.awaitCursorIdle()
++            assertEquals(listOf(1, 8, 9, 11, 12, 13, 14, 15, 16, 17, 18, 19), completed.toList())
++        } finally {
++            coordinator.cancelAll()
++            scope.cancel()
++            ManyueRuntimeState.updateMode(oldMode)
++        }
++    }
++
++    @Test
++    @OptIn(ExperimentalCoroutinesApi::class)
++    fun `chapter replacement and runtime mode change cancel stale cursor waits`() = runBlocking {
++        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default.limitedParallelism(1))
++        val coordinator = ManyuePrefetchJobCoordinator(scope)
++        val oldStarted = CompletableDeferred<Unit>()
++        val oldCancelled = CompletableDeferred<Unit>()
++        val replacementStarted = CompletableDeferred<Unit>()
++        val modeWaitStarted = CompletableDeferred<Unit>()
++        val modeWaitCancelled = CompletableDeferred<Unit>()
++        val oldMode = ManyueRuntimeState.modeInt
++        var workerToken: String? = null
++
++        try {
++            ManyueRuntimeState.updateMode(ManyueEnhancementMode.AI_2X.value)
++            val generation = ManyueRuntimeState.generation
++            coordinator.reconcile(93, 0, generation, 8, ManyueEnhancementMode.AI_2X.value) { _, taskGeneration ->
++                oldStarted.complete(Unit)
++                try {
++                    coordinator.awaitWhileCurrent(93, taskGeneration, ManyueEnhancementMode.AI_2X.value) {
++                        CompletableDeferred<Unit>().await()
++                    }
++                } catch (error: kotlinx.coroutines.CancellationException) {
++                    oldCancelled.complete(Unit)
++                    throw error
++                }
++            }
++            withTimeout(5_000) { oldStarted.await() }
++
++            // A different chapter invalidates the old cursor, then receives exactly one new job.
++            coordinator.reconcile(94, 0, generation, 3, ManyueEnhancementMode.AI_2X.value) { pageIndex, _ ->
++                if (pageIndex == 1) replacementStarted.complete(Unit)
++            }
++            withTimeout(5_000) { oldCancelled.await() }
++            withTimeout(5_000) { replacementStarted.await() }
++            assertTrue(coordinator.isCurrent(94, generation, ManyueEnhancementMode.AI_2X.value))
++
++            coordinator.cancelAll()
++            workerToken = ManyueAiUpscaler.register(
++                mangaId = 91,
++                chapterId = 94,
++                pageIndex = 1,
++                inputFile = Files.createTempFile("manyue-prefetch-await", ".bin").toFile(),
++                sourceWidth = 100,
++                sourceHeight = 200,
++                targetMode = 2,
++                targetWidth = 200,
++                priority = 10,
++                expectedMode = ManyueEnhancementMode.AI_2X.value,
++                generation = generation,
++                sourceFingerprint = "await-$generation",
++            )
++            coordinator.reconcile(94, 0, generation, 3, ManyueEnhancementMode.AI_2X.value) { _, taskGeneration ->
++                modeWaitStarted.complete(Unit)
++                try {
++                    coordinator.awaitWorkerCompletion(94, taskGeneration, ManyueEnhancementMode.AI_2X.value, workerToken!!)
++                } catch (error: kotlinx.coroutines.CancellationException) {
++                    modeWaitCancelled.complete(Unit)
++                    throw error
++                }
++            }
++            withTimeout(5_000) { modeWaitStarted.await() }
++
++            // A settings change cancels a suspended wait even if there is no new page callback.
++            ManyueRuntimeState.updateMode(ManyueEnhancementMode.AI_2X_CLASSIC.value)
++            withTimeout(5_000) { modeWaitCancelled.await() }
++            assertTrue(!coordinator.isCurrent(94, generation, ManyueEnhancementMode.AI_2X.value))
++            assertTrue(!ManyueAiUpscaler.isFinished(workerToken!!), "cancelling a waiter leaves shared worker work alone")
++        } finally {
++            coordinator.cancelAll()
++            workerToken?.let(ManyueAiUpscaler::cancel)
++            ManyueRuntimeState.updateMode(oldMode)
++            scope.cancel()
++        }
++    }
++
++    @Test
++    @OptIn(ExperimentalCoroutinesApi::class)
++    fun `runtime generation change without page reconcile cancels pending budget wait`() = runBlocking {
++        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default.limitedParallelism(1))
++        val coordinator = ManyuePrefetchJobCoordinator(scope)
++        val budgetWaitStarted = CompletableDeferred<Unit>()
++        val budgetWaitCancelled = CompletableDeferred<Unit>()
++        val budgetAvailable = CompletableDeferred<Unit>()
++        val oldMode = ManyueRuntimeState.modeInt
++        val oldModel = ManyueRuntimeState.aiModel
++        val mode = ManyueEnhancementMode.AI_2X.value
+ 
+         try {
+-            coordinator.reconcile(91, 8, 101, plan) { target, generation ->
+-                firstLoaderStarted.complete(target.pageIndex)
+-                withContext(NonCancellable) { releaseOldLoader.await() }
+-                coordinator.ensureCurrent(91, generation)
+-                oldGenerationQueued.incrementAndGet()
++            ManyueRuntimeState.updateMode(mode)
++            val generation = ManyueRuntimeState.generation
++            coordinator.reconcile(96, 0, generation, 4, mode) { _, taskGeneration ->
++                // Model a cache budget reservation that has not become available yet.
++                coordinator.awaitWhileCurrent(96, taskGeneration, mode) {
++                    budgetWaitStarted.complete(Unit)
++                    try {
++                        budgetAvailable.await()
++                    } finally {
++                        budgetWaitCancelled.complete(Unit)
++                    }
++                }
+             }
+-            assertEquals(9, withTimeout(5_000) { firstLoaderStarted.await() })
++            withTimeout(5_000) { budgetWaitStarted.await() }
+ 
+-            coordinator.reconcile(91, 8, 102, plan) { target, generation ->
+-                coordinator.ensureCurrent(91, generation)
+-                newGenerationQueued += target.pageIndex
+-                if (newGenerationQueued.size == 5) newGenerationFinished.complete(Unit)
++            val nextModel = if (ManyueRuntimeState.aiModel == ManyueAiModel.FAST_REAL_CUGAN) {
++                ManyueAiModel.QUALITY_REAL_ESRGAN
++            } else {
++                ManyueAiModel.FAST_REAL_CUGAN
+             }
+-            releaseOldLoader.complete(Unit)
+-            withTimeout(5_000) { newGenerationFinished.await() }
++            ManyueRuntimeState.updateAiModel(nextModel)
+ 
+-            assertEquals(0, oldGenerationQueued.get(), "stale delayed load must not enqueue")
+-            assertEquals(setOf(9, 10, 11, 12, 13), newGenerationQueued)
+-            assertFalse(coordinator.isCurrent(91, 101))
+-            assertTrue(coordinator.isCurrent(91, 102))
++            assertTrue(ManyueRuntimeState.modeInt == mode, "the runtime mode stays unchanged")
++            assertTrue(ManyueRuntimeState.generation != generation, "the runtime generation advances")
++            withTimeout(5_000) { budgetWaitCancelled.await() }
++            assertTrue(!coordinator.isCurrent(96, generation, mode))
+         } finally {
+             coordinator.cancelAll()
++            ManyueRuntimeState.updateAiModel(oldModel)
++            ManyueRuntimeState.updateMode(oldMode)
+             scope.cancel()
+         }
+     }
+@@ -69,17 +267,17 @@ class ManyuePrefetchCoordinatorLifecycleTest {
+         val gateOwner = Any()
+         val waitingOnGate = CompletableDeferred<Unit>()
+         val loads = AtomicInteger()
++        val oldMode = ManyueRuntimeState.modeInt
++        val mode = ManyueEnhancementMode.AI_2X.value
++        ManyueRuntimeState.updateMode(mode)
++        val generation = ManyueRuntimeState.generation
+ 
+         try {
+-            ManyueReaderWorkGate.update(gateOwner, active = true)
+-            coordinator.reconcile(
+-                chapterId = 91,
+-                currentPageIndex = 8,
+-                generation = 103,
+-                plan = listOf(ManyueAiSafetyPolicy.PrefetchTarget(9, 50)),
+-            ) { _, generation ->
++            ManyueReaderWorkGate.update(gateOwner, active = false)
++            ManyueReaderWorkGate.reportThermalStatus(gateOwner, ManyueReaderWorkGate.THERMAL_STATUS_SEVERE)
++            coordinator.reconcile(95, 0, generation, 4, mode) { _, taskGeneration ->
+                 waitingOnGate.complete(Unit)
+-                coordinator.awaitReaderWork(91, generation)
++                coordinator.awaitReaderWork(95, taskGeneration, mode)
+                 loads.incrementAndGet()
+             }
+ 
+@@ -90,10 +288,11 @@ class ManyuePrefetchCoordinatorLifecycleTest {
+             coordinator.cancelAll()
+             ManyueReaderWorkGate.release(gateOwner)
+             delay(160)
+-            assertEquals(0, loads.get(), "a cancelled page window must not resume after scrolling")
++            assertEquals(0, loads.get(), "a cancelled cursor must not resume after scrolling")
+         } finally {
+             coordinator.cancelAll()
+             ManyueReaderWorkGate.release(gateOwner)
++            ManyueRuntimeState.updateMode(oldMode)
+             scope.cancel()
+         }
+     }
+diff --git a/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePrefetchPolicyTest.kt b/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePrefetchPolicyTest.kt
+index b5aada2..d1dc74d 100644
+--- a/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePrefetchPolicyTest.kt
++++ b/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePrefetchPolicyTest.kt
+@@ -1,7 +1,11 @@
+ package eu.kanade.tachiyomi.ui.reader.manyue
+ 
++import kotlinx.coroutines.runBlocking
++import kotlinx.coroutines.withTimeout
++import kotlinx.coroutines.withTimeoutOrNull
+ import org.junit.jupiter.api.Assertions.assertEquals
+ import org.junit.jupiter.api.Assertions.assertFalse
++import org.junit.jupiter.api.Assertions.assertNull
+ import org.junit.jupiter.api.Assertions.assertTrue
+ import org.junit.jupiter.api.Test
+ 
+@@ -48,30 +52,49 @@ class ManyuePrefetchPolicyTest {
+         ManyuePrefetchManager.reset()
+     }
+ 
+-    @Test fun `prefetch plan creates current and next five with exact priorities`() {
+-        val plan = ManyueAiSafetyPolicy.prefetchPlan(currentIndex = 4, pageCount = 10)
+-        assertEquals(
+-            listOf(
+-                ManyueAiSafetyPolicy.PrefetchTarget(4, 100),
+-                ManyueAiSafetyPolicy.PrefetchTarget(5, 50),
+-                ManyueAiSafetyPolicy.PrefetchTarget(6, 40),
+-                ManyueAiSafetyPolicy.PrefetchTarget(7, 30),
+-                ManyueAiSafetyPolicy.PrefetchTarget(8, 20),
+-                ManyueAiSafetyPolicy.PrefetchTarget(9, 10),
+-            ),
+-            plan,
+-        )
++    @Test fun `continuous prefetch keeps near priorities and assigns low priority to the whole chapter`() {
++        assertEquals(100, ManyueAiSafetyPolicy.continuousPrefetchPriority(4, 4))
++        assertEquals(50, ManyueAiSafetyPolicy.continuousPrefetchPriority(5, 4))
++        assertEquals(10, ManyueAiSafetyPolicy.continuousPrefetchPriority(9, 4))
++        assertEquals(1, ManyueAiSafetyPolicy.continuousPrefetchPriority(10, 4))
++        assertEquals(5, ManyueAiSafetyPolicy.continuousPrefetchPriority(3, 4))
++        assertEquals(2, ManyueAiSafetyPolicy.PREFETCH_LOOK_BACK_PAGES)
++        assertEquals(5, ManyueAiSafetyPolicy.ACTIVE_COMPLETION_LOOK_BACK_PAGES)
+     }
+ 
+-    @Test fun `prefetch plan clamps to chapter and rejects pages outside window`() {
+-        assertEquals(
+-            listOf(
+-                ManyueAiSafetyPolicy.PrefetchTarget(2, 100),
+-                ManyueAiSafetyPolicy.PrefetchTarget(3, 50),
+-            ),
+-            ManyueAiSafetyPolicy.prefetchPlan(currentIndex = 2, pageCount = 4),
+-        )
++    @Test fun `continuous prefetch rejects invalid reader positions through caller bounds`() {
++        assertEquals(1, ManyueAiSafetyPolicy.continuousPrefetchPriority(100, 0))
++        assertEquals(1, ManyueAiSafetyPolicy.continuousPrefetchPriority(0, 100))
+         assertEquals(null, ManyueAiSafetyPolicy.priorityFor(pageIndex = 11, currentIndex = 5))
+         assertEquals(null, ManyueAiSafetyPolicy.priorityFor(pageIndex = 4, currentIndex = 5))
+     }
++
++    @Test fun `current decision history stays bounded and recent backscroll skips the wait`() = runBlocking {
++        val chapterId = 704L
++        ManyuePrefetchManager.reset()
++        try {
++            for (pageIndex in 0 until 40) {
++                ManyuePrefetchManager.onPageChanged(chapterId, pageIndex)
++                ManyuePrefetchManager.releaseCurrent(chapterId, pageIndex)
++            }
++
++            // The recent 32 entries remain remembered; a visit to the oldest retained page does
++            // not recreate the visible-holder decision gate.
++            ManyuePrefetchManager.onPageChanged(chapterId, 8)
++            withTimeout(500) {
++                ManyuePrefetchManager.awaitCurrentDecision(chapterId, 8)
++            }
++
++            // The next older page has fallen outside the bound and needs a fresh holder decision.
++            ManyuePrefetchManager.onPageChanged(chapterId, 7)
++            assertNull(
++                withTimeoutOrNull(100) {
++                    ManyuePrefetchManager.awaitCurrentDecision(chapterId, 7)
++                    true
++                },
++            )
++        } finally {
++            ManyuePrefetchManager.reset()
++        }
++    }
+ }
+diff --git a/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueReaderPressurePolicyTest.kt b/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueReaderPressurePolicyTest.kt
+new file mode 100644
+index 0000000..c2bf8cb
+--- /dev/null
++++ b/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueReaderPressurePolicyTest.kt
+@@ -0,0 +1,137 @@
++package eu.kanade.tachiyomi.ui.reader.manyue
++
++import org.junit.jupiter.api.Assertions.assertFalse
++import org.junit.jupiter.api.Assertions.assertTrue
++import org.junit.jupiter.api.Test
++
++class ManyueReaderPressurePolicyTest {
++
++    @Test
++    fun `touch and repeated slow movement leave AI work available`() {
++        val clock = FakeClock(-5_000_000_000L)
++        val policy = ManyueReaderPressurePolicy(clock::now)
++        val reader = Any()
++
++        policy.update(reader, active = true)
++        repeat(20) {
++            clock.advance(16_000_000L)
++            policy.reportScroll(reader, dx = 4, dy = 0, viewportHeightPx = 400)
++        }
++
++        assertFalse(policy.isBlocked())
++    }
++
++    @Test
++    fun `fast scroll at high refresh rates blocks briefly and then recovers`() {
++        val clock = FakeClock(-5_000_000_000L)
++        val policy = ManyueReaderPressurePolicy(clock::now)
++        val reader = Any()
++
++        policy.update(reader, active = true)
++        repeat(5) {
++            clock.advance(6_944_444L) // 144Hz frames
++            policy.reportScroll(reader, dx = 10, dy = 0, viewportHeightPx = 400)
++        }
++        assertTrue(policy.isBlocked(), "fast samples should accumulate across sub-8ms frame intervals")
++
++        clock.advance(FAST_SCROLL_HOLD_NANOS - 1L)
++        assertTrue(policy.isBlocked())
++        clock.advance(1L)
++        assertFalse(policy.isBlocked(), "negative monotonic clock origins must not look like an active deadline")
++    }
++
++    @Test
++    fun `isolated long frame does not gate but sustained missed intervals do`() {
++        val clock = FakeClock(1_000_000_000L)
++        val policy = ManyueReaderPressurePolicy(clock::now)
++        val reader = Any()
++        val expected120HzNanos = 8_333_333L
++
++        policy.update(reader, active = true)
++        policy.reportFrame(reader, 20_000_000L, expected120HzNanos)
++        policy.reportFrame(reader, expected120HzNanos, expected120HzNanos)
++        policy.reportFrame(reader, 20_000_000L, expected120HzNanos)
++        assertFalse(policy.isBlocked(), "one missed frame must not start a pressure hold")
++
++        policy.reportFrame(reader, 20_000_000L, expected120HzNanos)
++        policy.reportFrame(reader, 20_000_000L, expected120HzNanos)
++        policy.reportFrame(reader, 20_000_000L, expected120HzNanos)
++        assertTrue(policy.isBlocked())
++
++        policy.reportFrame(reader, expected120HzNanos, expected120HzNanos)
++        policy.reportFrame(reader, expected120HzNanos, expected120HzNanos)
++        assertFalse(policy.isBlocked(), "two healthy frames clear a recovered scroll session")
++    }
++
++    @Test
++    fun `pausing frame sampling breaks a bad frame streak`() {
++        val clock = FakeClock(1_000_000_000L)
++        val policy = ManyueReaderPressurePolicy(clock::now)
++        val reader = Any()
++        policy.update(reader, active = true)
++
++        repeat(2) { policy.reportFrame(reader, 30_000_000L, 16_666_667L) }
++        policy.resetFrameSampling(reader)
++        policy.reportFrame(reader, 30_000_000L, 16_666_667L)
++        assertFalse(policy.isBlocked())
++
++        repeat(2) { policy.reportFrame(reader, 30_000_000L, 16_666_667L) }
++        assertTrue(policy.isBlocked())
++    }
++
++    @Test
++    fun `severe thermal status gates only its current attached owner`() {
++        val clock = FakeClock(1_000_000_000L)
++        val policy = ManyueReaderPressurePolicy(clock::now)
++        val detachedReader = Any()
++        val currentReader = Any()
++
++        policy.update(detachedReader, active = false)
++        policy.reportThermalStatus(detachedReader, ManyueReaderWorkGate.THERMAL_STATUS_SEVERE)
++        assertTrue(policy.isBlocked())
++
++        policy.release(detachedReader)
++        assertFalse(policy.isBlocked(), "detach releases a latched thermal report")
++        policy.reportThermalStatus(detachedReader, ManyueReaderWorkGate.THERMAL_STATUS_SEVERE)
++        assertFalse(policy.isBlocked(), "late thermal callbacks after detach are ignored")
++
++        policy.update(currentReader, active = false)
++        policy.reportThermalStatus(detachedReader, ManyueReaderWorkGate.THERMAL_STATUS_SEVERE)
++        assertFalse(policy.isBlocked(), "a stale non-owner cannot take over the gate")
++        // Android reports SEVERE as 3; 4 is already CRITICAL.
++        policy.reportThermalStatus(currentReader, 3)
++        assertTrue(policy.isBlocked())
++        policy.reportThermalStatus(currentReader, 2)
++        assertFalse(policy.isBlocked())
++    }
++
++    @Test
++    fun `nonmonotonic scroll timestamp is discarded`() {
++        val clock = FakeClock(-5_000_000_000L)
++        val policy = ManyueReaderPressurePolicy(clock::now)
++        val reader = Any()
++        policy.update(reader, active = true)
++
++        policy.reportScroll(reader, dx = 0, dy = 0, viewportHeightPx = 400)
++        clock.advance(16_000_000L)
++        policy.reportScroll(reader, dx = 10_000, dy = 0, viewportHeightPx = 400)
++        assertTrue(policy.isBlocked(), "a very fast measured jump is reported")
++
++        policy.release(reader)
++        policy.update(reader, active = true)
++        policy.reportScroll(reader, dx = 0, dy = 0, viewportHeightPx = 400)
++        clock.moveTo(-6_000_000_000L)
++        policy.reportScroll(reader, dx = 10_000, dy = 0, viewportHeightPx = 400)
++        assertFalse(policy.isBlocked(), "clock regression must not be treated as an infinite speed")
++    }
++
++    private class FakeClock(private var currentNanos: Long) {
++        fun now(): Long = currentNanos
++        fun advance(nanos: Long) { currentNanos += nanos }
++        fun moveTo(nanos: Long) { currentNanos = nanos }
++    }
++
++    private companion object {
++        const val FAST_SCROLL_HOLD_NANOS = 250_000_000L
++    }
++}
+diff --git a/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueSchedulerLifecycleTest.kt b/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueSchedulerLifecycleTest.kt
+index 247d7a7..9fde04e 100644
+--- a/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueSchedulerLifecycleTest.kt
++++ b/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueSchedulerLifecycleTest.kt
+@@ -4,6 +4,10 @@ import android.app.Application
+ import android.os.Looper
+ import java.nio.file.Files
+ import java.util.concurrent.ConcurrentHashMap
++import kotlinx.coroutines.CoroutineStart
++import kotlinx.coroutines.async
++import kotlinx.coroutines.cancelAndJoin
++import kotlinx.coroutines.launch
+ import kotlinx.coroutines.runBlocking
+ import kotlinx.coroutines.withTimeout
+ import org.junit.Assert.assertEquals
+@@ -20,6 +24,35 @@ import org.robolectric.annotation.LooperMode
+ @Config(application = Application::class, sdk = [34], manifest = Config.NONE)
+ @LooperMode(LooperMode.Mode.PAUSED)
+ class ManyueSchedulerLifecycleTest {
++    @Test fun completionWaitersObserveCancellationWithoutDrainingMainLooper() = runBlocking {
++        val token = register(81)
++        val waiting = async(start = CoroutineStart.UNDISPATCHED) {
++            ManyueAiUpscaler.awaitCompletion(token)
++        }
++        assertFalse(waiting.isCompleted)
++        ManyueAiUpscaler.cancel(token)
++        withTimeout(1_000L) {
++            assertEquals(ManyueAiUpscaler.STATE_CANCELLED, waiting.await())
++            assertEquals(ManyueAiUpscaler.STATE_CANCELLED, ManyueAiUpscaler.awaitCompletion(token))
++            assertEquals(ManyueAiUpscaler.STATE_FAILED, ManyueAiUpscaler.awaitCompletion("missing-token"))
++        }
++    }
++
++    @Test fun cancellingACompletionWaiterDoesNotCancelTheSharedVisibleRequest() = runBlocking {
++        val token = register(82)
++        try {
++            val waiting = launch(start = CoroutineStart.UNDISPATCHED) {
++                ManyueAiUpscaler.awaitCompletion(token)
++            }
++            waiting.cancelAndJoin()
++            assertFalse(request(token).cancelled)
++            assertFalse(ManyueAiUpscaler.isFinished(token))
++        } finally {
++            ManyueAiUpscaler.cancel(token)
++        }
++        assertTrue(ManyueAiUpscaler.isFinished(token))
++    }
++
+     private fun register(index: Int, chapterId: Long = 92): String = ManyueAiUpscaler.register(
+         91, chapterId, index, Files.createTempFile("manyue-lifecycle", ".bin").toFile(),
+         100, 200, 2, 200, 10, expectedMode = 2, generation = 991,
+@@ -73,8 +106,10 @@ class ManyueSchedulerLifecycleTest {
+                 assertEquals(100, req.priority)
+             }
+             ManyuePrefetchManager.updateVisiblePages(setOf(92L to 3, 92L to 4))
+-            assertTrue(request(tokens.getValue(2)).cancelled)
++            assertFalse(request(tokens.getValue(2)).cancelled)
+             assertFalse(request(tokens.getValue(3)).cancelled)
++            ManyuePrefetchManager.onPageChanged(92, 6, setOf(92L to 6))
++            assertTrue(request(tokens.getValue(2)).cancelled)
+         } finally {
+             ManyuePrefetchManager.reset()
+         }
+@@ -113,10 +148,12 @@ class ManyueSchedulerLifecycleTest {
+             val fifthRequest = request(fifthAhead)
+             assertFalse(fifthRequest.cancelled)
+ 
+-            // Once reading advances, the old selected page and work outside the +5 window
+-            // are cancelled, while a completed visible-page result remains reusable.
++            // Far-behind work is cancelled, while the near previous page and completed
++            // visible-page result remain reusable.
+             ManyuePrefetchManager.onPageChanged(93, 6, visible = setOf(93L to 6))
+             assertTrue(retainedRequest.cancelled)
++            assertFalse(fifthRequest.cancelled)
++            ManyuePrefetchManager.onPageChanged(93, 8, visible = setOf(93L to 8))
+             assertTrue(fifthRequest.cancelled)
+             assertFalse(previousRequest.cancelled)
+         } finally {
+diff --git a/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueWebtoonLifecycleTest.kt b/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueWebtoonLifecycleTest.kt
+index 7bf8425..466853f 100644
+--- a/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueWebtoonLifecycleTest.kt
++++ b/app/src/test/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueWebtoonLifecycleTest.kt
+@@ -133,6 +133,18 @@ class ManyueWebtoonLifecycleTest {
+         listener.onTileLoadError(error)
+     }
+ 
++    private fun pendingFile(context: Context, name: String): File {
++        val file = File(context.cacheDir, name)
++        val bitmap = Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
++        try {
++            val encoded = file.outputStream().use { bitmap.compress(Bitmap.CompressFormat.WEBP, 100, it) }
++            check(encoded && file.isFile && file.length() > 0L) { "Could not create the WebP lifecycle fixture" }
++        } finally {
++            bitmap.recycle()
++        }
++        return file
++    }
++
+     @Test fun rejectedStripDownCannotLatchInteractionForever() {
+         val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+         val strip = Strip(activity)
+@@ -162,7 +174,8 @@ class ManyueWebtoonLifecycleTest {
+         layout(recycler)
+         touch(recycler, MotionEvent.ACTION_DOWN)
+         assertTrue(strip.isManyueInteractionActive())
+-        assertTrue(ManyueReaderWorkGate.isBlocked())
++        assertEquals(android.os.PowerManager.THERMAL_STATUS_SEVERE, ManyueReaderWorkGate.THERMAL_STATUS_SEVERE)
++        assertFalse(ManyueReaderWorkGate.isBlocked())
+         touch(recycler, MotionEvent.ACTION_UP)
+         shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(400))
+         assertFalse(strip.isManyueInteractionActive())
+@@ -170,6 +183,7 @@ class ManyueWebtoonLifecycleTest {
+         touch(recycler, MotionEvent.ACTION_CANCEL)
+         shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(400))
+         assertFalse(strip.isManyueInteractionActive())
++        assertFalse(ManyueReaderWorkGate.isBlocked())
+         activity.setContentView(View(activity))
+         assertFalse(ManyueReaderWorkGate.isBlocked())
+         activity.finish()
+@@ -187,7 +201,7 @@ class ManyueWebtoonLifecycleTest {
+         var swaps = 0
+         val swapChecks = mutableListOf<Boolean>()
+         lateinit var staged: SubsamplingScaleImageView
+-        val file = File(activity.cacheDir, "pending-strip.webp")
++        val file = pendingFile(activity, "pending-strip.webp")
+         strip.setTiledImagePreservingCurrent(file, config, { true }, {
+             swapChecks += staged.isImageLoaded
+             swapAllowed
+@@ -225,7 +239,7 @@ class ManyueWebtoonLifecycleTest {
+         draw(strip)
+         assertEquals(1, initialLoads)
+         var swaps = 0
+-        strip.setTiledImagePreservingCurrent(File(activity.cacheDir, "pending-strip.webp"), config, { true }, { true }, { _, _ -> swaps++ }, { error -> throw AssertionError(error) })
++        strip.setTiledImagePreservingCurrent(pendingFile(activity, "pending-strip.webp"), config, { true }, { true }, { _, _ -> swaps++ }, { error -> throw AssertionError(error) })
+         val staged = strip.getChildAt(0) as SubsamplingScaleImageView
+         staged.setImage(ImageSource.bitmap(Bitmap.createBitmap(200, 401, Bitmap.Config.ARGB_8888)))
+         layout(strip)
+@@ -249,7 +263,7 @@ class ManyueWebtoonLifecycleTest {
+         val old = strip.getChildAt(0)
+         var allowed = false
+         var swaps = 0
+-        val id = strip.setTiledImagePreservingCurrent(File(activity.cacheDir, "pending-strip.webp"), config, { true }, { allowed }, { _, _ -> swaps++ }, {})
++        val id = strip.setTiledImagePreservingCurrent(pendingFile(activity, "pending-strip.webp"), config, { true }, { allowed }, { _, _ -> swaps++ }, {})
+         val staged = strip.getChildAt(0) as SubsamplingScaleImageView
+         staged.setImage(ImageSource.bitmap(Bitmap.createBitmap(200, 400, Bitmap.Config.ARGB_8888)))
+         layout(strip)
+@@ -271,7 +285,7 @@ class ManyueWebtoonLifecycleTest {
+         layout(strip)
+         draw(strip)
+         var swaps = 0
+-        strip.setTiledImagePreservingCurrent(File(activity.cacheDir, "pending-strip.webp"), config, { true }, { true }, { _, _ -> swaps++ }, {})
++        strip.setTiledImagePreservingCurrent(pendingFile(activity, "pending-strip.webp"), config, { true }, { true }, { _, _ -> swaps++ }, {})
+         val staged = strip.getChildAt(0) as SubsamplingScaleImageView
+         staged.setImage(ImageSource.bitmap(Bitmap.createBitmap(200, 400, Bitmap.Config.ARGB_8888)))
+         assertTrue(staged.isImageLoaded)
+@@ -296,7 +310,7 @@ class ManyueWebtoonLifecycleTest {
+         draw(strip)
+         var allowed = false
+         var swaps = 0
+-        strip.setTiledImagePreservingCurrent(File(activity.cacheDir, "pending-strip.webp"), config, { true }, { allowed }, { _, _ -> swaps++ }, {})
++        strip.setTiledImagePreservingCurrent(pendingFile(activity, "pending-strip.webp"), config, { true }, { allowed }, { _, _ -> swaps++ }, {})
+         val staged = strip.getChildAt(0) as SubsamplingScaleImageView
+         staged.setImage(ImageSource.bitmap(Bitmap.createBitmap(200, 400, Bitmap.Config.ARGB_8888)))
+         layout(strip)
+@@ -323,7 +337,7 @@ class ManyueWebtoonLifecycleTest {
+         val old = strip.getChildAt(0)
+         var reported: Throwable? = null
+         strip.setTiledImagePreservingCurrent(
+-            File(activity.cacheDir, "pending-strip.webp"),
++            pendingFile(activity, "pending-strip.webp"),
+             config,
+             { true },
+             { true },
+@@ -419,7 +433,7 @@ class ManyueWebtoonLifecycleTest {
+         shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(100))
+ 
+         imageView.setTiledImagePreservingCurrent(
+-            File(activity.cacheDir, "pending-landscape.webp"),
++            pendingFile(activity, "pending-landscape.webp"),
+             landscapeConfig,
+             { true },
+             { true },
+@@ -454,7 +468,7 @@ class ManyueWebtoonLifecycleTest {
+ 
+         fun stage(onDisplayError: (Throwable) -> Unit): SubsamplingScaleImageView {
+             strip.setTiledImagePreservingCurrent(
+-                File(activity.cacheDir, "pending-strip-${displayErrors.size}.webp"),
++                pendingFile(activity, "pending-strip-${displayErrors.size}.webp"),
+                 config,
+                 { true },
+                 { true },
