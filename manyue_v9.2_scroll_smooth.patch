@@ -1,0 +1,354 @@
+diff --git a/app/build.gradle.kts b/app/build.gradle.kts
+--- a/app/build.gradle.kts
++++ b/app/build.gradle.kts
+@@ -33,8 +33,8 @@
+     defaultConfig {
+         applicationId = "app.mihon"
+ 
+-        versionCode = 31
+-        versionName = "0.20.5"
++        versionCode = 32
++        versionName = "0.20.6"
+ 
+         buildConfigField("String", "COMMIT_COUNT", "\"${getLatestCommitCount()}\"")
+         buildConfigField("String", "COMMIT_SHA", "\"${getLatestCommitSha()}\"")
+diff --git a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePageBridge.kt b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePageBridge.kt
+--- a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePageBridge.kt
++++ b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyuePageBridge.kt
+@@ -2,15 +2,22 @@
+ 
+ import android.content.Context
+ import android.graphics.Bitmap
++import android.graphics.Rect
+ import android.graphics.drawable.BitmapDrawable
++import android.os.SystemClock
++import android.view.View
++import androidx.recyclerview.widget.RecyclerView
+ import eu.kanade.tachiyomi.ui.reader.viewer.ReaderPageImageView
+ import kotlinx.coroutines.CancellationException
+ import kotlinx.coroutines.CoroutineScope
++import kotlinx.coroutines.delay
+ import kotlinx.coroutines.Dispatchers
+ import kotlinx.coroutines.Job
+ import kotlinx.coroutines.SupervisorJob
+ import kotlinx.coroutines.launch
+ import kotlinx.coroutines.withContext
++import kotlinx.coroutines.sync.Mutex
++import kotlinx.coroutines.sync.withLock
+ import logcat.LogPriority
+ import tachiyomi.core.common.util.system.logcat
+ 
+@@ -26,6 +33,12 @@
+     private val view: ReaderPageImageView,
+     private val config: ReaderPageImageView.Config,
+ ) {
++    companion object {
++        // Prevent several visible pages from decoding and installing large AI bitmaps at once.
++        private val renderMutex = Mutex()
++        private const val SCROLL_SETTLE_MS = 300L
++    }
++
+     data class Identity(val mangaId: Long, val chapterId: Long, val pageIndex: Int)
+ 
+     @Volatile
+@@ -97,34 +110,50 @@
+                 renderJob?.cancel()
+                 renderJob = scope.launch {
+                     try {
+-                        val rendered = withContext(Dispatchers.Default) {
+-                            buildRenderedResult(context, tok, wantClassic, strength)
+-                        } ?: run {
+-                            onState(ManyueEnhancementState.FAILED, "AI 结果读取失败")
+-                            return@launch
+-                        }
+-                        if (!isCurrent(t, identity, mode, expectedGeneration)) {
+-                            // buildRenderedResult transfers ownership to this coroutine. If the
+-                            // holder was rebound while the background decode finished, there is
+-                            // no view install that can take ownership, so release the bitmap now.
+-                            if (!rendered.bitmap.isRecycled) rendered.bitmap.recycle()
+-                            return@launch
+-                        }
+-                        var installed = false
+-                        try {
+-                            // The expensive WebP decode used to happen inside setImage on the
+-                            // main thread. Hand the already decoded Bitmap directly to the
+-                            // subsampling view; this leaves only a cheap view swap on main.
+-                            view.setImage(BitmapDrawable(view.resources, rendered.bitmap), config)
+-                            installed = true
+-                            onEnhancedDimensions(rendered.width, rendered.height)
+-                            onState(rendered.state, rendered.detail)
+-                            logcat {
+-                                "Manyue reader replace chapter=${identity.chapterId} " +
+-                                    "page=${identity.pageIndex} token=$t"
++                        // A swap resets the subsampling view and can block a scroll frame even
++                        // when decoding ran in the background. Keep READY results on disk until
++                        // this page is visible and the recycler has actually stopped moving.
++                        if (!awaitDisplayPause(t, identity, mode, expectedGeneration)) return@launch
++                        renderMutex.withLock {
++                            if (!awaitDisplayPause(t, identity, mode, expectedGeneration)) return@withLock
++                            val rendered = withContext(Dispatchers.Default) {
++                                buildRenderedResult(context, tok, wantClassic, strength)
++                            } ?: run {
++                                if (isCurrent(t, identity, mode, expectedGeneration)) {
++                                    onState(ManyueEnhancementState.FAILED, "AI 结果读取失败")
++                                }
++                                return@withLock
+                             }
+-                        } finally {
+-                            if (!installed && !rendered.bitmap.isRecycled) rendered.bitmap.recycle()
++                            var installed = false
++                            try {
++                                // Decoding can take seconds; the reader may have started moving
++                                // again while it ran. Do not replace a frame during that gesture.
++                                if (!awaitDisplayPause(t, identity, mode, expectedGeneration)) return@withLock
++                                val layered = view.showEnhancedBitmap(rendered.bitmap, config) { shown ->
++                                    if (isCurrent(t, identity, mode, expectedGeneration)) {
++                                        if (shown) {
++                                            onEnhancedDimensions(rendered.width, rendered.height)
++                                            onState(rendered.state, rendered.detail)
++                                        } else {
++                                            onState(ManyueEnhancementState.FAILED, "AI 结果显示失败，已保留原图")
++                                        }
++                                    }
++                                }
++                                if (!layered) {
++                                    // Pager viewers do not scroll a RecyclerView and retain
++                                    // their existing zoomable image replacement path.
++                                    view.setImage(BitmapDrawable(view.resources, rendered.bitmap), config)
++                                    onEnhancedDimensions(rendered.width, rendered.height)
++                                    onState(rendered.state, rendered.detail)
++                                }
++                                installed = true
++                                logcat {
++                                    "Manyue reader replace chapter=${identity.chapterId} " +
++                                        "page=${identity.pageIndex} token=$t"
++                                }
++                            } finally {
++                                if (!installed && !rendered.bitmap.isRecycled) rendered.bitmap.recycle()
++                            }
+                         }
+                     } catch (_: CancellationException) {
+                         // Holder was rebound or detached.
+@@ -140,6 +169,42 @@
+                 ManyuePrefetchManager.releaseCurrent(identity.chapterId, identity.pageIndex)
+             }
+         }
++    }
++
++    private suspend fun awaitDisplayPause(
++        expectedToken: String,
++        expectedIdentity: Identity,
++        expectedMode: Int,
++        expectedGeneration: Long,
++    ): Boolean {
++        val recycler = findRecyclerView() ?: return isCurrent(
++            expectedToken, expectedIdentity, expectedMode, expectedGeneration,
++        )
++        var quietSince = 0L
++        while (isCurrent(expectedToken, expectedIdentity, expectedMode, expectedGeneration)) {
++            if (!view.isAttachedToWindow) return false
++            val pageVisible = view.isShown && view.getGlobalVisibleRect(Rect())
++            val settled = pageVisible && recycler.scrollState == RecyclerView.SCROLL_STATE_IDLE &&
++                !recycler.isComputingLayout
++            val now = SystemClock.uptimeMillis()
++            if (settled) {
++                if (quietSince == 0L) quietSince = now
++                if (now - quietSince >= SCROLL_SETTLE_MS) return true
++            } else {
++                quietSince = 0L
++            }
++            delay(80L)
++        }
++        return false
++    }
++
++    private fun findRecyclerView(): RecyclerView? {
++        var ancestor = view.parent
++        while (ancestor != null) {
++            if (ancestor is RecyclerView) return ancestor
++            ancestor = (ancestor as? View)?.parent
++        }
++        return null
+     }
+ 
+     private fun isCurrentBeforeToken(
+@@ -225,6 +290,7 @@
+ 
+     /** Cancel pending AI and drop any identity binding. Safe to call repeatedly. */
+     fun cancel() {
++        view.cancelEnhancedTransition()
+         startJob?.cancel()
+         startJob = null
+         val currentToken = token
+diff --git a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/viewer/ReaderPageImageView.kt b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/viewer/ReaderPageImageView.kt
+--- a/app/src/main/java/eu/kanade/tachiyomi/ui/reader/viewer/ReaderPageImageView.kt
++++ b/app/src/main/java/eu/kanade/tachiyomi/ui/reader/viewer/ReaderPageImageView.kt
+@@ -18,6 +18,7 @@
+ import androidx.appcompat.widget.AppCompatImageView
+ import androidx.core.os.postDelayed
+ import androidx.core.view.isVisible
++import androidx.recyclerview.widget.RecyclerView
+ import coil3.BitmapImage
+ import coil3.asDrawable
+ import coil3.dispose
+@@ -57,6 +58,8 @@
+ ) : FrameLayout(context, attrs, defStyleAttrs, defStyleRes) {
+ 
+     private var pageView: View? = null
++    private var pendingEnhancedView: SubsamplingScaleImageView? = null
++    private var retiredPageView: SubsamplingScaleImageView? = null
+ 
+     private var config: Config? = null
+ 
+@@ -140,6 +143,7 @@
+     }
+ 
+     fun setImage(drawable: Drawable, config: Config) {
++        clearEnhancedLayers()
+         this.config = config
+         if (drawable is Animatable) {
+             prepareAnimatedImageView()
+@@ -151,6 +155,7 @@
+     }
+ 
+     fun setImage(source: BufferedSource, isAnimated: Boolean, config: Config) {
++        clearEnhancedLayers()
+         this.config = config
+         if (isAnimated) {
+             prepareAnimatedImageView()
+@@ -161,12 +166,107 @@
+         }
+     }
+ 
+-    fun recycle() = pageView?.let {
++    fun recycle() {
++        clearEnhancedLayers()
++        pageView?.let {
+         when (it) {
+             is SubsamplingScaleImageView -> it.recycle()
+             is AppCompatImageView -> it.dispose()
+         }
+         it.isVisible = false
++        }
++    }
++
++    /** Prepare the AI result in a second webtoon image view; keep the original on screen
++     * until the new view is ready, then fade its alpha without resetting the active view.
++     * Ownership of [bitmap] transfers to this view when this method returns true.
++     */
++    fun showEnhancedBitmap(bitmap: android.graphics.Bitmap, config: Config, onComplete: (Boolean) -> Unit): Boolean {
++        if (!isWebtoon) return false
++        val original = pageView as? SubsamplingScaleImageView ?: return false
++        clearPendingEnhancedView()
++        val enhanced = createNonAnimatedImageView()
++        enhanced.alpha = 0F
++        addView(enhanced, MATCH_PARENT, MATCH_PARENT)
++        pendingEnhancedView = enhanced
++        enhanced.setMinimumScaleType(config.minimumScaleType)
++        enhanced.setMinimumDpi(1)
++        enhanced.setCropBorders(config.cropBorders)
++        enhanced.setOnImageEventListener(
++            object : SubsamplingScaleImageView.DefaultOnImageEventListener() {
++                override fun onReady() {
++                    if (pendingEnhancedView !== enhanced) return
++                    // A low-opacity frame lets the renderer prepare the new layer before the
++                    // short alpha animation. The old page remains visible throughout.
++                    enhanced.alpha = 0.01F
++                    enhanced.postOnAnimation {
++                        enhanced.postOnAnimation {
++                            if (pendingEnhancedView !== enhanced) return@postOnAnimation
++                            enhanced.animate().alpha(1F).setDuration(180L).withEndAction {
++                                if (pendingEnhancedView !== enhanced) return@withEndAction
++                                pendingEnhancedView = null
++                                pageView = enhanced
++                                original.isVisible = false
++                                retiredPageView = original
++                                retireOriginalWhenIdle(original)
++                                onComplete(true)
++                            }.start()
++                        }
++                    }
++                }
++
++                override fun onImageLoadError(e: Exception) {
++                    if (pendingEnhancedView !== enhanced) return
++                    clearPendingEnhancedView()
++                    onComplete(false)
++                }
++            },
++        )
++        try {
++            enhanced.setImage(ImageSource.bitmap(bitmap))
++        } catch (e: Exception) {
++            clearPendingEnhancedView()
++            onComplete(false)
++        }
++        return true
++    }
++
++    fun cancelEnhancedTransition() = clearPendingEnhancedView()
++
++    private fun clearPendingEnhancedView() {
++        val pending = pendingEnhancedView ?: return
++        pendingEnhancedView = null
++        pending.animate().cancel()
++        removeView(pending)
++        pending.recycle()
++    }
++
++    private fun clearEnhancedLayers() {
++        clearPendingEnhancedView()
++        retiredPageView?.let { old ->
++            retiredPageView = null
++            removeView(old)
++            old.recycle()
++        }
++    }
++
++    private fun retireOriginalWhenIdle(original: SubsamplingScaleImageView) {
++        original.postDelayed({
++            if (retiredPageView !== original) return@postDelayed
++            var ancestor = parent
++            var recycler: RecyclerView? = null
++            while (ancestor != null) {
++                if (ancestor is RecyclerView) { recycler = ancestor; break }
++                ancestor = (ancestor as? View)?.parent
++            }
++            if (recycler != null && (recycler.scrollState != RecyclerView.SCROLL_STATE_IDLE || recycler.isComputingLayout)) {
++                retireOriginalWhenIdle(original)
++            } else {
++                retiredPageView = null
++                removeView(original)
++                original.recycle()
++            }
++        }, 500L)
+     }
+ 
+     /**
+@@ -227,11 +327,15 @@
+         if (pageView is SubsamplingScaleImageView) return
+         removeView(pageView)
+ 
+-        pageView = if (isWebtoon) {
++        pageView = createNonAnimatedImageView()
++        addView(pageView, MATCH_PARENT, MATCH_PARENT)
++    }
++
++    private fun createNonAnimatedImageView(): SubsamplingScaleImageView = (if (isWebtoon) {
+             WebtoonSubsamplingImageView(context)
+         } else {
+             SubsamplingScaleImageView(context)
+-        }.apply {
++        }).apply {
+             setDoubleTapZoomStyle(SubsamplingScaleImageView.ZOOM_FOCUS_CENTER)
+             setPanLimit(SubsamplingScaleImageView.PAN_LIMIT_INSIDE)
+             setMinimumTileDpi(180)
+@@ -248,8 +352,6 @@
+             )
+             setOnClickListener { this@ReaderPageImageView.onViewClicked() }
+         }
+-        addView(pageView, MATCH_PARENT, MATCH_PARENT)
+-    }
+ 
+     private fun SubsamplingScaleImageView.setupZoom(config: Config?) {
+         // 5x zoom
