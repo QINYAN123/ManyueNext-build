@@ -8,6 +8,7 @@
 *.jar binary
 *.so binary
 *.bin binary
+*.param -text whitespace=cr-at-eol
 
 # Images
 *.webp binary
