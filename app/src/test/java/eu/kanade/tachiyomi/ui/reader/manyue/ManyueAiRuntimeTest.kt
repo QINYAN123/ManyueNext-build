@@ -2,6 +2,7 @@ package eu.kanade.tachiyomi.ui.reader.manyue
 
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.nio.file.Files
@@ -10,10 +11,11 @@ class ManyueAiRuntimeTest {
 
     @Test fun `both native models use bounded reader-first execution`() {
         for (model in ManyueAiModel.entries) {
-            val command = ManyueAiRuntime.buildCommand("worker", "input", "output", "models", model, "webp")
+            val command = ManyueAiRuntime.buildCommand("worker", "input", "output", "models", model, "webp", 1035)
             assertEquals("0", command[command.indexOf("-t") + 1])
             assertEquals("1:1:1", command[command.indexOf("-j") + 1])
             assertEquals("2", command[command.indexOf("-s") + 1])
+            assertEquals("1035", command[command.indexOf("-w") + 1])
             assertFalse(command.contains("-v"))
         }
     }
@@ -68,12 +70,37 @@ class ManyueAiRuntimeTest {
         assertEquals(4000, w)
     }
 
-    @Test fun `fixed 2x native output gate requires exact dimensions`() {
-        assertTrue(ManyueAiUpscaler.hasExpectedFixed2xOutput(1200, 1800, 2400, 3600))
-        assertFalse(ManyueAiUpscaler.hasExpectedFixed2xOutput(1200, 1800, 2398, 3600))
-        assertFalse(ManyueAiUpscaler.hasExpectedFixed2xOutput(1200, 1800, 2400, 3598))
-        assertFalse(ManyueAiUpscaler.hasExpectedFixed2xOutput(Int.MAX_VALUE, 1, 2, 2))
-        assertFalse(ManyueAiUpscaler.hasExpectedFixed2xOutput(0, 1, 0, 2))
+    @Test fun `target output gate rejects a legacy worker that still writes fixed 2x`() {
+        assertTrue(ManyueAiUpscaler.hasExpectedTargetOutput(690, 1421, 1035, 1035, 2132))
+        assertFalse(ManyueAiUpscaler.hasExpectedTargetOutput(690, 1421, 1035, 1380, 2842))
+        assertFalse(ManyueAiUpscaler.hasExpectedTargetOutput(690, 1421, 1035, 1035, 2131))
+        assertTrue(ManyueAiUpscaler.hasExpectedTargetOutput(690, 1421, 1380, 1380, 2842))
+        assertTrue(ManyueAiUpscaler.hasExpectedTargetOutput(690, 1421, 690, 690, 1421))
+    }
+
+    @Test fun `target geometry keeps rounded width aspect ratio at fractional scales`() {
+        // 690 * 1.25 rounds to 863; height follows that actual width, not nominal 1.25.
+        assertEquals(863, ManyueAiUpscaler.customTargetWidth(690, 125))
+        assertEquals(1777, ManyueAiUpscaler.targetHeight(690, 1421, 863))
+        assertEquals(2132, ManyueAiUpscaler.targetHeight(690, 1421, 1035))
+        assertEquals(1421, ManyueAiUpscaler.targetHeight(690, 1421, 690))
+        assertEquals(2842, ManyueAiUpscaler.targetHeight(690, 1421, 1380))
+    }
+
+    @Test fun `target geometry rejects invalid range and integer overflow`() {
+        assertEquals(0, ManyueAiUpscaler.targetHeight(690, 1421, 689))
+        assertEquals(0, ManyueAiUpscaler.targetHeight(690, 1421, 1381))
+        assertEquals(0, ManyueAiUpscaler.targetHeight(0, 1, 1))
+        assertEquals(0, ManyueAiUpscaler.targetHeight(1, 0, 2))
+        assertEquals(0, ManyueAiUpscaler.targetHeight(1, Int.MAX_VALUE, 2))
+        assertEquals(Int.MAX_VALUE, ManyueAiUpscaler.targetHeight(Int.MAX_VALUE, Int.MAX_VALUE, Int.MAX_VALUE))
+        assertFalse(ManyueAiUpscaler.hasExpectedTargetOutput(0, 1, 1, 1, 1))
+    }
+
+    @Test fun `native command requires an explicit positive target width`() {
+        assertThrows(IllegalArgumentException::class.java) {
+            ManyueAiRuntime.buildCommand("worker", "input", "output", "models", ManyueAiModel.DEFAULT, "webp", 0)
+        }
     }
 
     @Test fun `native log tail reads only bounded bytes`() {
@@ -96,6 +123,7 @@ class ManyueAiRuntimeTest {
             modelPath = "/cache/models-se",
             model = ManyueAiModel.FAST_REAL_CUGAN,
             outputFormat = "webp",
+            targetWidth = 1035,
         )
 
         val noiseIndex = command.indexOf("-n")
@@ -113,6 +141,7 @@ class ManyueAiRuntimeTest {
             modelPath = "/cache/models-esrgan",
             model = ManyueAiModel.QUALITY_REAL_ESRGAN,
             outputFormat = "webp",
+            targetWidth = 863,
         )
 
         assertFalse(command.contains("-n"))

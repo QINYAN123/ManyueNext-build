@@ -101,11 +101,7 @@ class ManyuePageBridge(
                 } ?: run {
                     val capability = withContext(Dispatchers.IO) { ManyueAiRuntime.probe(context) }
                     val detail = if (capability == ManyueAiRuntime.Capability.READY) {
-                        if (ManyueRuntimeState.aiScalePercent <= 100) {
-                            "倍率为 1.00×，保留原图"
-                        } else {
-                            "图片格式、尺寸或固定 2× 安全预算不适用"
-                        }
+                        "图片格式、尺寸或固定 2× 安全预算不适用"
                     } else {
                         capability.userMessage
                     }

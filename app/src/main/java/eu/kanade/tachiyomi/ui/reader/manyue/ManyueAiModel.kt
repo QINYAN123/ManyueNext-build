@@ -1,7 +1,8 @@
 package eu.kanade.tachiyomi.ui.reader.manyue
 
 /**
- * The two supported AI paths intentionally have one fixed output scale: native 2x.
+ * The two supported AI paths have fixed 2x model inference. The worker can resize that
+ * result to a requested 1x–2x target before encoding, without modifying the source file.
  * Keeping the model identity in the request/cache key prevents a result rendered by
  * Real-CUGAN from being mistaken for a Real-ESRGAN result after the user switches modes.
  */

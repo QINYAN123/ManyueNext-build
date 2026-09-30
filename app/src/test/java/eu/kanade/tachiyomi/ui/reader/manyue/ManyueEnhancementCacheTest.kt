@@ -25,15 +25,16 @@ class ManyueEnhancementCacheTest {
         assertNotEquals(a, b)
     }
 
-    @Test fun `overlay cache key isolates v95 ambiguous entries`() {
+    @Test fun `native target cache key isolates old encoding and overlay results`() {
         val withoutOverlay = ManyueEnhancementCache.cacheKey(
             1L, 2L, 3, 0, 2001, 2344, 0, "source", 20, "realcugan_fast", false,
         )
         val withOverlay = ManyueEnhancementCache.cacheKey(
             1L, 2L, 3, 0, 2001, 2344, 0, "source", 20, "realcugan_fast", true,
         )
-        assertEquals("68da5aa6667bd522caf2a0820de53442", withoutOverlay)
+        assertNotEquals("68da5aa6667bd522caf2a0820de53442", withoutOverlay)
         assertNotEquals("dd167c3d3c16b1626fdcc462159ef58f", withOverlay)
+        assertNotEquals(withoutOverlay, withOverlay)
     }
 
     @Test fun `constants match spec`() {

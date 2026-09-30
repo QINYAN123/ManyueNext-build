@@ -14,6 +14,7 @@ build
 # Configuration files
 keystore.properties
 local.properties
+/native/manyue-target-output/__pycache__/
 
 # macOS specific files
 .DS_Store

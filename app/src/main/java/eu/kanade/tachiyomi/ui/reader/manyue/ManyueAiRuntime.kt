@@ -42,8 +42,8 @@ object ManyueAiRuntime {
 
     class CancelledException : CancellationException("Manyue AI request cancelled")
 
-    private const val EXPECTED_REAL_ESRGAN_SHA256 = "d74e2ff5366a3b548118d78d72a4e8e197c764dfda4222a1718c10f50cdece2b"
-    private const val EXPECTED_REAL_CUGAN_SHA256 = "19baf9fa336570c38686c3f14c5a295f1a2ee3642d37bb25a029d7802d620403"
+    private const val EXPECTED_REAL_ESRGAN_SHA256 = "992055bb46ac445411d6ba83450b3bff346d6fa205c696fb85167188e2c4adf0"
+    private const val EXPECTED_REAL_CUGAN_SHA256 = "cde254952ac15d0cce94bd3ea72299e1d4c22d7d3b797a1d67cbd12a430daef5"
     private const val EXPECTED_NCNN_SHA256 = "87d150e735157b09aa20f26f5e57f72468c548e7ce98ce407ec50ee7e14a52dd"
     private const val EXPECTED_LIBOMP_SHA256 = "da75dcbe6026a3e08d01bfe86860159432051b329a84deb5ee042ce9b8e1a302"
 
@@ -106,6 +106,7 @@ object ManyueAiRuntime {
         logFile: File,
         model: ManyueAiModel = ManyueAiModel.DEFAULT,
         outputFormat: String = "webp",
+        targetWidth: Int,
         isCancelled: () -> Boolean = { false },
         onProcessStarted: (Process) -> Unit = {},
     ) {
@@ -133,6 +134,7 @@ object ManyueAiRuntime {
             modelPath = modelDir.absolutePath,
             model = model,
             outputFormat = outputFormat,
+            targetWidth = targetWidth,
         )
         val pb = ProcessBuilder(command)
         pb.directory(File(nativeDir))
@@ -147,7 +149,7 @@ object ManyueAiRuntime {
         val startedAt = SystemClock.elapsedRealtime()
         logcat {
             "Manyue native start model=${model.id} binary=${binary.absolutePath} inputBytes=${inputFile.length()} " +
-                "tile=$TILE_SIZE jobs=$JOBS omp=1 passive=true LD_LIBRARY_PATH=$nativeDir"
+                "targetWidth=$targetWidth tile=$TILE_SIZE jobs=$JOBS omp=1 passive=true LD_LIBRARY_PATH=$nativeDir"
         }
         val process = pb.start()
         logcat { "Manyue native process started" }
@@ -195,27 +197,32 @@ object ManyueAiRuntime {
         modelPath: String,
         model: ManyueAiModel,
         outputFormat: String,
-    ): List<String> = buildList {
-        add(binaryPath)
-        addAll(
-            listOf(
-                "-i", inputPath,
-                "-o", outputPath,
-                "-s", "2",
-                "-t", TILE_SIZE.toString(),
-                "-m", modelPath,
-                "-j", JOBS,
-                "-f", outputFormat,
-            ),
-        )
-        if (model == ManyueAiModel.FAST_REAL_CUGAN) {
-            addAll(listOf("-n", REAL_CUGAN_NOISE_LEVEL))
+        targetWidth: Int,
+    ): List<String> {
+        require(targetWidth > 0) { "AI target width must be positive" }
+        return buildList {
+            add(binaryPath)
+            addAll(
+                listOf(
+                    "-i", inputPath,
+                    "-o", outputPath,
+                    "-s", "2",
+                    "-w", targetWidth.toString(),
+                    "-t", TILE_SIZE.toString(),
+                    "-m", modelPath,
+                    "-j", JOBS,
+                    "-f", outputFormat,
+                ),
+            )
+            if (model == ManyueAiModel.FAST_REAL_CUGAN) {
+                addAll(listOf("-n", REAL_CUGAN_NOISE_LEVEL))
+            }
         }
     }
 
     /**
      * Applies the optional Anime4KCPP ACNet B4 refinement on CPU at factor 1.0, keeping the
-     * fixed AI 2x dimensions. This is not a GPU shader. It is best-effort and never discards
+     * requested AI output dimensions. This is not a GPU shader. It is best-effort and never discards
      * an otherwise valid AI result.
      */
     fun applyAnime4kOverlay(

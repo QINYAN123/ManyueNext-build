@@ -41,11 +41,11 @@ object ManyueAiRequestFactory {
         val model = ManyueRuntimeState.aiModel
         val targetMode = model.scale
         val targetWidth = ManyueAiUpscaler.customTargetWidth(width, ManyueRuntimeState.aiScalePercent)
-        if (targetWidth <= width) return null
+        if (targetWidth < width) return null
         // The resolved width is in both cache and request identity; legacy tenths stays native x2.
         val targetScaleTenths = 20
         val resolved = targetWidth
-        val resolvedHeight = Math.round(height * (resolved.toDouble() / width)).toInt()
+        val resolvedHeight = ManyueAiUpscaler.targetHeight(width, height, resolved)
         if (!ManyueAiSafetyPolicy.isPixelBudgetSafe(
                 resolved,
                 resolvedHeight,

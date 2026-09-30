@@ -1,9 +1,10 @@
 # Third-party notices
 
-漫阅 HD v0.3.6-foldable includes an optional, on-device fixed-2× AI path. The following
+This Mihon-based Manyue build includes an optional, on-device fixed-2× AI model
+path with configurable 1×–2× output dimensions. The following
 components are redistributed only for that feature. Their original license
-texts are preserved in `third_party_licenses/` and in the APK under
-`assets/licenses/`.
+texts are preserved in the source at `app/src/main/assets/licenses/` and in the
+APK under `assets/licenses/`.
 
 ## Real-ESRGAN animevideo-v3 model
 
@@ -18,26 +19,29 @@ texts are preserved in `third_party_licenses/` and in the APK under
 
 - Android integration: https://github.com/tumuyan/RealSR-NCNN-Android
 - Upstream inference project: https://github.com/xinntao/Real-ESRGAN-ncnn-vulkan
-- Release asset used: `1.11.1/assets.zip`
+- Source used: tag `1.11.1`, commit `5eb6e3d`, with the local target-output and error-propagation patches
 - License: MIT; refer to the upstream project and release asset for the complete text
-- Bundled executable SHA-256: `d74e2ff5366a3b548118d78d72a4e8e197c764dfda4222a1718c10f50cdece2b`
+- Bundled executable SHA-256: `992055bb46ac445411d6ba83450b3bff346d6fa205c696fb85167188e2c4adf0`
 
-The executable is renamed to `libmanyue_realesr.so` only so Android installs it
-inside the app's executable native-library directory. Its contents are
-byte-for-byte identical to `assets/realsr/realsr-ncnn` from the release asset.
+The executable is named `libmanyue_realesr.so` so Android installs it inside the
+app's executable native-library directory. It is rebuilt from the pinned source;
+it differs from the upstream release executable. The patch and build recipe are
+in `native/manyue-target-output/`. Model weights and the bundled ncnn runtime
+remain unchanged.
 
 ## Real-CUGAN NCNN Vulkan command-line integration
 
 - Android integration: https://github.com/tumuyan/RealSR-NCNN-Android
 - Upstream inference project: https://github.com/bilibili/ailab/tree/main/Real-CUGAN
-- Release asset used: `1.11.1/assets.zip`
+- Source used: tag `1.11.1`, commit `5eb6e3d`, with the local target-output and error-propagation patches
 - License: MIT; refer to the upstream project and release asset for the complete text
-- Bundled executable SHA-256: `19baf9fa336570c38686c3f14c5a295f1a2ee3642d37bb25a029d7802d620403`
+- Bundled executable SHA-256: `cde254952ac15d0cce94bd3ea72299e1d4c22d7d3b797a1d67cbd12a430daef5`
 - Bundled model: `models-se/up2x-no-denoise`, selected for the fixed native 2× fast path.
 
-The executable is renamed to `libmanyue_realcugan.so` only so Android installs it
-inside the app's executable native-library directory. Its contents are byte-for-byte
-identical to `assets/realsr/realcugan-ncnn` from the release asset.
+The executable is named `libmanyue_realcugan.so` so Android installs it inside the
+app's executable native-library directory. It is rebuilt from the pinned source;
+it differs from the upstream release executable. The patch and build recipe are
+in `native/manyue-target-output/`. Model weights remain unchanged.
 
 ## Anime4KCPP optional overlay
 
@@ -48,7 +52,7 @@ identical to `assets/realsr/realcugan-ncnn` from the release asset.
 
 The Anime4KCPP worker is built from the pinned upstream source by
 `scripts/build_anime4k_android.sh`. It runs at factor 1 after AI output, so it does not alter
-the fixed 2× dimensions. This CPU refinement is optional and disabled by default; it is not a
+the requested output dimensions. This CPU refinement is optional and disabled by default; it is not a
 GPU shader and may increase result latency. A failed overlay keeps the valid AI image.
 
 ## NCNN
@@ -60,12 +64,13 @@ GPU shader and may increase result latency. A failed overlay keeps the valid AI 
 
 ## Image codecs and supporting components
 
-The inference executable was built upstream with OpenCV and image codec
-components. The distribution therefore also preserves notices for OpenCV,
-libjpeg-turbo, libpng, libtiff, OpenEXR, OpenJPEG, libwebp, zlib, stb,
-cpu-features, ittnotify and protobuf. See the corresponding files in
-`third_party_licenses/` or `assets/licenses/` for copyright, redistribution
-conditions and warranty disclaimers.
+The rebuilt RealSR and Real-CUGAN executables use stb and statically linked
+libwebp 1.5.0 for image codecs. WebP output is lossless at the native 2× size and
+uses quality 95 when resized to a smaller target; PNG output is lossless.
+OpenCV is no longer linked into these two executables. The distribution retains
+the earlier codec notices for compatibility, together with the libwebp COPYING
+and PATENTS texts and stb license. See `assets/licenses/` for copyright,
+redistribution conditions and warranty disclaimers.
 
 No upstream project or contributor endorses this application. All third-party
 software is provided under its respective license and without warranty.

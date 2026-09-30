@@ -23,7 +23,9 @@ import kotlin.coroutines.resume
  */
 object ManyueEnhancementCache {
 
-    const val MODEL_VERSION = "anime_fixed2_v7"
+    // Native target resizing and the optional overlay order change invalidate older results.
+    const val MODEL_VERSION = "anime_native_target_v8"
+    // Retain the directory so existing bundles still count toward the budget and can be evicted.
     private const val CACHE_DIR_NAME = "manyue_ai_anime_fixed2_v7"
     private const val LEGACY_CACHE_DIR_NAME = "manyue_ai_anime_fixed2_v6"
     private const val MAX_CACHE_BYTES = 805_306_368L // 768 MiB
@@ -264,7 +266,7 @@ object ManyueEnhancementCache {
         anime4kOverlay: Boolean = false,
     ): String {
         // v9.5 overlay=true entries could contain a plain AI image after a silent overlay failure.
-        // Keep ordinary AI-only cache identity stable, while isolating those ambiguous entries.
+        // MODEL_VERSION also isolates results encoded before native target resizing.
         val overlayKeyVersion = if (anime4kOverlay) "overlay-v8" else "v7"
         val raw = "$MODEL_VERSION|$mangaId|$chapterId|$pageIndex|$mode|$targetMode|$targetWidth|$targetScaleTenths|$classicStrength|$sourceFingerprint|$modelId|overlay=$anime4kOverlay|$overlayKeyVersion"
         val md = MessageDigest.getInstance("MD5").digest(raw.toByteArray())

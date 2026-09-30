@@ -252,7 +252,7 @@ internal fun ColumnScope.GeneralPage(viewModel: ReaderSettingsViewModel) {
         }
     }
     Text(
-        "快速模式使用 Real-CUGAN，质量模式使用 Real-ESRGAN；原图进行 2× 推理后按自定义倍率输出，保留源图细节。",
+        "快速模式使用 Real-CUGAN，质量模式使用 Real-ESRGAN；原图进行 2× 推理，原生程序直接编码所选倍率的结果。较低倍率可减少输出处理开销，模型推理量仍相同。",
         style = MaterialTheme.typography.bodySmall,
     )
     val aiScalePercent by viewModel.preferences.manyueAiScalePercent.collectAsState()
@@ -272,7 +272,10 @@ internal fun ColumnScope.GeneralPage(viewModel: ReaderSettingsViewModel) {
             }
         },
     )
-    Text("1.00×保留原图；1.01–2.00×保持比例输出。超出内存安全预算时保留原图。", style = MaterialTheme.typography.bodySmall)
+    Text(
+        "1.00×输出增强后的原尺寸，仍执行 2×模型；1.01–2.00×保持比例输出。原图文件保留，超出安全预算时显示原图。",
+        style = MaterialTheme.typography.bodySmall,
+    )
     val anime4kOverlay by viewModel.preferences.manyueAnime4kOverlay.collectAsState()
     androidx.compose.foundation.layout.FlowRow {
         FilterChip(

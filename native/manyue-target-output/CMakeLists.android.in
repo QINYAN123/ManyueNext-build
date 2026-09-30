@@ -1,0 +1,58 @@
+cmake_minimum_required(VERSION 3.22.1)
+project(@PROJECT_NAME@ LANGUAGES C CXX)
+
+if(NOT ANDROID)
+    message(FATAL_ERROR "This CMake project builds the Android CLI worker only")
+endif()
+if(NOT DEFINED NCNN_ROOT OR NOT IS_DIRECTORY "${NCNN_ROOT}")
+    message(FATAL_ERROR "Pass -DNCNN_ROOT=<ncnn-20241226-android-vulkan-shared>")
+endif()
+if(NOT DEFINED WEBP_ROOT OR NOT IS_DIRECTORY "${WEBP_ROOT}")
+    message(FATAL_ERROR "Pass -DWEBP_ROOT=<libwebp-1.5.0 source directory>")
+endif()
+
+set(CMAKE_CXX_STANDARD 11)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+set(NCNN_LIBRARY "${NCNN_ROOT}/${ANDROID_ABI}/lib/libncnn.so")
+set(NCNN_INCLUDE "${NCNN_ROOT}/${ANDROID_ABI}/include/ncnn")
+if(NOT EXISTS "${NCNN_LIBRARY}" OR NOT EXISTS "${NCNN_INCLUDE}/platform.h")
+    message(FATAL_ERROR "NCNN_ROOT is not the matching Android 20241226 SDK")
+endif()
+add_library(ncnn SHARED IMPORTED)
+set_target_properties(ncnn PROPERTIES
+    IMPORTED_LOCATION "${NCNN_LIBRARY}"
+    INTERFACE_INCLUDE_DIRECTORIES "${NCNN_INCLUDE}")
+
+if(NOT EXISTS "${WEBP_ROOT}/CMakeLists.txt" OR NOT EXISTS "${WEBP_ROOT}/src/webp/encode.h")
+    message(FATAL_ERROR "WEBP_ROOT must point to the libwebp 1.5.0 source root")
+endif()
+set(WEBP_BUILD_ANIM_UTILS OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_CWEBP OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_DWEBP OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_GIF2WEBP OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_IMG2WEBP OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_VWEBP OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_WEBPINFO OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_WEBPMUX OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_LIBWEBPMUX OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_EXTRAS OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_WEBP_JS OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_FUZZTEST OFF CACHE BOOL "" FORCE)
+set(WEBP_NEAR_LOSSLESS OFF CACHE BOOL "" FORCE)
+set(WEBP_ENABLE_SIMD ON CACHE BOOL "" FORCE)
+add_subdirectory("${WEBP_ROOT}" "${CMAKE_BINARY_DIR}/libwebp")
+
+add_executable(${PROJECT_NAME} main.cpp @MODEL_SOURCE@)
+target_include_directories(${PROJECT_NAME} PRIVATE
+    "${NCNN_INCLUDE}"
+    "${WEBP_ROOT}/src"
+    "${CMAKE_BINARY_DIR}/libwebp/src")
+target_compile_options(${PROJECT_NAME} PRIVATE -fopenmp)
+target_link_options(${PROJECT_NAME} PRIVATE -fopenmp -static-openmp)
+target_link_libraries(${PROJECT_NAME} PRIVATE ncnn webp)
+set_target_properties(${PROJECT_NAME} PROPERTIES
+    PREFIX ""
+    OUTPUT_NAME "@OUTPUT_NAME@"
+    SUFFIX "")

@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import hashlib
+import os
+import re
 import struct
 from pathlib import Path
 
@@ -11,8 +13,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 NATIVE = ROOT / "app/src/main/jniLibs/arm64-v8a"
 EXPECTED = {
-    "libmanyue_realesr.so": "d74e2ff5366a3b548118d78d72a4e8e197c764dfda4222a1718c10f50cdece2b",
-    "libmanyue_realcugan.so": "19baf9fa336570c38686c3f14c5a295f1a2ee3642d37bb25a029d7802d620403",
+    "libmanyue_realesr.so": "992055bb46ac445411d6ba83450b3bff346d6fa205c696fb85167188e2c4adf0",
+    "libmanyue_realcugan.so": "cde254952ac15d0cce94bd3ea72299e1d4c22d7d3b797a1d67cbd12a430daef5",
     "libomp.so": "da75dcbe6026a3e08d01bfe86860159432051b329a84deb5ee042ce9b8e1a302",
     "libncnn.so": "87d150e735157b09aa20f26f5e57f72468c548e7ce98ce407ec50ee7e14a52dd",
 }
@@ -47,6 +49,8 @@ def verify(name: str, expected: str) -> None:
     if actual != expected:
         raise SystemExit(f"{name}: SHA-256 mismatch: {actual}")
     verify_arm64_elf(path, data, require_executable=name in RUNNERS)
+    if name in RUNNERS and b"-w target-width" not in data:
+        raise SystemExit(f"{name}: native target-width protocol is missing")
     print(f"{name}: OK ({len(data)} bytes, {actual})")
 
 
@@ -68,11 +72,23 @@ def verify_arm64_elf(
     section_entry_size, section_count = struct.unpack_from("<HH", data, 58)
     if section_offset + section_entry_size * section_count > len(data):
         raise SystemExit(f"{path.name}: section table extends beyond EOF")
-    if require_executable and not path.stat().st_mode & 0o111:
+    # NTFS does not expose Linux executable permissions; Git and APK installation preserve
+    # the worker's mode separately. Keep enforcing the mode on Linux CI.
+    if require_executable and os.name != "nt" and not path.stat().st_mode & 0o111:
         raise SystemExit(f"{path.name}: executable bit is missing")
 
 
 if __name__ == "__main__":
+    runtime = ROOT / "app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueAiRuntime.kt"
+    constants = dict(re.findall(r'const val (EXPECTED_\w+_SHA256) = "([0-9a-f]{64})"', runtime.read_text(encoding="utf-8")))
+    for name, constant in {
+        "libmanyue_realesr.so": "EXPECTED_REAL_ESRGAN_SHA256",
+        "libmanyue_realcugan.so": "EXPECTED_REAL_CUGAN_SHA256",
+        "libncnn.so": "EXPECTED_NCNN_SHA256",
+        "libomp.so": "EXPECTED_LIBOMP_SHA256",
+    }.items():
+        if constants.get(constant) != EXPECTED[name]:
+            raise SystemExit(f"{name}: runtime probe and packaged hash list disagree")
     for filename, digest in EXPECTED.items():
         verify(filename, digest)
     anime4k = NATIVE / "libmanyue_anime4k.so"

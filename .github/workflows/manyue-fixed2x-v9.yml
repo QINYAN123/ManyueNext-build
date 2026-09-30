@@ -1,4 +1,4 @@
-name: Manyue fixed 2x v9
+name: Manyue native target output
 
 on:
   workflow_dispatch:
@@ -28,53 +28,14 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
 
-      - name: Add Real-CUGAN native assets
+      - name: Preserve patched native workers
         shell: bash
         run: |
           set -euo pipefail
-          work="${RUNNER_TEMP}/realsr-assets"
-          mkdir -p "$work"
-          curl --fail --location --retry 5 --retry-all-errors \
-            --output "$work/assets.zip" \
-            https://github.com/tumuyan/RealSR-NCNN-Android/releases/download/1.11.1/assets.zip
-          unzip -q "$work/assets.zip" -d "$work/unpacked"
-
-          find_one() {
-            local label="$1"
-            shift
-            local found=""
-            for pattern in "$@"; do
-              found="$(find "$work/unpacked" -type f -iname "$pattern" -print -quit)"
-              if [[ -n "$found" ]]; then
-                printf '%s\n' "$found"
-                return 0
-              fi
-            done
-            echo "Missing asset: $label" >&2
-            exit 1
-          }
-
-          find_path() {
-            local label="$1"
-            local path_pattern="$2"
-            local found="$(find "$work/unpacked" -type f -path "$path_pattern" -print -quit)"
-            if [[ -z "$found" ]]; then
-              echo "Missing asset: $label ($path_pattern)" >&2
-              exit 1
-            fi
-            printf '%s\n' "$found"
-          }
-
           native="app/src/main/jniLibs/arm64-v8a"
-          mkdir -p "$native"
-          cp "$(find_one Real-CUGAN realcugan-ncnn)" "$native/libmanyue_realcugan.so"
-          cp "$(find_one libomp.so libomp.so)" "$native/libomp.so"
-
-          mkdir -p app/src/main/assets/ai/models-Real-CUGAN-se
-          cp "$(find_path CUGAN model '*/models-se/up2x-no-denoise.bin')" \
-            app/src/main/assets/ai/models-Real-CUGAN-se/up2x-no-denoise.bin
-          cp "$(find_path CUGAN model '*/models-se/up2x-no-denoise.param')" \
-            app/src/main/assets/ai/models-Real-CUGAN-se/up2x-no-denoise.param
+          # These workers implement -w. Upstream release binaries must not overwrite them.
+          test -s "$native/libmanyue_realesr.so"
+          test -s "$native/libmanyue_realcugan.so"
           chmod 755 "$native"/libmanyue_realesr.so "$native"/libmanyue_realcugan.so
 
       - name: Build pinned Anime4KCPP ARM64 CPU overlay

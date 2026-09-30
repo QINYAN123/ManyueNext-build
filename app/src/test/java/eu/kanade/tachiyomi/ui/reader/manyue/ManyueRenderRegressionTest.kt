@@ -5,7 +5,7 @@ import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Test
 
 class ManyueRenderRegressionTest {
-    @Test fun `custom scale preserves original at one and supports hundredth steps`() {
+    @Test fun `custom scale keeps source dimensions at one and supports hundredth steps`() {
         assertEquals(690, ManyueAiUpscaler.customTargetWidth(690, 100))
         assertEquals(863, ManyueAiUpscaler.customTargetWidth(690, 125))
         assertEquals(1042, ManyueAiUpscaler.customTargetWidth(690, 151))

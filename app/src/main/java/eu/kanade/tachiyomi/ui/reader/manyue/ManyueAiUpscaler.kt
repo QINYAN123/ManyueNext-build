@@ -15,7 +15,6 @@ import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.PriorityBlockingQueue
 import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
-import kotlin.math.roundToInt
 import kotlinx.coroutines.CompletableDeferred
 import logcat.LogPriority
 import tachiyomi.core.common.util.system.logcat
@@ -465,8 +464,8 @@ object ManyueAiUpscaler {
             }
 
             val resolved = req.targetWidth
-            if (resolved <= req.sourceWidth) return
-            val resolvedHeight = Math.round(req.sourceHeight * (resolved.toDouble() / req.sourceWidth)).toInt()
+            if (resolved < req.sourceWidth) return
+            val resolvedHeight = targetHeight(req.sourceWidth, req.sourceHeight, resolved)
             if (!ManyueAiSafetyPolicy.isPixelBudgetSafe(
                     resolved,
                     resolvedHeight,
@@ -493,6 +492,7 @@ object ManyueAiUpscaler {
                 logFile = logFile,
                 model = req.model,
                 outputFormat = if (req.anime4kOverlay) "png" else "webp",
+                targetWidth = resolved,
                 isCancelled = { req.cancelled || !requestIsCurrent(req) },
                 onProcessStarted = { req.runningProcess = it },
             )
@@ -504,8 +504,8 @@ object ManyueAiUpscaler {
             BitmapFactory.decodeFile(outFile.absolutePath, opts)
             val outW = opts.outWidth
             val outH = opts.outHeight
-            if (!hasExpectedFixed2xOutput(req.sourceWidth, req.sourceHeight, outW, outH)) {
-                req.failureDetail = "AI 原生输出尺寸不符合固定 2× 要求，已保留原图"
+            if (!hasExpectedTargetOutput(req.sourceWidth, req.sourceHeight, resolved, outW, outH)) {
+                req.failureDetail = "AI 原生输出尺寸不符（需要 ${resolved}×$resolvedHeight，实际 ${outW}×$outH），已保留原图"
                 req.failedAt = System.currentTimeMillis()
                 return
             }
@@ -570,20 +570,16 @@ object ManyueAiUpscaler {
                     }
                 }
             }
-            // Native produced the requested fixed 2x output. Keep that encoded file directly in
-            // the cache; do not decode, stitch, and re-encode it into in-memory Bitmap segments.
+            // The worker resizes its unencoded x2 result to the requested dimensions before
+            // its first encode. Commit that file directly; Android only reads the bounds here.
             val postStartedAt = SystemClock.elapsedRealtime()
             if (!requestIsCurrent(req)) return
-            if (resolved != outW && !awaitReaderIdle(req)) return
-            val cachedOutput = resizeOutput(outDir, selectedOutputFile, outW, outH, resolved)
-            if (!requestIsCurrent(req)) return
-            val cachedHeight = (outH * (resolved.toDouble() / outW)).roundToInt().coerceAtLeast(1)
             val cacheCommitted = ManyueEnhancementCache.putImage(
                 context,
                 key,
-                cachedOutput,
-                resolved,
-                cachedHeight,
+                selectedOutputFile,
+                outW,
+                outH,
                 overlayRequested = req.anime4kOverlay,
                 overlayApplied = overlayApplied,
                 detail = overlayDetail,
@@ -601,10 +597,11 @@ object ManyueAiUpscaler {
             val postElapsedMs = SystemClock.elapsedRealtime() - postStartedAt
             logcat {
                 "Manyue AI timings chapter=${req.chapterId} page=${req.pageIndex} " +
+                    "source=${req.sourceWidth}x${req.sourceHeight} output=${outW}x$outH " +
                     "queueWaitMs=$waitMs nativeMs=$nativeElapsedMs postMs=$postElapsedMs"
             }
             ManyueDiagnostics.record(
-                "第 ${req.pageIndex + 1} 页 AI 完成（排队 ${waitMs}ms，推理 ${nativeElapsedMs}ms，处理 ${postElapsedMs}ms）" +
+                "第 ${req.pageIndex + 1} 页 AI 完成 ${outW}×$outH（排队 ${waitMs}ms，原生 ${nativeElapsedMs}ms，缓存 ${postElapsedMs}ms）" +
                     (overlayDetail?.let { "；$it" } ?: ""),
             )
             state = STATE_READY
@@ -649,14 +646,25 @@ object ManyueAiUpscaler {
         return requestIsCurrent(req)
     }
 
-    internal fun hasExpectedFixed2xOutput(
+    /** Positive half-up rounding, shared with the native worker without floating-point drift. */
+    internal fun targetHeight(sourceWidth: Int, sourceHeight: Int, targetWidth: Int): Int {
+        if (sourceWidth <= 0 || sourceHeight <= 0 || targetWidth < sourceWidth ||
+            targetWidth.toLong() > sourceWidth.toLong() * 2L
+        ) return 0
+        val height = (sourceHeight.toLong() * targetWidth + sourceWidth / 2L) / sourceWidth
+        return if (height in 1L..Int.MAX_VALUE.toLong()) height.toInt() else 0
+    }
+
+    internal fun hasExpectedTargetOutput(
         sourceWidth: Int,
         sourceHeight: Int,
+        targetWidth: Int,
         outputWidth: Int,
         outputHeight: Int,
-    ): Boolean = sourceWidth > 0 && sourceHeight > 0 &&
-        outputWidth.toLong() == sourceWidth.toLong() * 2L &&
-        outputHeight.toLong() == sourceHeight.toLong() * 2L
+    ): Boolean {
+        val expectedHeight = targetHeight(sourceWidth, sourceHeight, targetWidth)
+        return expectedHeight > 0 && outputWidth == targetWidth && outputHeight == expectedHeight
+    }
 
     private fun requestIsCurrent(req: Request): Boolean {
         val mode = ManyueRuntimeState.modeInt
@@ -720,32 +728,13 @@ object ManyueAiUpscaler {
     fun fingerprint(bytes: ByteArray): String =
         MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
 
-    /** Full native x2 inference preserves source detail; only custom outputs are resized. */
-    private fun resizeOutput(dir: File, source: File, width: Int, height: Int, target: Int): File {
-        if (target == width) return source
-        val raw = BitmapFactory.decodeFile(source.absolutePath) ?: error("AI output decode failed")
-        var resized: Bitmap? = null
-        try {
-            val targetHeight = (height * (target.toDouble() / width)).roundToInt().coerceAtLeast(1)
-            resized = Bitmap.createScaledBitmap(raw, target, targetHeight, true)
-            return File(dir, "scaled.webp").also { output ->
-                FileOutputStream(output).use {
-                    check(resized.compress(ManyueBitmapEncoding.lossyWebpFormat(), 95, it))
-                }
-            }
-        } finally {
-            resized?.takeIf { it !== raw && !it.isRecycled }?.recycle()
-            raw.recycle()
-        }
-    }
-
     fun customTargetWidth(sourceWidth: Int, scalePercent: Int): Int {
         if (sourceWidth <= 0) return 0
         return (sourceWidth.toLong() * scalePercent.coerceIn(100, 200) + 50L)
             .div(100L).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
     }
 
-    /** Fixed native 2x output for both models; settings no longer change the target width. */
+    /** Legacy model-output helper; the display target is resolved by [customTargetWidth]. */
     fun fixedTargetWidth(sourceWidth: Int): Int =
         sourceWidth.toLong().times(ManyueAiModel.DEFAULT.scale)
             .coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
