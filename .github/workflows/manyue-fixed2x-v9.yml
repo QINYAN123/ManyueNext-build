@@ -1,0 +1,106 @@
+name: Manyue fixed 2x v9
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: manyue-fixed2x-v9-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-arm64:
+    name: Verify native workers and build ARM64 APK
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up JDK
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          java-version-file: .github/.java-version
+          distribution: temurin
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+
+      - name: Add Real-CUGAN native assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          work="${RUNNER_TEMP}/realsr-assets"
+          mkdir -p "$work"
+          curl --fail --location --retry 5 --retry-all-errors \
+            --output "$work/assets.zip" \
+            https://github.com/tumuyan/RealSR-NCNN-Android/releases/download/1.11.1/assets.zip
+          unzip -q "$work/assets.zip" -d "$work/unpacked"
+
+          find_one() {
+            local label="$1"
+            shift
+            local found=""
+            for pattern in "$@"; do
+              found="$(find "$work/unpacked" -type f -iname "$pattern" -print -quit)"
+              if [[ -n "$found" ]]; then
+                printf '%s\n' "$found"
+                return 0
+              fi
+            done
+            echo "Missing asset: $label" >&2
+            exit 1
+          }
+
+          find_path() {
+            local label="$1"
+            local path_pattern="$2"
+            local found="$(find "$work/unpacked" -type f -path "$path_pattern" -print -quit)"
+            if [[ -z "$found" ]]; then
+              echo "Missing asset: $label ($path_pattern)" >&2
+              exit 1
+            fi
+            printf '%s\n' "$found"
+          }
+
+          native="app/src/main/jniLibs/arm64-v8a"
+          mkdir -p "$native"
+          cp "$(find_one Real-CUGAN realcugan-ncnn)" "$native/libmanyue_realcugan.so"
+          cp "$(find_one libomp.so libomp.so)" "$native/libomp.so"
+
+          mkdir -p app/src/main/assets/ai/models-Real-CUGAN-se
+          cp "$(find_path CUGAN model '*/models-se/up2x-no-denoise.bin')" \
+            app/src/main/assets/ai/models-Real-CUGAN-se/up2x-no-denoise.bin
+          cp "$(find_path CUGAN model '*/models-se/up2x-no-denoise.param')" \
+            app/src/main/assets/ai/models-Real-CUGAN-se/up2x-no-denoise.param
+          chmod 755 "$native"/libmanyue_realesr.so "$native"/libmanyue_realcugan.so
+
+      - name: Build pinned Anime4KCPP ARM64 CPU overlay
+        run: bash scripts/build_anime4k_android.sh app/src/main/jniLibs/arm64-v8a/libmanyue_anime4k.so
+
+      - name: Verify native files and model hashes
+        run: python3 scripts/verify_manyue_native.py
+
+      - name: Run Manyue unit tests
+        run: ./gradlew --no-daemon :app:testDebugUnitTest --tests 'eu.kanade.tachiyomi.ui.reader.manyue.*'
+
+      - name: Assemble release ARM64 APK
+        run: ./gradlew --no-daemon :app:assembleRelease
+
+      - name: Record APK checksum
+        run: |
+          set -euo pipefail
+          apk="app/build/outputs/apk/release/app-arm64-v8a-release.apk"
+          test -s "$apk"
+          sha256sum "$apk" | tee "$apk.sha256"
+
+      - name: Upload ARM64 APK
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: manyue-fixed2x-v9-arm64-${{ github.run_number }}
+          if-no-files-found: error
+          path: |
+            app/build/outputs/apk/release/app-arm64-v8a-release.apk
+            app/build/outputs/apk/release/app-arm64-v8a-release.apk.sha256
