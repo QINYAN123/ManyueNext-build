@@ -133,6 +133,13 @@ internal class ManyueReaderPressurePolicy(
         return thermalPressure || isBefore(now, fastScrollUntilNanos) || isBefore(now, badFrameUntilNanos)
     }
 
+    /** Display commits wait for measured motion/frame pressure, but not thermal status alone. */
+    @Synchronized
+    fun isDisplayBlocked(): Boolean {
+        val now = nanoTime()
+        return isBefore(now, fastScrollUntilNanos) || isBefore(now, badFrameUntilNanos)
+    }
+
     private fun resetScrollSampling() {
         lastScrollAtNanos = null
         scrollWindowStartNanos = null

@@ -5,6 +5,10 @@ import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import kotlinx.coroutines.async
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.yield
 
 class ManyuePageBridgeLogicTest {
 
@@ -53,5 +57,34 @@ class ManyuePageBridgeLogicTest {
             ),
         )
         assertNull(ManyuePageBridge.mergeDisplayDetails(null, " "))
+    }
+
+    @Test fun `offscreen result waits for visibility and stale holder does not continue staging`() = runBlocking {
+        var current = true
+        var visible = false
+        val waiter = async {
+            val mayStage = awaitPageVisibility(
+                isCurrent = { current },
+                isVisible = { visible },
+            )
+            mayStage && current
+        }
+
+        yield()
+        assertFalse(waiter.isCompleted, "an attached but offscreen page must not start tile decoding")
+        visible = true
+        assertTrue(withTimeout(1_000L) { waiter.await() }, "the cached result can stage after the page enters view")
+
+        visible = false
+        val staleWaiter = async {
+            val mayStage = awaitPageVisibility(
+                isCurrent = { current },
+                isVisible = { visible },
+            )
+            mayStage && current
+        }
+        yield()
+        current = false
+        assertFalse(withTimeout(1_000L) { staleWaiter.await() }, "a rebound holder must abandon its old result")
     }
 }

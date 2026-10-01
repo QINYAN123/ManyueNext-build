@@ -44,6 +44,10 @@ object ManyueReaderWorkGate {
 
     @Synchronized
     fun isBlocked(): Boolean = policy.isBlocked()
+
+    /** Keeps thermal protection for expensive work without indefinitely hiding a ready image. */
+    @Synchronized
+    fun isDisplayBlocked(): Boolean = policy.isDisplayBlocked()
 }
 
 /** Spaces native jobs only when the caller reports active reader pressure. */

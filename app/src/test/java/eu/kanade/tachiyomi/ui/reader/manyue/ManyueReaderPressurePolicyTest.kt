@@ -33,11 +33,14 @@ class ManyueReaderPressurePolicyTest {
             policy.reportScroll(reader, dx = 10, dy = 0, viewportHeightPx = 400)
         }
         assertTrue(policy.isBlocked(), "fast samples should accumulate across sub-8ms frame intervals")
+        assertTrue(policy.isDisplayBlocked(), "fast movement must still defer ready-image commits")
 
         clock.advance(FAST_SCROLL_HOLD_NANOS - 1L)
         assertTrue(policy.isBlocked())
+        assertTrue(policy.isDisplayBlocked())
         clock.advance(1L)
         assertFalse(policy.isBlocked(), "negative monotonic clock origins must not look like an active deadline")
+        assertFalse(policy.isDisplayBlocked())
     }
 
     @Test
@@ -57,10 +60,12 @@ class ManyueReaderPressurePolicyTest {
         policy.reportFrame(reader, 20_000_000L, expected120HzNanos)
         policy.reportFrame(reader, 20_000_000L, expected120HzNanos)
         assertTrue(policy.isBlocked())
+        assertTrue(policy.isDisplayBlocked(), "sustained missed frames must defer ready-image commits")
 
         policy.reportFrame(reader, expected120HzNanos, expected120HzNanos)
         policy.reportFrame(reader, expected120HzNanos, expected120HzNanos)
         assertFalse(policy.isBlocked(), "two healthy frames clear a recovered scroll session")
+        assertFalse(policy.isDisplayBlocked())
     }
 
     @Test
@@ -101,8 +106,10 @@ class ManyueReaderPressurePolicyTest {
         // Android reports SEVERE as 3; 4 is already CRITICAL.
         policy.reportThermalStatus(currentReader, 3)
         assertTrue(policy.isBlocked())
+        assertFalse(policy.isDisplayBlocked(), "thermal protection must not indefinitely hide a ready frame")
         policy.reportThermalStatus(currentReader, 2)
         assertFalse(policy.isBlocked())
+        assertFalse(policy.isDisplayBlocked())
     }
 
     @Test

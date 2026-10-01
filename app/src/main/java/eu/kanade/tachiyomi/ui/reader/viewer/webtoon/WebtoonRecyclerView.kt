@@ -79,7 +79,7 @@ class WebtoonRecyclerView @JvmOverloads constructor(
 
     /** Stable scrolling can display a prepared result; pinch, layout, and measured pressure cannot. */
     fun canSwapManyueImage(): Boolean {
-        if (isZooming || manyueAnimating > 0 || isComputingLayout || ManyueReaderWorkGate.isBlocked()) return false
+        if (isZooming || manyueAnimating > 0 || isComputingLayout || ManyueReaderWorkGate.isDisplayBlocked()) return false
         return scrollState != SCROLL_STATE_IDLE ||
             (!manyueTouchActive && SystemClock.uptimeMillis() - manyueLastInteraction >= 120L)
     }

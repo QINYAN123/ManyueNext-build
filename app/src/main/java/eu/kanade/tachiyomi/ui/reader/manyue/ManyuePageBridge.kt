@@ -251,6 +251,15 @@ class ManyuePageBridge(
                             // Native/cache work is already done, but the first source decode owns
                             // the strip's geometry and first-load callback. Do not freeze a placeholder.
                             if (!awaitSourceReady(t, identity, mode, expectedGeneration)) return@launch
+                            // Keep completed results encoded in the cache until this holder actually
+                            // intersects the viewport. Attached RecyclerView children can be offscreen;
+                            // staging them would enqueue base-tile decodes ahead of the page being read.
+                            if (!awaitPageVisibility(
+                                    isCurrent = { isCurrent(t, identity, mode, expectedGeneration) },
+                                    isVisible = ::isPageVisible,
+                                )
+                            ) return@launch
+                            if (!isCurrent(t, identity, mode, expectedGeneration)) return@launch
                             stageFile(
                                 image = display.image,
                                 baseImage = display.baseImage,
@@ -313,6 +322,11 @@ class ManyuePageBridge(
             else delay(32L)
         }
         return false
+    }
+
+    private fun isPageVisible(): Boolean {
+        if (!view.isAttachedToWindow || !view.isShown) return false
+        return view.getGlobalVisibleRect(Rect())
     }
 
     private suspend fun awaitDisplayPause(
@@ -553,4 +567,16 @@ class ManyuePageBridge(
         token = null
         identity = null
     }
+}
+
+/** Waits for a bound page to become visible, abandoning work as soon as its holder is rebound. */
+internal suspend fun awaitPageVisibility(
+    isCurrent: () -> Boolean,
+    isVisible: () -> Boolean,
+): Boolean {
+    while (isCurrent()) {
+        if (isVisible()) return true
+        delay(64L)
+    }
+    return false
 }

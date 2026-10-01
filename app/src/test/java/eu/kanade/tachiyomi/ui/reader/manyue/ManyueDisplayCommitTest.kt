@@ -20,7 +20,7 @@ import org.robolectric.annotation.LooperMode
 @Config(application = Application::class, sdk = [34], manifest = Config.NONE)
 @LooperMode(LooperMode.Mode.PAUSED)
 class ManyueDisplayCommitTest {
-    @Test fun stableScrollingCanSwapButMeasuredFramePressureDefersIt() {
+    @Test fun stableScrollingCanSwapAndThermalAloneDoesNotHideAReadyImage() {
         val controller = Robolectric.buildActivity(Activity::class.java).setup()
         val recycler = WebtoonRecyclerView(controller.get())
         controller.get().setContentView(recycler)
@@ -31,8 +31,11 @@ class ManyueDisplayCommitTest {
             assertTrue("Normal scrolling need not wait for idle", recycler.canSwapManyueImage())
             repeat(3) { ManyueReaderWorkGate.reportFrame(recycler, 40_000_000L, 16_666_667L) }
             assertFalse("Repeated missed frames protect scrolling", recycler.canSwapManyueImage())
+            repeat(2) { ManyueReaderWorkGate.reportFrame(recycler, 16_666_667L, 16_666_667L) }
             ManyueReaderWorkGate.reportThermalStatus(recycler, ManyueReaderWorkGate.THERMAL_STATUS_SEVERE)
-            assertFalse(recycler.canSwapManyueImage())
+            assertTrue("Severe thermal status still pauses native inference", ManyueReaderWorkGate.isBlocked())
+            assertFalse(ManyueReaderWorkGate.isDisplayBlocked())
+            assertTrue("A completed visible result can commit after frame pressure clears", recycler.canSwapManyueImage())
         } finally {
             state.setInt(recycler, RecyclerView.SCROLL_STATE_IDLE)
             ManyueReaderWorkGate.release(recycler)
