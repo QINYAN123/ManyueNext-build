@@ -113,11 +113,19 @@ open class ReaderPageImageView @JvmOverloads constructor(
 
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
-        stagedCommit?.let { mainHandler.post(it) }
+        stagedCommit?.let {
+            mainHandler.removeCallbacks(it)
+            stagedPageView?.removeCallbacks(it)
+            postOnAnimation(it)
+        }
     }
 
     override fun onDetachedFromWindow() {
-        stagedCommit?.let(mainHandler::removeCallbacks)
+        stagedCommit?.let {
+            mainHandler.removeCallbacks(it)
+            removeCallbacks(it)
+            stagedPageView?.removeCallbacks(it)
+        }
         cancelLandscapeZoom()
         manyueTouchActive = false
         manyueLastTouch = 0L
@@ -355,6 +363,7 @@ open class ReaderPageImageView @JvmOverloads constructor(
                 var committedGeneration: Long? = null
                 setExecutor(aiImageExecutor())
                 setMaxTileSize(1024)
+                setPrepareBaseTilesToDraw(true)
                 setRegionDecoderFactory {
                     val decoderLease = ManyueEnhancementCache.pinFile(context, file)
                         ?: error("Cached AI image is being removed")
@@ -386,20 +395,37 @@ open class ReaderPageImageView @JvmOverloads constructor(
                             if (!isImageLoaded || !isReady || stagedCommit != null) return
                             // SSIV may emit onReady from onDraw. Mutating FrameLayout children
                             // during dispatchDraw can skip a child or dereference a removed child.
-                            val commit = Runnable { stagedCommit = null; tryCommit() }
+                            lateinit var commit: Runnable
+                            commit = Runnable {
+                                if (
+                                    stagedCommit === commit &&
+                                    this@ReaderPageImageView.isAttachedToWindow &&
+                                    this@apply.isAttachedToWindow
+                                ) {
+                                    stagedCommit = null
+                                    tryCommit()
+                                }
+                            }
                             stagedCommit = commit
-                            if (isAttachedToWindow) mainHandler.post(commit)
+                            if (this@ReaderPageImageView.isAttachedToWindow && this@apply.isAttachedToWindow) {
+                                this@ReaderPageImageView.postOnAnimation(commit)
+                            }
                         }
 
                         private fun tryCommit() {
+                            if (!this@ReaderPageImageView.isAttachedToWindow || !this@apply.isAttachedToWindow) return
                             if (stagedPageView !== this@apply || requestId != stagedImageId || !shouldCommit()) {
                                 cancelStagedImage(requestId)
                                 return
                             }
                             if (!isImageLoaded || !isReady) return
                             if (!maySwap()) {
-                                stagedCommit?.let(mainHandler::removeCallbacks)
-                                val retry = Runnable { stagedCommit = null; tryCommit() }
+                                stagedCommit?.let {
+                                    mainHandler.removeCallbacks(it)
+                                    this@ReaderPageImageView.removeCallbacks(it)
+                                    this@apply.removeCallbacks(it)
+                                }
+                                val retry = Runnable { stagedCommit = null; scheduleCommit() }
                                 stagedCommit = retry
                                 if (isAttachedToWindow) mainHandler.postDelayed(retry, 80L)
                                 return
@@ -432,14 +458,7 @@ open class ReaderPageImageView @JvmOverloads constructor(
                                     removeView(old)
                                 } finally {
                                     mainHandler.postDelayed(32L) {
-                                        try {
-                                            when (old) {
-                                                is SubsamplingScaleImageView -> old.recycle()
-                                                is AppCompatImageView -> old.dispose()
-                                            }
-                                        } finally {
-                                            previousLease?.close()
-                                        }
+                                        disposeRemovedPageView(old, previousLease)
                                     }
                                 }
                             }
@@ -486,7 +505,11 @@ open class ReaderPageImageView @JvmOverloads constructor(
     fun cancelStagedImage(requestId: Long? = null) {
         if (requestId != null && requestId != stagedImageId) return
         stagedImageId++
-        stagedCommit?.let(mainHandler::removeCallbacks)
+        stagedCommit?.let {
+            mainHandler.removeCallbacks(it)
+            removeCallbacks(it)
+            stagedPageView?.removeCallbacks(it)
+        }
         stagedCommit = null
         val staged = stagedPageView
         val lease = stagedCacheLease
@@ -497,11 +520,7 @@ open class ReaderPageImageView @JvmOverloads constructor(
                 removeView(staged)
             } finally {
                 mainHandler.postDelayed(32L) {
-                    try {
-                        staged.recycle()
-                    } finally {
-                        lease?.close()
-                    }
+                    disposeRemovedPageView(staged, lease)
                 }
             }
         } else {
@@ -575,6 +594,19 @@ open class ReaderPageImageView @JvmOverloads constructor(
         val lease = pageCacheLease ?: return
         pageCacheLease = null
         mainHandler.postDelayed(32L) { lease.close() }
+    }
+
+    /** Dispose removed views off the UI thread and release their cache pin only after decoder close. */
+    private fun disposeRemovedPageView(view: View, lease: ManyueEnhancementCache.CacheLease?) {
+        when (view) {
+            is SubsamplingScaleImageView -> view.disposeDetached { lease?.close() }
+            is AppCompatImageView -> try {
+                view.dispose()
+            } finally {
+                lease?.close()
+            }
+            else -> lease?.close()
+        }
     }
 
     protected open fun aiImageExecutor(): Executor = aiTileExecutor
@@ -687,11 +719,7 @@ open class ReaderPageImageView @JvmOverloads constructor(
             val lease = pageCacheLease
             pageCacheLease = null
             mainHandler.postDelayed(32L) {
-                try {
-                    previous.recycle()
-                } finally {
-                    lease?.close()
-                }
+                disposeRemovedPageView(previous, lease)
             }
         }
 

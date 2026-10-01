@@ -1133,8 +1133,10 @@
     <string name="reader_enhancement_classic_processing">Classic processing</string>
     <string name="reader_enhancement_classic_ready">Classic</string>
     <string name="reader_enhancement_ai_queued">AI queued</string>
+    <string name="reader_enhancement_ai_preparing">AI preparing</string>
+    <string name="reader_enhancement_ai_waiting_resources">AI waiting for resources</string>
     <string name="reader_enhancement_ai_processing">AI processing</string>
-    <string name="reader_enhancement_ai_waiting_display">AI ready, waiting for idle</string>
+    <string name="reader_enhancement_ai_waiting_display">AI ready, preparing display</string>
     <string name="reader_enhancement_ai_ready">AI</string>
     <string name="reader_enhancement_ai_classic_ready">AI + Classic</string>
     <string name="reader_enhancement_skipped">Skipped</string>

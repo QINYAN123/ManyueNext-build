@@ -6,6 +6,8 @@ For 1× through less than 2× outputs, the worker area-resamples the model's pac
 
 The native workers now fail fast if `Net::load_param`, `Net::load_model`, Real-CUGAN's auxiliary bicubic layer `load_param`/`create_pipeline`, `Extractor::input`, `Extractor::extract`, Vulkan `submit_and_wait`, or a top-level model `load`/`process` call reports an error. A failed inference terminates the worker before encoding, instead of returning a success-shaped output buffer. This makes the process result a stronger check that every requested page passed through the model, though dimensions alone still do not prove image quality.
 
+Per-page input read/allocation, decode, target-size validation, resize allocation, and resize failures also terminate the worker with a nonzero exit. PNG, JPEG, and both WebP output paths check encoder status plus file writes, flush, and close; a failed output is deleted before the worker exits. This prevents a partial or preallocated image from being reported as a successful enhancement. These checks do not claim that the model output is visually good; they verify that the configured inference and file-writing steps reported success.
+
 ## Reproducible Android build
 
 The build helper patches an extracted source archive in the scratch directory, builds both ARM64 workers, and copies the resulting executables to a scratch output directory. It never modifies app Kotlin, Gradle, workflows, or `jniLibs`.
@@ -40,7 +42,7 @@ This phase preserves the original comic file and the existing 2× model weights/
 
 ## Resize helper tests
 
-`test-host.ps1` compiles and runs the host checks with the Windows Zig C++ driver installed for this workspace. `output_resize_test.cpp` exercises target-size rounding and validation, RGB area averages, premultiplied-alpha behavior, identity handling, invalid strides, and unsupported channel counts. The status test invokes the actual `MANYUE_NCNN_CHECK` macro twice in separate processes: status 0 must exit successfully with `ENCODE_REACHED`, while the mocked nonzero status must exit nonzero without that marker.
+`test-host.ps1` compiles and runs the host checks with the Windows Zig C++ driver installed for this workspace. `output_resize_test.cpp` exercises target-size rounding and validation, RGB area averages, premultiplied-alpha behavior, identity handling, invalid strides, and unsupported channel counts. The status test invokes the actual `MANYUE_NCNN_CHECK` macro twice in separate processes: status 0 must exit successfully with `ENCODE_REACHED`, while the mocked nonzero status must exit nonzero without that marker. `file_output_test.cpp` checks successful output bytes, injected short-write/flush/close/encoder failures and cleanup; it also performs a real temporary-file success and verifies an injected short write removes the partial file. Flush and close failures are mocked because they are difficult to force portably with a host `FILE*`.
 
 ```powershell
 & .\work\mihon-source\native\manyue-target-output\test-host.ps1

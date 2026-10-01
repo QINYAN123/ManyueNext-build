@@ -21,7 +21,7 @@ APK under `assets/licenses/`.
 - Upstream inference project: https://github.com/xinntao/Real-ESRGAN-ncnn-vulkan
 - Source used: tag `1.11.1`, commit `5eb6e3d`, with the local target-output and error-propagation patches
 - License: MIT; refer to the upstream project and release asset for the complete text
-- Bundled executable SHA-256: `992055bb46ac445411d6ba83450b3bff346d6fa205c696fb85167188e2c4adf0`
+- Bundled executable SHA-256: `ce28f19e41175ed0062bd4fbf21b1ee06d98b901036627048cf37f929b784ae8`
 
 The executable is named `libmanyue_realesr.so` so Android installs it inside the
 app's executable native-library directory. It is rebuilt from the pinned source;
@@ -35,7 +35,7 @@ remain unchanged.
 - Upstream inference project: https://github.com/bilibili/ailab/tree/main/Real-CUGAN
 - Source used: tag `1.11.1`, commit `5eb6e3d`, with the local target-output and error-propagation patches
 - License: MIT; refer to the upstream project and release asset for the complete text
-- Bundled executable SHA-256: `cde254952ac15d0cce94bd3ea72299e1d4c22d7d3b797a1d67cbd12a430daef5`
+- Bundled executable SHA-256: `9f5b7d43c3074d9ef3d4d1a0c1ed69a7819789ce5dcb52699f4e22298ab873ff`
 - Bundled model: `models-se/up2x-no-denoise`, selected for the fixed native 2× fast path.
 
 The executable is named `libmanyue_realcugan.so` so Android installs it inside the

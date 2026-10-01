@@ -10,8 +10,10 @@ data class ReaderMetadataLabels(
     val classicProcessing: String = "Classic processing",
     val classicReady: String = "Classic",
     val aiQueued: String = "AI queued",
+    val aiPreparing: String = "AI preparing",
+    val aiWaitingResources: String = "AI waiting for resources",
     val aiProcessing: String = "AI processing",
-    val aiWaitingDisplay: String = "AI ready, waiting for idle",
+    val aiWaitingDisplay: String = "AI ready, preparing display",
     val aiReady: String = "AI",
     val aiClassicReady: String = "AI + Classic",
     val skipped: String = "Skipped",
@@ -41,6 +43,8 @@ object ReaderMetadataPresentation {
                     ManyueEnhancementState.CLASSIC_PROCESSING -> labels.classicProcessing
                     ManyueEnhancementState.CLASSIC_READY -> labels.classicReady
                     ManyueEnhancementState.AI_QUEUED -> labels.aiQueued
+                    ManyueEnhancementState.AI_PREPARING -> labels.aiPreparing
+                    ManyueEnhancementState.AI_WAITING_RESOURCES -> labels.aiWaitingResources
                     ManyueEnhancementState.AI_PROCESSING -> labels.aiProcessing
                     ManyueEnhancementState.AI_WAITING_DISPLAY -> labels.aiWaitingDisplay
                     ManyueEnhancementState.AI_READY -> labels.aiReady

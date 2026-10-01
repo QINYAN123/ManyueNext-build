@@ -7,6 +7,12 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 class ReaderMetadataPresentationTest {
+    @Test fun `resource wait preparation inference and display wait are distinct`() {
+        val labels = ReaderMetadataLabels("Source", "Loading", "Unknown")
+        val states = listOf(ManyueEnhancementState.AI_QUEUED, ManyueEnhancementState.AI_PREPARING, ManyueEnhancementState.AI_WAITING_RESOURCES, ManyueEnhancementState.AI_PROCESSING, ManyueEnhancementState.AI_WAITING_DISPLAY)
+        val text = states.map { ReaderMetadataPresentation.text(1, 10, SourceImageInfo.Available(690, 1421, enhancementState = it), labels) }
+        assertEquals(states.size, text.toSet().size)
+    }
     private val zhLabels = ReaderMetadataLabels(
         availablePrefix = "原图",
         loading = "原图读取中",

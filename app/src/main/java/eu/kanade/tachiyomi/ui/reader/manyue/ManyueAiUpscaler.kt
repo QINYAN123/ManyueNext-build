@@ -30,6 +30,11 @@ object ManyueAiUpscaler {
     const val STATE_PROCESSING = 0
     const val STATE_FAILED = -1
     const val STATE_CANCELLED = -2
+    const val STATE_PREPARING = 2
+    const val STATE_WAITING_RESOURCES = 3
+
+    internal fun isProgressState(state: Int): Boolean =
+        state == STATE_PROCESSING || state == STATE_PREPARING || state == STATE_WAITING_RESOURCES
 
     private const val FAILURE_COOLDOWN_MS = 30_000L
     private const val FAILURE_LOG_DIR = "manyue_ai_failures"
@@ -71,6 +76,7 @@ object ManyueAiUpscaler {
         @Volatile var cancelled: Boolean = false,
         @Volatile var queued: Boolean = false,
         @Volatile var processing: Boolean = false,
+        @Volatile var progressState: Int = STATE_PREPARING,
         @Volatile var runningProcess: Process? = null,
         @Volatile var completed: Boolean = false,
         @Volatile var completionState: Int = STATE_FAILED,
@@ -128,7 +134,7 @@ object ManyueAiUpscaler {
                     }
                     if (!claimed) continue
                     req.processingStartedAt = System.currentTimeMillis()
-                    notifyProgress(req)
+                    notifyProgress(req, STATE_PREPARING)
                     try {
                         process(req)
                     } finally {
@@ -282,7 +288,7 @@ object ManyueAiUpscaler {
         listeners.getOrPut(token) { CopyOnWriteArrayList() }.add(listener)
         if (req.processing) {
             mainHandler.post {
-                if (!req.completed && !req.cancelled) listener.onAiComplete(token, STATE_PROCESSING, null)
+                if (!req.completed && !req.cancelled) listener.onAiComplete(token, req.progressState, null)
             }
         }
         // Close the tiny race where the worker finishes between the first check and add().
@@ -320,18 +326,20 @@ object ManyueAiUpscaler {
     }
 
     @Synchronized
-    private fun notifyProgress(req: Request) {
+    private fun notifyProgress(req: Request, state: Int) {
+        require(isProgressState(state))
+        req.progressState = state
         val current = listeners[req.token]?.toList() ?: return
         mainHandler.post {
             if (!req.completed && !req.cancelled) {
-                current.forEach { it.onAiComplete(req.token, STATE_PROCESSING, null) }
+                current.forEach { it.onAiComplete(req.token, state, null) }
             }
         }
     }
 
     @Synchronized
     private fun notify(req: Request, state: Int, detail: String? = req.completionDetail ?: req.failureDetail) {
-        if (state != STATE_PROCESSING) req.terminal.complete(state)
+        if (!isProgressState(state)) req.terminal.complete(state)
         val ls = listeners.remove(req.token)?.toList() ?: return
         mainHandler.post {
             ls.forEach { it.onAiComplete(req.token, state, detail) }
@@ -432,6 +440,7 @@ object ManyueAiUpscaler {
         var state = STATE_FAILED
         var outDir: File? = null
         var expensiveWorkStartedAt: Long? = null
+        val preparationStartedAt = SystemClock.elapsedRealtime()
         try {
             if (!requestIsCurrent(req)) return
             val key = cacheKeyFor(req)
@@ -483,6 +492,7 @@ object ManyueAiUpscaler {
             val logFile = File(outDir, "native.log")
             if (!awaitReaderIdle(req)) return
             val nativeStartedAt = SystemClock.elapsedRealtime()
+            val preparationElapsedMs = nativeStartedAt - preparationStartedAt
             expensiveWorkStartedAt = System.nanoTime()
             ManyueAiRuntime.upscale(
                 context = context,
@@ -494,7 +504,10 @@ object ManyueAiUpscaler {
                 outputFormat = if (req.anime4kOverlay) "png" else "webp",
                 targetWidth = resolved,
                 isCancelled = { req.cancelled || !requestIsCurrent(req) },
-                onProcessStarted = { req.runningProcess = it },
+                onProcessStarted = {
+                    req.runningProcess = it
+                    notifyProgress(req, STATE_PROCESSING)
+                },
             )
             val nativeElapsedMs = SystemClock.elapsedRealtime() - nativeStartedAt
             req.runningProcess = null
@@ -598,10 +611,10 @@ object ManyueAiUpscaler {
             logcat {
                 "Manyue AI timings chapter=${req.chapterId} page=${req.pageIndex} " +
                     "source=${req.sourceWidth}x${req.sourceHeight} output=${outW}x$outH " +
-                    "queueWaitMs=$waitMs nativeMs=$nativeElapsedMs postMs=$postElapsedMs"
+                    "queueWaitMs=$waitMs preparationMs=$preparationElapsedMs nativeMs=$nativeElapsedMs postMs=$postElapsedMs"
             }
             ManyueDiagnostics.record(
-                "第 ${req.pageIndex + 1} 页 AI 完成 ${outW}×$outH（排队 ${waitMs}ms，原生 ${nativeElapsedMs}ms，缓存 ${postElapsedMs}ms）" +
+                "第 ${req.pageIndex + 1} 页 AI 完成 ${outW}×$outH（排队 ${waitMs}ms，准备/资源等待 ${preparationElapsedMs}ms，原生 ${nativeElapsedMs}ms，后处理/缓存 ${postElapsedMs}ms）" +
                     (overlayDetail?.let { "；$it" } ?: ""),
             )
             state = STATE_READY
@@ -639,10 +652,15 @@ object ManyueAiUpscaler {
     }
 
     private fun awaitReaderIdle(req: Request): Boolean {
+        val previousState = req.progressState
+        var waited = false
         while (ManyueReaderWorkGate.isBlocked()) {
             if (!requestIsCurrent(req)) return false
+            if (!waited) notifyProgress(req, STATE_WAITING_RESOURCES)
+            waited = true
             Thread.sleep(80L)
         }
+        if (waited && requestIsCurrent(req)) notifyProgress(req, previousState)
         return requestIsCurrent(req)
     }
 
@@ -668,8 +686,7 @@ object ManyueAiUpscaler {
 
     private fun requestIsCurrent(req: Request): Boolean {
         val mode = ManyueRuntimeState.modeInt
-        val aiMode = mode == ManyueEnhancementMode.AI_2X.value ||
-            mode == ManyueEnhancementMode.AI_2X_CLASSIC.value
+        val aiMode = ManyueEnhancementMode.fromInt(mode).usesAi()
         return !req.cancelled && aiMode && mode == req.expectedMode &&
             ManyueRuntimeState.generation == req.generation
     }

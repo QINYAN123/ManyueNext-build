@@ -193,8 +193,9 @@ class WebtoonPageHolder(
         progressIndicator.setProgress(0)
 
         val currentPage = page ?: return
-        val streamFn = currentPage.stream ?: return
         eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.syncFrom(viewer.readerPreferences)
+        currentPage.resetEnhancementState(eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.modeInt)
+        val streamFn = currentPage.stream ?: return
 
         try {
             val (source, isAnimated, originalBytes) = withIOContext {
@@ -219,8 +220,7 @@ class WebtoonPageHolder(
                     )
                 }
                 val originalBytes = if (
-                    mode == eu.kanade.tachiyomi.ui.reader.manyue.ManyueEnhancementMode.AI_2X.value ||
-                    mode == eu.kanade.tachiyomi.ui.reader.manyue.ManyueEnhancementMode.AI_2X_CLASSIC.value
+                    eu.kanade.tachiyomi.ui.reader.manyue.ManyueReaderHook.needsAi(raw, mode)
                 ) raw.peek().readByteArray() else null
                 var source = raw
                 // Manyue enhancement hook (no-op when OFF / animated / failure)
@@ -244,9 +244,13 @@ class WebtoonPageHolder(
                 )
                 removeErrorLayout()
             }
+            if (originalBytes == null) {
+                eu.kanade.tachiyomi.ui.reader.manyue.ManyuePrefetchManager.releaseCurrent(
+                    currentPage.chapter.chapter.id ?: 0L, currentPage.index,
+                )
+            }
             val aiMode = eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.modeInt
-            if (aiMode == eu.kanade.tachiyomi.ui.reader.manyue.ManyueEnhancementMode.AI_2X.value ||
-                aiMode == eu.kanade.tachiyomi.ui.reader.manyue.ManyueEnhancementMode.AI_2X_CLASSIC.value
+            if (eu.kanade.tachiyomi.ui.reader.manyue.ManyueEnhancementMode.fromInt(aiMode).usesAi()
             ) {
                 try {
                     val p = page
@@ -333,6 +337,11 @@ class WebtoonPageHolder(
         val screenWidth = (frame.parent as? android.view.View)?.width?.takeIf { it > 0 }
             ?: context.resources.displayMetrics.widthPixels
         eu.kanade.tachiyomi.ui.reader.manyue.ManyueFoldableController.applyToView(frame, screenWidth)
+        // Native samples can change fold AUTO's width without resizing the RecyclerView.
+        val readingWidth = eu.kanade.tachiyomi.ui.reader.manyue.ManyueFoldableController.readingWidthPx(viewer.recycler.width)
+        if (eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.updateDisplayWidth(readingWidth)) {
+            viewer.recycler.post { viewer.refreshManyue() }
+        }
     }
 
     /**

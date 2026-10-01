@@ -6,6 +6,8 @@ enum class ManyueEnhancementState {
     CLASSIC_PROCESSING,
     CLASSIC_READY,
     AI_QUEUED,
+    AI_PREPARING,
+    AI_WAITING_RESOURCES,
     AI_PROCESSING,
     AI_WAITING_DISPLAY,
     AI_READY,

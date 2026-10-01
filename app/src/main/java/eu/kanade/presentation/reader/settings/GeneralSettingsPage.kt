@@ -187,9 +187,10 @@ internal fun ColumnScope.GeneralPage(viewModel: ReaderSettingsViewModel) {
     androidx.compose.foundation.layout.FlowRow {
         listOf(
             "原图 / OFF" to 0,
-            "经典增强" to 1,
+            "原尺寸细节增强" to 1,
             "AI 超分" to 2,
-            "AI 超分 + 经典增强" to 3,
+            "AI 超分 + 细节增强" to 3,
+            "智能增强" to 4,
         ).map { (label, value) ->
             FilterChip(
                 selected = manyueMode == value,
@@ -203,16 +204,23 @@ internal fun ColumnScope.GeneralPage(viewModel: ReaderSettingsViewModel) {
     }
 
     val manyueStrength by viewModel.preferences.manyueClassicStrength.collectAsState()
-    SliderItem(
-        label = "经典增强强度",
-        value = manyueStrength,
+    var draftStrength by remember(manyueStrength) { mutableIntStateOf(manyueStrength.coerceIn(0, 100)) }
+    Text("细节与明暗增强强度：$draftStrength", style = MaterialTheme.typography.bodyMedium)
+    tachiyomi.presentation.core.components.material.Slider(
+        value = draftStrength,
         valueRange = 0..100,
         steps = 99,
-        onChange = {
-            viewModel.preferences.manyueClassicStrength.set(it)
-            readerActivity?.onManyueClassicStrengthChanged(it)
+        onValueChange = { draftStrength = it },
+        onValueChangeFinished = {
+            if (draftStrength != manyueStrength) {
+                viewModel.preferences.manyueClassicStrength.set(draftStrength)
+                readerActivity?.onManyueClassicStrengthChanged(draftStrength)
+            }
         },
     )
+    if (manyueMode == 4) {
+        Text("按阅读区实际宽度判断：不够宽时 AI 超分；已经足够时原尺寸增强。压缩严重的图可手动选择 AI 超分。", style = MaterialTheme.typography.bodySmall)
+    }
 
     val context = androidx.compose.ui.platform.LocalContext.current
     val aiCapability by produceState<eu.kanade.tachiyomi.ui.reader.manyue.ManyueAiRuntime.Capability?>(
@@ -257,7 +265,7 @@ internal fun ColumnScope.GeneralPage(viewModel: ReaderSettingsViewModel) {
     )
     val aiScalePercent by viewModel.preferences.manyueAiScalePercent.collectAsState()
     var draftScale by remember(aiScalePercent) { mutableIntStateOf(aiScalePercent.coerceIn(100, 200)) }
-    Text("自定义超分倍率：%.2f×".format(draftScale / 100f), style = MaterialTheme.typography.bodyMedium)
+    Text((if (manyueMode == 4) "智能模式最高倍率：%.2f×" else "自定义超分倍率：%.2f×").format(draftScale / 100f), style = MaterialTheme.typography.bodyMedium)
     tachiyomi.presentation.core.components.material.Slider(
         value = draftScale,
         valueRange = 100..200,
@@ -273,7 +281,8 @@ internal fun ColumnScope.GeneralPage(viewModel: ReaderSettingsViewModel) {
         },
     )
     Text(
-        "1.00×输出增强后的原尺寸，仍执行 2×模型；1.01–2.00×保持比例输出。原图文件保留，超出安全预算时显示原图。",
+        if (manyueMode == 4) "智能模式输出不超过阅读区宽度与所选上限；上限 1.00× 时只做原尺寸增强。需要 AI 的图片仍运行 2×模型。原图文件保留。"
+        else "1.00×输出增强后的原尺寸，仍执行 2×模型；1.01–2.00×保持比例输出。原图文件保留，超出安全预算时显示原图。",
         style = MaterialTheme.typography.bodySmall,
     )
     val anime4kOverlay by viewModel.preferences.manyueAnime4kOverlay.collectAsState()

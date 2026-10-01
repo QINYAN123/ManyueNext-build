@@ -24,6 +24,24 @@ import org.robolectric.annotation.LooperMode
 @Config(application = Application::class, sdk = [34], manifest = Config.NONE)
 @LooperMode(LooperMode.Mode.PAUSED)
 class ManyueSchedulerLifecycleTest {
+    @Test fun newlyAttachedListenersSeeResourceWaitRatherThanInference() = runBlocking {
+        val token = register(87)
+        val req = request(token)
+        try {
+            req.processing = true
+            req.progressState = ManyueAiUpscaler.STATE_WAITING_RESOURCES
+            val states = mutableListOf<Int>()
+            ManyueAiUpscaler.addListener(token) { _, state, _ -> states += state }
+            shadowOf(Looper.getMainLooper()).idle()
+            assertEquals(listOf(ManyueAiUpscaler.STATE_WAITING_RESOURCES), states)
+            assertFalse(req.terminal.isCompleted)
+            ManyueAiUpscaler.cancel(token)
+            assertEquals(ManyueAiUpscaler.STATE_CANCELLED, req.terminal.await())
+        } finally {
+            ManyueAiUpscaler.removeListener(token)
+            ManyueAiUpscaler.cancel(token)
+        }
+    }
     @Test fun completionWaitersObserveCancellationWithoutDrainingMainLooper() = runBlocking {
         val token = register(81)
         val waiting = async(start = CoroutineStart.UNDISPATCHED) {

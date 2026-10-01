@@ -36,6 +36,7 @@ class WebtoonRecyclerView @JvmOverloads constructor(
     private var thermalStatusListener: PowerManager.OnThermalStatusChangedListener? = null
     private var frameCallbackPosted = false
     private var previousFrameTimeNanos = 0L
+    private var manyueSwapSampleUntil = 0L
 
     private val manyueFrameCallback = Choreographer.FrameCallback { frameTimeNanos ->
         frameCallbackPosted = false
@@ -76,6 +77,19 @@ class WebtoonRecyclerView @JvmOverloads constructor(
     fun isManyueInteractionActive(): Boolean = manyueTouchActive || manyueAnimating > 0 ||
         scrollState != SCROLL_STATE_IDLE || SystemClock.uptimeMillis() - manyueLastInteraction < 300L
 
+    /** Stable scrolling can display a prepared result; pinch, layout, and measured pressure cannot. */
+    fun canSwapManyueImage(): Boolean {
+        if (isZooming || manyueAnimating > 0 || isComputingLayout || ManyueReaderWorkGate.isBlocked()) return false
+        return scrollState != SCROLL_STATE_IDLE ||
+            (!manyueTouchActive && SystemClock.uptimeMillis() - manyueLastInteraction >= 120L)
+    }
+
+    /** Include replacement/retirement frames even after scrolling stops. */
+    fun noteManyueImageSwap() {
+        manyueSwapSampleUntil = SystemClock.uptimeMillis() + 500L
+        updateFrameSampling()
+    }
+
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
         updateManyueWorkGate()
@@ -91,7 +105,8 @@ class WebtoonRecyclerView @JvmOverloads constructor(
         ManyueReaderWorkGate.update(this, manyueTouchActive || manyueAnimating > 0 || scrollState != SCROLL_STATE_IDLE)
     }
 
-    private fun isFrameSamplingActive(): Boolean = isAttachedToWindow && scrollState != SCROLL_STATE_IDLE
+    private fun isFrameSamplingActive(): Boolean = isAttachedToWindow &&
+        (scrollState != SCROLL_STATE_IDLE || SystemClock.uptimeMillis() < manyueSwapSampleUntil)
 
     private fun updateFrameSampling() {
         if (!isFrameSamplingActive()) {

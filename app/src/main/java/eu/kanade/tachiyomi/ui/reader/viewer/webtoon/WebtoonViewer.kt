@@ -83,6 +83,14 @@ class WebtoonViewer(val activity: ReaderActivity, val isContinuous: Boolean = tr
 
     init {
         recycler.setItemViewCacheSize(RECYCLER_VIEW_CACHE_SIZE)
+        recycler.addOnLayoutChangeListener { _, left, _, right, _, oldLeft, _, oldRight, _ ->
+            if (right - left > 0 && right - left != oldRight - oldLeft) {
+                val width = eu.kanade.tachiyomi.ui.reader.manyue.ManyueFoldableController.readingWidthPx(right - left)
+                if (eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.updateDisplayWidth(width)) {
+                    recycler.post { refreshManyue() }
+                }
+            }
+        }
         recycler.isVisible = false // Don't let the recycler layout yet
         recycler.layoutParams = ViewGroup.LayoutParams(MATCH_PARENT, MATCH_PARENT)
         recycler.isFocusable = false
@@ -220,6 +228,10 @@ class WebtoonViewer(val activity: ReaderActivity, val isContinuous: Boolean = tr
     override fun reapplyManyueWidth() {
         val position = layoutManager.findFirstVisibleItemPosition()
         val offset = layoutManager.findViewByPosition(position)?.top ?: 0
+        val width = eu.kanade.tachiyomi.ui.reader.manyue.ManyueFoldableController.readingWidthPx(recycler.width)
+        if (eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.updateDisplayWidth(width)) {
+            recycler.post { refreshManyue() }
+        }
         eu.kanade.tachiyomi.ui.reader.manyue.ManyueFoldableController.applyToTree(frame)
         if (position >= 0) {
             recycler.doOnNextLayout { layoutManager.scrollToPositionWithOffset(position, offset) }

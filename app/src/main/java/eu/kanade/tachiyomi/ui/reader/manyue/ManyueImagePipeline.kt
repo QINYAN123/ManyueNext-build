@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -58,6 +59,8 @@ object ManyueImagePipeline {
         strength: Int,
         isAiCombined: Boolean,
     ): ByteArray? = withContext(Dispatchers.Default) {
+        // A zero-strength pass must not decode and lossily re-encode an unchanged image.
+        if (strength <= 0 || isAnimated(bytes)) return@withContext null
         var bmp: Bitmap? = null
         var enhanced: Bitmap? = null
         try {
@@ -77,6 +80,8 @@ object ManyueImagePipeline {
             val out = ByteArrayOutputStream()
             check(outputBitmap.compress(ManyueBitmapEncoding.lossyWebpFormat(), 92, out))
             out.toByteArray()
+        } catch (t: CancellationException) {
+            throw t
         } catch (t: Throwable) {
             null
         } finally {
@@ -145,6 +150,14 @@ object ManyueImagePipeline {
                 classicEnhance(bytes, preferences.classicStrength.get(), isAiCombined = true)
             }
             ManyueEnhancementMode.OFF -> null
+            ManyueEnhancementMode.AUTO -> {
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+                if (ManyueAutoEnhancementPolicy.decide(
+                        bounds.outWidth, ManyueRuntimeState.displayWidthPx, preferences.aiScalePercent.get(),
+                    ).path == ManyueAutoEnhancementPolicy.Path.ORIGINAL_SIZE
+                ) classicEnhance(bytes, preferences.classicStrength.get(), isAiCombined = false) else null
+            }
         }
     }
 }

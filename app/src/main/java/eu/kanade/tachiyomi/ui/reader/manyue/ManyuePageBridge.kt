@@ -81,14 +81,31 @@ class ManyuePageBridge(
     ) {
         cancel()
         val mode = ManyueRuntimeState.modeInt
-        if (mode != ManyueEnhancementMode.AI_2X.value &&
-            mode != ManyueEnhancementMode.AI_2X_CLASSIC.value
-        ) return
+        if (!ManyueEnhancementMode.fromInt(mode).usesAi()) return
         val expectedGeneration = ManyueRuntimeState.generation
         this.identity = identity
-        onState(ManyueEnhancementState.AI_QUEUED, null)
+        if (mode != ManyueEnhancementMode.AUTO.value) onState(ManyueEnhancementState.AI_QUEUED, null)
         startJob = scope.launch {
             try {
+                if (mode == ManyueEnhancementMode.AUTO.value) {
+                    val decision = withContext(Dispatchers.IO) {
+                        val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                        android.graphics.BitmapFactory.decodeByteArray(originalBytes, 0, originalBytes.size, bounds)
+                        ManyueAutoEnhancementPolicy.decide(
+                            bounds.outWidth, ManyueRuntimeState.displayWidthPx, ManyueRuntimeState.aiScalePercent,
+                        )
+                    }
+                    if (!isCurrentBeforeToken(identity, mode, expectedGeneration)) return@launch
+                    if (decision.path == ManyueAutoEnhancementPolicy.Path.ORIGINAL_SIZE) {
+                        onState(ManyueEnhancementState.SKIPPED, "智能模式当前选择原尺寸，未运行 AI")
+                        return@launch
+                    }
+                    if (decision.path == ManyueAutoEnhancementPolicy.Path.WAIT_FOR_WIDTH) {
+                        onState(ManyueEnhancementState.SKIPPED, "阅读区宽度尚未确定，暂时保留原图")
+                        return@launch
+                    }
+                    onState(ManyueEnhancementState.AI_QUEUED, null)
+                }
                 val t = withContext(Dispatchers.IO) {
                     ManyueAiRequestFactory.enqueue(
                         context = context,
@@ -117,11 +134,19 @@ class ManyuePageBridge(
                 token = t
 
                 val strength = ManyueRuntimeState.classicStrength
-                val wantClassic = (mode == ManyueEnhancementMode.AI_2X_CLASSIC.value)
+                val wantClassic = ManyueEnhancementMode.fromInt(mode).usesClassic()
                 val completionListener = ManyueAiUpscaler.OnAiCompleteListener { tok, state, detail ->
                     if (!isCurrent(t, identity, mode, expectedGeneration)) return@OnAiCompleteListener
                     if (state == ManyueAiUpscaler.STATE_PROCESSING) {
                         onState(ManyueEnhancementState.AI_PROCESSING, null)
+                        return@OnAiCompleteListener
+                    }
+                    if (state == ManyueAiUpscaler.STATE_PREPARING || state == ManyueAiUpscaler.STATE_WAITING_RESOURCES) {
+                        onState(
+                            if (state == ManyueAiUpscaler.STATE_PREPARING) ManyueEnhancementState.AI_PREPARING
+                            else ManyueEnhancementState.AI_WAITING_RESOURCES,
+                            null,
+                        )
                         return@OnAiCompleteListener
                     }
                     if (state == ManyueAiUpscaler.STATE_CANCELLED) {
@@ -166,7 +191,7 @@ class ManyuePageBridge(
                         var baseCacheLease: ManyueEnhancementCache.CacheLease? = null
                         var imageCacheLease: ManyueEnhancementCache.CacheLease? = null
                         try {
-                            if (!awaitDisplayPause(t, identity, mode, expectedGeneration)) return@launch
+                            // Prepare/cache/decode while scrolling or while this bound page is offscreen.
                             // Never hold the global decode lock while waiting for visibility:
                             // an attached offscreen Pager page may remain hidden indefinitely.
                             val display = renderMutex.withLock {
@@ -222,7 +247,10 @@ class ManyuePageBridge(
                                 }
                                 DisplayResult(image, baseImage, state, displayDetail)
                             } ?: return@launch
-                            if (!awaitDisplayPause(t, identity, mode, expectedGeneration)) return@launch
+                            if (!isCurrent(t, identity, mode, expectedGeneration)) return@launch
+                            // Native/cache work is already done, but the first source decode owns
+                            // the strip's geometry and first-load callback. Do not freeze a placeholder.
+                            if (!awaitSourceReady(t, identity, mode, expectedGeneration)) return@launch
                             stageFile(
                                 image = display.image,
                                 baseImage = display.baseImage,
@@ -272,6 +300,20 @@ class ManyuePageBridge(
         val state: ManyueEnhancementState,
         val detail: String?,
     )
+
+    private suspend fun awaitSourceReady(
+        expectedToken: String,
+        expectedIdentity: Identity,
+        expectedMode: Int,
+        expectedGeneration: Long,
+    ): Boolean {
+        while (isCurrent(expectedToken, expectedIdentity, expectedMode, expectedGeneration)) {
+            if (!view.isAttachedToWindow) awaitAttachment()
+            else if (view.isManyueImageReady()) return true
+            else delay(32L)
+        }
+        return false
+    }
 
     private suspend fun awaitDisplayPause(
         expectedToken: String,
@@ -384,6 +426,7 @@ class ManyuePageBridge(
         var quietSince = 0L
         lateinit var beginStage: (ManyueEnhancementCache.CachedImage, Boolean) -> Unit
         beginStage = { target, mayFallback ->
+            val stageStartedAt = SystemClock.elapsedRealtime()
             var callbackRanSynchronously = false
             var displayFailureReported = false
             val requestId = view.setTiledImagePreservingCurrent(
@@ -393,7 +436,10 @@ class ManyuePageBridge(
                     isCurrent(token, expectedIdentity, expectedMode, expectedGeneration)
                 },
                 maySwap = {
-                    if (view.isManyueInteractionActive()) {
+                    if (recycler is WebtoonRecyclerView) {
+                        view.isAttachedToWindow && view.isShown && view.getGlobalVisibleRect(Rect()) &&
+                            recycler.canSwapManyueImage()
+                    } else if (view.isManyueInteractionActive()) {
                         quietSince = 0L
                         false
                     } else if (recycler == null) {
@@ -416,13 +462,14 @@ class ManyuePageBridge(
                     }
                 },
                 onReady = { _, _ ->
+                    (recycler as? WebtoonRecyclerView)?.noteManyueImageSwap()
                     callbackRanSynchronously = true
                     stagedImageId = null
                     onEnhancedDimensions(target.width, target.height)
                     onState(readyState, readyDetail)
                     logcat {
                         "Manyue reader replace chapter=${expectedIdentity.chapterId} " +
-                            "page=${expectedIdentity.pageIndex} token=$token"
+                            "page=${expectedIdentity.pageIndex} token=$token stageWaitMs=${SystemClock.elapsedRealtime() - stageStartedAt}"
                     }
                 },
                 onError = { error ->

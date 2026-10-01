@@ -60,19 +60,23 @@ object ManyueFoldableController {
         synchronized(nativeSamples) { nativeSamples.clear() }
     }
 
-    fun applyToView(view: View, screenWidthPx: Int) {
-        val parentWidth = (view.parent as? View)?.width?.takeIf { it > 0 }
-        val availableWidth = minOf(screenWidthPx, parentWidth ?: screenWidthPx)
+    fun readingWidthPx(availableWidth: Int): Int {
         val mode = ManyueRuntimeState.foldableMode
         val shouldUseFullWidth = !isFoldable() || mode == 0 || availableWidth <= 0
         val samples = synchronized(nativeSamples) { nativeSamples.toList() }
         val manual = ManyueRuntimeState.foldableTargetWidth
-        val targetWidth = if (shouldUseFullWidth) {
+        return if (shouldUseFullWidth) {
             availableWidth
         } else {
             ManyueFoldableWidthPolicy.computeTargetWidth(availableWidth, samples, mode, manual)
                 .coerceAtMost(availableWidth)
         }
+    }
+
+    fun applyToView(view: View, screenWidthPx: Int) {
+        val parentWidth = (view.parent as? View)?.width?.takeIf { it > 0 }
+        val availableWidth = minOf(screenWidthPx, parentWidth ?: screenWidthPx)
+        val targetWidth = readingWidthPx(availableWidth)
         view.post {
             val lp = view.layoutParams
             var layoutChanged = false

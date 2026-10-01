@@ -381,8 +381,12 @@ class ReaderActivity : BaseActivity() {
             eu.kanade.tachiyomi.ui.reader.manyue.ManyueEnhancementMode.OFF.value
 
     fun onManyueClassicStrengthChanged(strength: Int) {
-        eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.updateClassicStrength(strength)
-        viewModel.state.value.viewer?.refreshManyue()
+        val runtime = eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState
+        val previous = runtime.classicStrength
+        runtime.updateClassicStrength(strength)
+        if (previous != runtime.classicStrength &&
+            eu.kanade.tachiyomi.ui.reader.manyue.ManyueEnhancementMode.fromInt(runtime.modeInt).usesClassic()
+        ) viewModel.state.value.viewer?.refreshManyue()
     }
 
     fun onManyueAiScaleChanged(percent: Int) {

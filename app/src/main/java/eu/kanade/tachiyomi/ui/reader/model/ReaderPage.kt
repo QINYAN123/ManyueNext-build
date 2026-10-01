@@ -18,6 +18,19 @@ open class ReaderPage(
     private val mutableSourceImageInfo = MutableStateFlow<SourceImageInfo>(SourceImageInfo.Loading)
     val sourceImageInfo = mutableSourceImageInfo.asStateFlow()
 
+    /** Clear stale applied dimensions before a new stream/settings generation starts loading. */
+    fun resetEnhancementState(mode: Int) {
+        updateEnhancementState(
+            when {
+                eu.kanade.tachiyomi.ui.reader.manyue.ManyueEnhancementMode.fromInt(mode).usesAi() ->
+                    ManyueEnhancementState.AI_QUEUED
+                mode == eu.kanade.tachiyomi.ui.reader.manyue.ManyueEnhancementMode.CLASSIC.value ->
+                    ManyueEnhancementState.CLASSIC_PROCESSING
+                else -> ManyueEnhancementState.ORIGINAL
+            },
+        )
+    }
+
     fun updateSourceImageInfo(info: SourceImageInfo) {
         mutableSourceImageInfo.update { current ->
             when {

@@ -33,6 +33,8 @@ fun ReaderPageIndicator(
         classicProcessing = stringResource(MR.strings.reader_enhancement_classic_processing),
         classicReady = stringResource(MR.strings.reader_enhancement_classic_ready),
         aiQueued = stringResource(MR.strings.reader_enhancement_ai_queued),
+        aiPreparing = stringResource(MR.strings.reader_enhancement_ai_preparing),
+        aiWaitingResources = stringResource(MR.strings.reader_enhancement_ai_waiting_resources),
         aiProcessing = stringResource(MR.strings.reader_enhancement_ai_processing),
         aiWaitingDisplay = stringResource(MR.strings.reader_enhancement_ai_waiting_display),
         aiReady = stringResource(MR.strings.reader_enhancement_ai_ready),

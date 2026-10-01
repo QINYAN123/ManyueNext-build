@@ -7,6 +7,7 @@ import java.io.ByteArrayOutputStream
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -19,7 +20,16 @@ import org.robolectric.util.ReflectionHelpers
 @Config(application = Application::class, sdk = [34], manifest = Config.NONE)
 @LooperMode(LooperMode.Mode.PAUSED)
 class ManyueNativeTargetRequestTest {
-    @Test fun originalSizeEnhancementQueuesTheOriginalPixelsForTheTwoTimesModel() {
+    @Test fun originalSizeEnhancementQueuesTheOriginalPixelsForTheTwoTimesModel() =
+        checkRequest(mode = 2, scalePercent = 100, displayWidth = 0, expectedTarget = 8)
+
+    @Test fun automaticUpscaleQueuesOriginalPixelsAndOnlyTheNecessaryTargetWidth() =
+        checkRequest(mode = 4, scalePercent = 200, displayWidth = 12, expectedTarget = 12)
+
+    @Test fun automaticWideSourceCreatesNoNativeRequestOrInputFile() =
+        checkRequest(mode = 4, scalePercent = 200, displayWidth = 6, expectedTarget = null)
+
+    private fun checkRequest(mode: Int, scalePercent: Int, displayWidth: Int, expectedTarget: Int?) {
         val context: Application = RuntimeEnvironment.getApplication()
         val runtime = ManyueAiRuntime
         val scheduler = ManyueAiUpscaler
@@ -38,8 +48,8 @@ class ManyueNativeTargetRequestTest {
             context.applicationInfo.nativeLibraryDir = context.cacheDir.resolve("test-native").path
             probeField.set(null, context.applicationInfo.nativeLibraryDir to ManyueAiRuntime.Capability.READY)
             startedField.setBoolean(null, true)
-            ManyueRuntimeState.updateMode(ManyueEnhancementMode.AI_2X.value)
-            ManyueRuntimeState.updateAiScale(100)
+            ManyueRuntimeState.updateMode(mode)
+            ManyueRuntimeState.updateAiScale(scalePercent)
             val bitmap = Bitmap.createBitmap(8, 17, Bitmap.Config.ARGB_8888)
             val originalBytes = ByteArrayOutputStream().use { output ->
                 bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)
@@ -48,12 +58,19 @@ class ManyueNativeTargetRequestTest {
             bitmap.recycle()
             val originalCopy = originalBytes.clone()
 
+            val inputsBefore = context.cacheDir.listFiles()?.filter { it.name.startsWith("manyue_in_") }?.toSet()
             token = ManyueAiRequestFactory.enqueue(
                 context,
                 ManyuePageBridge.Identity(7901, 7902, 0),
                 originalBytes,
                 priority = 100,
+                displayWidthPx = displayWidth,
             )
+            if (expectedTarget == null) {
+                assertNull(token)
+                assertEquals(inputsBefore, context.cacheDir.listFiles()?.filter { it.name.startsWith("manyue_in_") }?.toSet())
+                return
+            }
             assertNotNull("1x target must enqueue real x2 inference instead of bypassing AI", token)
             val requestsField = scheduler.javaClass.getDeclaredField("requests").apply { isAccessible = true }
             @Suppress("UNCHECKED_CAST")
@@ -61,7 +78,7 @@ class ManyueNativeTargetRequestTest {
             val request = requireNotNull(requests[token])
             assertEquals(8, request.sourceWidth)
             assertEquals(17, request.sourceHeight)
-            assertEquals(8, request.targetWidth)
+            assertEquals(expectedTarget.toInt(), request.targetWidth)
             assertEquals(2, request.model.scale)
             assertArrayEquals(originalCopy, originalBytes)
             assertArrayEquals(originalCopy, request.inputFile.readBytes())

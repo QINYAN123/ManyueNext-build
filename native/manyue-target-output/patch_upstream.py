@@ -121,8 +121,67 @@ def wrap_ncnn_status_calls(text: str, label: str) -> tuple[str, dict[str, int]]:
     return text, counts
 
 
+def harden_input_read(text: str, variant: str) -> str:
+    if variant == "realesr":
+        old = ("                fseek(fp, 0, SEEK_END);\n"
+               "                length = ftell(fp);\n"
+               "                rewind(fp);\n"
+               "                filedata = (unsigned char *) malloc(length);\n"
+               "                if (filedata) {\n"
+               "                    fread(filedata, 1, length, fp);\n"
+               "                }\n"
+               "                fclose(fp);")
+        allocation = "(unsigned char *)"
+    else:
+        old = ("                fseek(fp, 0, SEEK_END);\n"
+               "                length = ftell(fp);\n"
+               "                rewind(fp);\n"
+               "                filedata = (unsigned char*)malloc(length);\n"
+               "                if (filedata)\n"
+               "                {\n"
+               "                    fread(filedata, 1, length, fp);\n"
+               "                }\n"
+               "                fclose(fp);")
+        allocation = "(unsigned char*)"
+    new = ("                if (fseek(fp, 0, SEEK_END) != 0) {\n"
+           "                    fclose(fp);\n"
+           "                    fprintf(stderr, \"input seek failed\\n\");\n"
+           "                    exit(EXIT_FAILURE);\n"
+           "                }\n"
+           "                const long input_length = ftell(fp);\n"
+           "                if (input_length <= 0 || input_length > INT_MAX) {\n"
+           "                    fclose(fp);\n"
+           "                    fprintf(stderr, \"invalid input file length\\n\");\n"
+           "                    exit(EXIT_FAILURE);\n"
+           "                }\n"
+           "                length = (int)input_length;\n"
+           "                if (fseek(fp, 0, SEEK_SET) != 0) {\n"
+           "                    free(filedata);\n"
+           "                    fclose(fp);\n"
+           "                    fprintf(stderr, \"input rewind failed\\n\");\n"
+           "                    exit(EXIT_FAILURE);\n"
+           "                }\n"
+           f"                filedata = {allocation}malloc((size_t)length);\n"
+           "                if (!filedata) {\n"
+           "                    fclose(fp);\n"
+           "                    fprintf(stderr, \"input allocation failed\\n\");\n"
+           "                    exit(EXIT_FAILURE);\n"
+           "                }\n"
+           "                const size_t bytes_read = fread(filedata, 1, (size_t)length, fp);\n"
+           "                const int read_error = ferror(fp);\n"
+           "                const int close_error = fclose(fp);\n"
+           "                if (bytes_read != (size_t)length || read_error || close_error != 0) {\n"
+           "                    free(filedata);\n"
+           "                    filedata = 0;\n"
+           "                    fprintf(stderr, \"input read/close failed\\n\");\n"
+           "                    exit(EXIT_FAILURE);\n"
+           "                }")
+    return replace_once(text, old, new, f"check {variant} input read and allocation")
+
+
 def patch_source(source_root: Path, destination: Path, variant: str,
-                 helper_header: Path, status_header: Path, cmake_template: Path) -> None:
+                 helper_header: Path, status_header: Path,
+                 file_output_header: Path, cmake_template: Path) -> None:
     module, _target, _binary = UPSTREAM_MODULES[variant]
     source_module = source_root / "RealSR-NCNN-Android-CLI" / module / "src" / "main" / "jni"
     if not (source_module / "main.cpp").is_file():
@@ -131,6 +190,7 @@ def patch_source(source_root: Path, destination: Path, variant: str,
     shutil.copytree(source_module, destination, dirs_exist_ok=True)
     shutil.copy2(helper_header, destination / "manyue_output_resize.h")
     shutil.copy2(status_header, destination / "manyue_ncnn_status.h")
+    shutil.copy2(file_output_header, destination / "manyue_file_output.h")
 
     main_file = destination / "main.cpp"
     text = main_file.read_text(encoding="utf-8")
@@ -150,8 +210,9 @@ def patch_source(source_root: Path, destination: Path, variant: str,
                             '#include "realcugan.h"\n#include "manyue_ncnn_status.h"\n',
                             "include ncnn status checker")
     text = replace_once(text, "#include <stdio.h>\n",
-                        "#include <stdio.h>\n#include <stdlib.h>\n#include <iostream>\n",
+                        "#include <stdio.h>\n#include <stdlib.h>\n#include <limits.h>\n#include <iostream>\n",
                         "include standard runtime declarations directly")
+    text = harden_input_read(text, variant)
 
     text = text.replace('"i:o:s:c:t:m:g:j:f:vxh"', '"i:o:s:c:t:m:g:j:f:w:vxh"')
     text = text.replace('L"i:o:s:c:t:m:g:j:f:vxh"', 'L"i:o:s:c:t:m:g:j:f:w:vxh"')
@@ -176,7 +237,7 @@ def patch_source(source_root: Path, destination: Path, variant: str,
         text = replace_once(text, "int webp;\n//    bool check;", "int webp;\n    int target_width;\n    int target_height;\n    bool resize_failed;\n    bool resize_applied;\n//    bool check;", "add RealSR task target size")
         text = replace_once(text, "case L's':\n            scale = _wtoi(optarg);\n            break;", "case L's':\n            scale = _wtoi(optarg);\n            break;\n        case L'w':\n            target_width = _wtoi(optarg);\n            break;", "parse wide RealSR target width")
         text = replace_once(text, "case 's':\n                scale = atoi(optarg);\n                break;", "case 's':\n                scale = atoi(optarg);\n                break;\n            case 'w':\n                target_width = atoi(optarg);\n                break;", "parse RealSR target width")
-        text = replace_once(text, "        if (pixeldata) {\n            Task v;", "        if (pixeldata) {\n            manyue_output::Size target_size;\n            if (!manyue_output::compute_target_size(w, h, ltp->target_width, &target_size)) {\n                fprintf(stderr, \"invalid target width %d for source %dx%d\\n\", ltp->target_width, w, h);\n                free(pixeldata);\n                continue;\n            }\n            Task v;", "validate RealSR per-image target width")
+        text = replace_once(text, "        if (pixeldata) {\n            Task v;", "        if (pixeldata) {\n            manyue_output::Size target_size;\n            if (!manyue_output::compute_target_size(w, h, ltp->target_width, &target_size)) {\n                fprintf(stderr, \"invalid target width %d for source %dx%d\\n\", ltp->target_width, w, h);\n                free(pixeldata);\n                exit(EXIT_FAILURE);\n            }\n            Task v;", "validate RealSR per-image target width")
         text = replace_once(text, "            v.id = i;\n            v.inpath = imagepath;", "            v.id = i;\n            v.webp = 0;\n            v.target_width = target_size.width;\n            v.target_height = target_size.height;\n            v.resize_failed = false;\n            v.resize_applied = false;\n            v.inpath = imagepath;", "initialize RealSR task target size")
     else:
         text = replace_once(text, "    int scale = 2;", "    int scale = 2;\n    int target_width = 0;", "declare RealCUGAN target width")
@@ -184,8 +245,16 @@ def patch_source(source_root: Path, destination: Path, variant: str,
         text = replace_once(text, "    int scale;\n\n    path_t inpath;", "    int scale;\n    int target_width;\n    int target_height;\n    bool resize_failed;\n    bool resize_applied;\n\n    path_t inpath;", "add RealCUGAN task target size")
         text = replace_once(text, "case L's':\n            scale = _wtoi(optarg);\n            break;", "case L's':\n            scale = _wtoi(optarg);\n            break;\n        case L'w':\n            target_width = _wtoi(optarg);\n            break;", "parse wide RealCUGAN target width")
         text = replace_once(text, "case 's':\n            scale = atoi(optarg);\n            break;", "case 's':\n            scale = atoi(optarg);\n            break;\n        case 'w':\n            target_width = atoi(optarg);\n            break;", "parse RealCUGAN target width")
-        text = replace_once(text, "        if (pixeldata)\n        {\n            Task v;", "        if (pixeldata)\n        {\n            manyue_output::Size target_size;\n            if (!manyue_output::compute_target_size(w, h, ltp->target_width, &target_size))\n            {\n                fprintf(stderr, \"invalid target width %d for source %dx%d\\n\", ltp->target_width, w, h);\n                free(pixeldata);\n                continue;\n            }\n            Task v;", "validate RealCUGAN per-image target width")
+        text = replace_once(text, "        if (pixeldata)\n        {\n            Task v;", "        if (pixeldata)\n        {\n            manyue_output::Size target_size;\n            if (!manyue_output::compute_target_size(w, h, ltp->target_width, &target_size))\n            {\n                fprintf(stderr, \"invalid target width %d for source %dx%d\\n\", ltp->target_width, w, h);\n                free(pixeldata);\n                exit(EXIT_FAILURE);\n            }\n            Task v;", "validate RealCUGAN per-image target width")
         text = replace_once(text, "            v.id = i;\n            v.webp = webp;\n            v.scale = scale;", "            v.id = i;\n            v.webp = webp;\n            v.scale = scale;\n            v.target_width = target_size.width;\n            v.target_height = target_size.height;\n            v.resize_failed = false;\n            v.resize_applied = false;", "initialize RealCUGAN task target size")
+
+    text = replace_once(
+        text,
+        '            fprintf(stderr, "decode image %s failed\\n", imagepath.c_str());',
+        '            fprintf(stderr, "decode image %s failed\\n", imagepath.c_str());\n'
+        '            exit(EXIT_FAILURE);',
+        f"fail {variant} when a page cannot be decoded",
+    )
 
     # The app always requests the fixed 2x model path. -w changes only the
     # output dimensions after inference and cannot lower model compute.
@@ -273,17 +342,54 @@ def patch_source(source_root: Path, destination: Path, variant: str,
     # resized, while keeping an untouched native-2x result lossless.
     webp_file = destination / "webp_image.h"
     webp_text = webp_file.read_text(encoding="utf-8")
+    webp_text = replace_once(webp_text, "#include <stdio.h>\n",
+                             '#include <stdio.h>\n#include "manyue_file_output.h"\n',
+                             "include checked output writer")
+    webp_text = replace_once(webp_text, "    FILE* fp = 0;\n",
+                             "    FILE* fp = 0;\n"
+                             "    int write_ok = 0;\n"
+                             "    int flush_ok = 0;\n"
+                             "    int close_ok = 0;\n",
+                             "declare WebP output status before goto paths")
     if "#include <limits.h>" not in webp_text:
         webp_text = replace_once(webp_text, "#include <stdlib.h>\n",
                                  "#include <stdlib.h>\n#include <limits.h>\n",
                                  "include bounds for WebP quality encoder")
+    webp_text = replace_once(
+        webp_text,
+        "    fwrite(output, 1, length, fp);\n\n    ret = 1;",
+        "    write_ok = fwrite(output, 1, length, fp) == length;\n"
+        "    flush_ok = fflush(fp) == 0;\n"
+        "    close_ok = fclose(fp) == 0;\n"
+        "    fp = 0;\n"
+        "    ret = write_ok && flush_ok && close_ok ? 1 : 0;",
+        "check lossless WebP file writes",
+    )
+    webp_text = replace_once(
+        webp_text,
+        "RETURN:\n    if (output) WebPFree(output);\n    if (fp) fclose(fp);\n\n    return ret;",
+        "RETURN:\n    if (output) WebPFree(output);\n"
+        "    if (fp && fclose(fp) != 0) ret = 0;\n"
+        "    if (!ret && filepath) {\n"
+        "#if _WIN32\n"
+        "        _wremove(filepath);\n"
+        "#else\n"
+        "        remove(filepath);\n"
+        "#endif\n"
+        "    }\n\n"
+        "    return ret;",
+        "remove failed lossless WebP output",
+    )
     quality95_writer = r'''#ifndef _WIN32
 int webp_save_quality95(const char* filepath, int w, int h, int c,
                         const unsigned char* pixeldata)
 {
     if (!filepath || !pixeldata || w <= 0 || h <= 0 ||
         (c != 3 && c != 4) || w > INT_MAX / c)
+    {
+        if (filepath) remove(filepath);
         return 0;
+    }
 
     unsigned char* output = 0;
     const int stride = w * c;
@@ -291,18 +397,22 @@ int webp_save_quality95(const char* filepath, int w, int h, int c,
         ? WebPEncodeRGB(pixeldata, w, h, stride, 95.0f, &output)
         : WebPEncodeRGBA(pixeldata, w, h, stride, 95.0f, &output);
     if (length == 0 || !output)
+    {
+        if (output) WebPFree(output);
+        remove(filepath);
         return 0;
+    }
 
-    FILE* fp = fopen(filepath, "wb");
-    if (!fp)
+    manyue_output::CFileOutputContext file_context = {0};
+    manyue_output::CheckedFileOutput file_output;
+    if (!manyue_output::open_file_output(filepath, &file_context, &file_output))
     {
         WebPFree(output);
         return 0;
     }
-    const bool write_ok = fwrite(output, 1, length, fp) == length;
-    const bool close_ok = fclose(fp) == 0;
+    const bool write_ok = file_output.write_bytes(output, length);
     WebPFree(output);
-    return write_ok && close_ok ? 1 : 0;
+    return file_output.finish(write_ok) ? 1 : 0;
 }
 #endif
 
@@ -316,8 +426,8 @@ int webp_save_quality95(const char* filepath, int w, int h, int c,
     text = replace_once(
         text,
         "        int success = 0;\n",
-        "        if (v.resize_failed) {\n            fprintf(stderr, \"target resize failed; output skipped\\n\");\n            continue;\n        }\n\n        int success = 0;\n",
-        "skip output after failed resize",
+        "        if (v.resize_failed) {\n            fprintf(stderr, \"target resize failed; worker aborting\\n\");\n            remove(v.outpath.c_str());\n            exit(EXIT_FAILURE);\n        }\n\n        int success = 0;\n",
+        "fail the worker after target resize failure",
     )
     save_start = text.index("void *save" if variant == "realesr" else "void* save")
     encode_start = text.index('        if (ext != PATHSTR("gif"))', save_start)
@@ -345,8 +455,18 @@ int webp_save_quality95(const char* filepath, int w, int h, int c,
             success = wic_encode_image(v.outpath.c_str(), v.outimage.w, v.outimage.h,
                                        v.outimage.elempack, v.outimage.data);
 #else
-            success = stbi_write_png(v.outpath.c_str(), v.outimage.w, v.outimage.h,
-                                     v.outimage.elempack, v.outimage.data, 0);
+            manyue_output::CFileOutputContext file_context = {0};
+            manyue_output::CheckedFileOutput file_output;
+            if (manyue_output::open_file_output(v.outpath.c_str(), &file_context, &file_output))
+            {
+                const int encode_status = stbi_write_png_to_func(
+                        manyue_output::CheckedFileOutput::stbi_write_callback,
+                        &file_output, v.outimage.w, v.outimage.h, v.outimage.elempack,
+                        v.outimage.data, 0);
+                success = file_output.finish(encode_status != 0) ? 1 : 0;
+            }
+            else
+                success = 0;
 #endif
         }
         else if (ext == PATHSTR("jpg") || ext == PATHSTR("JPG") ||
@@ -356,12 +476,35 @@ int webp_save_quality95(const char* filepath, int w, int h, int c,
             success = wic_encode_jpeg_image(v.outpath.c_str(), v.outimage.w, v.outimage.h,
                                             v.outimage.elempack, v.outimage.data);
 #else
-            success = stbi_write_jpg(v.outpath.c_str(), v.outimage.w, v.outimage.h,
-                                     v.outimage.elempack, v.outimage.data, 100);
+            manyue_output::CFileOutputContext file_context = {0};
+            manyue_output::CheckedFileOutput file_output;
+            if (manyue_output::open_file_output(v.outpath.c_str(), &file_context, &file_output))
+            {
+                const int encode_status = stbi_write_jpg_to_func(
+                        manyue_output::CheckedFileOutput::stbi_write_callback,
+                        &file_output, v.outimage.w, v.outimage.h, v.outimage.elempack,
+                        v.outimage.data, 100);
+                success = file_output.finish(encode_status != 0) ? 1 : 0;
+            }
+            else
+                success = 0;
 #endif
         }
 '''
     text = text[:encode_start] + encoder + text[encode_end:]
+
+    if variant == "realesr":
+        failed_write = '            fprintf(stderr, "save result failed: %s\\n", v.outpath.c_str());'
+        failed_write_abort = (failed_write + "\n"
+                              "            remove(v.outpath.c_str());\n"
+                              "            exit(EXIT_FAILURE);")
+    else:
+        failed_write = '            fprintf(stderr, "encode image %s failed\\n", v.outpath.c_str());'
+        failed_write_abort = (failed_write + "\n"
+                              "            remove(v.outpath.c_str());\n"
+                              "            exit(EXIT_FAILURE);")
+    text = replace_once(text, failed_write, failed_write_abort,
+                        f"abort {variant} after output encoder failure")
 
     # Carry the width request from the CLI into the load workers.
     text = replace_once(text, "            ltp.scale = scale;", "            ltp.scale = scale;\n            ltp.target_width = target_width;", "pass target width to workers")
@@ -476,11 +619,12 @@ def main() -> None:
     parser.add_argument("--variant", choices=sorted(UPSTREAM_MODULES), required=True)
     parser.add_argument("--helper-header", type=Path, required=True)
     parser.add_argument("--status-header", type=Path, required=True)
+    parser.add_argument("--file-output-header", type=Path, required=True)
     parser.add_argument("--cmake-template", type=Path, required=True)
     args = parser.parse_args()
     patch_source(args.source_root.resolve(), args.destination.resolve(), args.variant,
                  args.helper_header.resolve(), args.status_header.resolve(),
-                 args.cmake_template.resolve())
+                 args.file_output_header.resolve(), args.cmake_template.resolve())
 
 
 if __name__ == "__main__":

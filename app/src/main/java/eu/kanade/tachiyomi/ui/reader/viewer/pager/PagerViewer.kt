@@ -98,6 +98,14 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
     }
 
     init {
+        pager.addOnLayoutChangeListener { _, left, _, right, _, oldLeft, _, oldRight, _ ->
+            if (right - left > 0 && right - left != oldRight - oldLeft) {
+                val width = eu.kanade.tachiyomi.ui.reader.manyue.ManyueFoldableController.readingWidthPx(right - left)
+                if (eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.updateDisplayWidth(width)) {
+                    pager.post { refreshManyue() }
+                }
+            }
+        }
         pager.isVisible = false // Don't layout the pager yet
         pager.layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT)
         pager.isFocusable = false
@@ -167,6 +175,10 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
     }
 
     override fun reapplyManyueWidth() {
+        val width = eu.kanade.tachiyomi.ui.reader.manyue.ManyueFoldableController.readingWidthPx(pager.width)
+        if (eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.updateDisplayWidth(width)) {
+            pager.post { refreshManyue() }
+        }
         eu.kanade.tachiyomi.ui.reader.manyue.ManyueFoldableController.applyToTree(pager)
     }
 

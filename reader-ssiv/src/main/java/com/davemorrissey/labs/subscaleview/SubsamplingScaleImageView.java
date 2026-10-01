@@ -14,6 +14,7 @@ import android.graphics.Rect;
 import android.graphics.RectF;
 import android.os.AsyncTask;
 import android.os.Handler;
+import android.os.Looper;
 import android.util.AttributeSet;
 import android.util.DisplayMetrics;
 import android.util.Log;
@@ -41,6 +42,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.Executor;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
@@ -137,6 +140,11 @@ public class SubsamplingScaleImageView extends View {
     // overrides for the dimensions of the generated tiles
     public static final int TILE_SIZE_AUTO = Integer.MAX_VALUE;
     private static final String TAG = SubsamplingScaleImageView.class.getSimpleName();
+    private static final Executor DETACHED_DISPOSAL_EXECUTOR = Executors.newFixedThreadPool(2, runnable -> {
+        Thread thread = new Thread(runnable, "ssiv-detached-disposal");
+        thread.setDaemon(true);
+        return thread;
+    });
     private static final List<Integer> VALID_ZOOM_STYLES = Arrays.asList(ZOOM_FOCUS_FIXED, ZOOM_FOCUS_CENTER, ZOOM_FOCUS_CENTER_IMMEDIATE);
     private static final List<Integer> VALID_EASING_STYLES = Arrays.asList(EASE_IN_OUT_QUAD, EASE_OUT_QUAD);
     private static final List<Integer> VALID_PAN_LIMITS = Arrays.asList(PAN_LIMIT_INSIDE, PAN_LIMIT_OUTSIDE, PAN_LIMIT_CENTER);
@@ -147,6 +155,8 @@ public class SubsamplingScaleImageView extends View {
     // Optional display profile for CMS
     private static ByteArrayOutputStream displayProfile = new ByteArrayOutputStream();
     private final ReadWriteLock decoderLock = new ReentrantReadWriteLock(true);
+    private final DecoderInitTracker decoderInitTracker = new DecoderInitTracker();
+    private volatile boolean detachedDisposed;
     // Current quickscale state
     private final float quickScaleThreshold;
     // Long click handler
@@ -181,6 +191,7 @@ public class SubsamplingScaleImageView extends View {
     private boolean cropBorders = false;
     // Whether to decode to hardware bitmap
     private boolean hardwareConfig = true;
+    private volatile boolean prepareBaseTilesToDraw;
     private int maxTileWidth = TILE_SIZE_AUTO;
     private int maxTileHeight = TILE_SIZE_AUTO;
     // An executor service for loading of images
@@ -370,6 +381,9 @@ public class SubsamplingScaleImageView extends View {
         if (imageSource == null) {
             throw new NullPointerException("imageSource must not be null");
         }
+        if (detachedDisposed) {
+            throw new IllegalStateException("A detached-disposed view cannot be reused");
+        }
 
         reset(true);
         if (state != null) {
@@ -391,7 +405,8 @@ public class SubsamplingScaleImageView extends View {
                 imageGeneration,
                 sRegion,
                 cropBorders,
-                regionDecoderFactory);
+                regionDecoderFactory,
+                decoderInitTracker);
             execute(task);
         }
     }
@@ -895,6 +910,9 @@ public class SubsamplingScaleImageView extends View {
      */
     @Override
     protected void onDraw(Canvas canvas) {
+        if (detachedDisposed) {
+            return;
+        }
         super.onDraw(canvas);
         createPaints();
 
@@ -1685,6 +1703,90 @@ public class SubsamplingScaleImageView extends View {
         debugTextPaint = null;
         debugLinePaint = null;
         tileBgPaint = null;
+    }
+
+    /**
+     * Permanently disposes a view after its owner has removed it from the view hierarchy.
+     * UI-owned references are detached on the caller (main) thread; decoder and bitmap cleanup
+     * waits for in-flight initialization/region reads on a background executor. This view cannot
+     * be reused after this method.
+     */
+    public final void disposeDetached(@NonNull Runnable onResourcesReleased) {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            throw new IllegalStateException("disposeDetached must be called on the main thread");
+        }
+        if (getParent() != null) {
+            throw new IllegalStateException("Remove the view from its parent before disposing it");
+        }
+        if (detachedDisposed) {
+            throw new IllegalStateException("View has already been detached-disposed");
+        }
+
+        detachedDisposed = true;
+        imageGeneration++;
+        decoderInitTracker.beginDisposal();
+        handler.removeMessages(MESSAGE_LONG_CLICK);
+        onImageEventListener = null;
+        onStateChangedListener = null;
+        onLongClickListener = null;
+        setOnClickListener(null);
+
+        ImageRegionDecoder activeDecoder = decoder;
+        decoder = null;
+        provider = null;
+        regionDecoderFactory = null;
+
+        Bitmap detachedBitmap = bitmap;
+        boolean recycleDetachedBitmap = !bitmapIsCached;
+        bitmap = null;
+        bitmapIsCached = false;
+
+        Map<Integer, List<Tile>> detachedTiles = tileMap;
+        tileMap = null;
+
+        DETACHED_DISPOSAL_EXECUTOR.execute(() -> {
+            List<ImageRegionDecoder> lateDecoders = decoderInitTracker.awaitAndDrainDeferred();
+            decoderLock.writeLock().lock();
+            try {
+                recycleDecoderSafely(activeDecoder);
+                for (ImageRegionDecoder lateDecoder : lateDecoders) {
+                    recycleDecoderSafely(lateDecoder);
+                }
+                if (recycleDetachedBitmap && detachedBitmap != null && !detachedBitmap.isRecycled()) {
+                    detachedBitmap.recycle();
+                }
+                if (detachedTiles != null) {
+                    for (List<Tile> tiles : detachedTiles.values()) {
+                        for (Tile tile : tiles) {
+                            Bitmap tileBitmap = tile.bitmap;
+                            tile.bitmap = null;
+                            if (tileBitmap != null && !tileBitmap.isRecycled()) {
+                                tileBitmap.recycle();
+                            }
+                        }
+                    }
+                }
+            } finally {
+                decoderLock.writeLock().unlock();
+                onResourcesReleased.run();
+            }
+        });
+    }
+
+    /** Prepare only staged base-layer tiles before they are made visible. Disabled for normal pages. */
+    public void setPrepareBaseTilesToDraw(boolean enabled) {
+        prepareBaseTilesToDraw = enabled;
+    }
+
+    private static void recycleDecoderSafely(ImageRegionDecoder decoder) {
+        if (decoder == null) {
+            return;
+        }
+        try {
+            decoder.recycle();
+        } catch (Exception e) {
+            Log.w(TAG, "Failed to recycle bitmap decoder", e);
+        }
     }
 
     /**
@@ -2772,6 +2874,56 @@ public class SubsamplingScaleImageView extends View {
 
     }
 
+    private static final class DecoderInitTracker {
+        private int pending;
+        private boolean disposing;
+        private final List<ImageRegionDecoder> deferredDecoders = new ArrayList<>();
+
+        synchronized boolean tryBegin() {
+            if (disposing) {
+                return false;
+            }
+            pending++;
+            return true;
+        }
+
+        synchronized boolean deferIfDisposing(ImageRegionDecoder decoder) {
+            if (!disposing || decoder == null) {
+                return false;
+            }
+            deferredDecoders.add(decoder);
+            return true;
+        }
+
+        synchronized void beginDisposal() {
+            disposing = true;
+        }
+
+        synchronized void finish() {
+            if (pending > 0) {
+                pending--;
+            }
+            notifyAll();
+        }
+
+        synchronized List<ImageRegionDecoder> awaitAndDrainDeferred() {
+            boolean interrupted = false;
+            while (pending > 0) {
+                try {
+                    wait();
+                } catch (InterruptedException e) {
+                    interrupted = true;
+                }
+            }
+            List<ImageRegionDecoder> result = new ArrayList<>(deferredDecoders);
+            deferredDecoders.clear();
+            if (interrupted) {
+                Thread.currentThread().interrupt();
+            }
+            return result;
+        }
+    }
+
     /**
      * Async task used to get image details without blocking the UI thread.
      */
@@ -2783,6 +2935,9 @@ public class SubsamplingScaleImageView extends View {
         private final Rect sourceRegion;
         private final boolean cropBorders;
         private final ImageRegionDecoderFactory regionDecoderFactory;
+        private final DecoderInitTracker decoderInitTracker;
+        private final AtomicBoolean initRegistrationStarted = new AtomicBoolean();
+        private final AtomicBoolean initRegistrationFinished = new AtomicBoolean();
         private ImageRegionDecoder decoder;
         private Exception exception;
 
@@ -2793,7 +2948,8 @@ public class SubsamplingScaleImageView extends View {
             long imageGeneration,
             Rect sourceRegion,
             boolean cropBorders,
-            ImageRegionDecoderFactory regionDecoderFactory) {
+            ImageRegionDecoderFactory regionDecoderFactory,
+            DecoderInitTracker decoderInitTracker) {
             this.viewRef = new WeakReference<>(view);
             this.contextRef = new WeakReference<>(context);
             this.providerRef = new WeakReference<>(provider);
@@ -2801,10 +2957,15 @@ public class SubsamplingScaleImageView extends View {
             this.sourceRegion = sourceRegion == null ? null : new Rect(sourceRegion);
             this.cropBorders = cropBorders;
             this.regionDecoderFactory = regionDecoderFactory;
+            this.decoderInitTracker = decoderInitTracker;
         }
 
         @Override
         protected int[] doInBackground(Void... params) {
+            if (!decoderInitTracker.tryBegin()) {
+                return null;
+            }
+            initRegistrationStarted.set(true);
             try {
                 Context context = contextRef.get();
                 SubsamplingScaleImageView view = viewRef.get();
@@ -2858,23 +3019,32 @@ public class SubsamplingScaleImageView extends View {
                 }
             } finally {
                 recycleDecoder();
+                finishRegistration();
             }
         }
 
         @Override
         protected void onCancelled(int[] xy) {
-            recycleDecoder();
+            try {
+                recycleDecoder();
+            } finally {
+                finishRegistration();
+            }
         }
 
         private void recycleDecoder() {
             ImageRegionDecoder initializedDecoder = decoder;
             decoder = null;
             if (initializedDecoder != null) {
-                try {
-                    initializedDecoder.recycle();
-                } catch (Exception e) {
-                    Log.w(TAG, "Failed to recycle bitmap decoder", e);
+                if (!decoderInitTracker.deferIfDisposing(initializedDecoder)) {
+                    recycleDecoderSafely(initializedDecoder);
                 }
+            }
+        }
+
+        private void finishRegistration() {
+            if (initRegistrationStarted.get() && initRegistrationFinished.compareAndSet(false, true)) {
+                decoderInitTracker.finish();
             }
         }
     }
@@ -2913,7 +3083,17 @@ public class SubsamplingScaleImageView extends View {
                             if (view.sRegion != null) {
                                 tile.fileSRect.offset(view.sRegion.left, view.sRegion.top);
                             }
-                            return decoder.decodeRegion(tile.fileSRect, tile.sampleSize);
+                            Bitmap decoded = decoder.decodeRegion(tile.fileSRect, tile.sampleSize);
+                            if (decoded != null && view.prepareBaseTilesToDraw
+                                && tile.sampleSize == view.fullImageSampleSize
+                                && imageGeneration == view.imageGeneration && !view.detachedDisposed) {
+                                try {
+                                    decoded.prepareToDraw();
+                                } catch (RuntimeException e) {
+                                    Log.w(TAG, "Failed to prepare staged base tile for drawing", e);
+                                }
+                            }
+                            return decoded;
                         } else {
                             tile.loading = false;
                         }

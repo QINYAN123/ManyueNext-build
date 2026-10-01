@@ -8,7 +8,7 @@ import tachiyomi.core.common.preference.PreferenceStore
  */
 class ManyueEnhancementPreferences(private val store: PreferenceStore) {
 
-    /** 0=OFF,1=CLASSIC,2=AI_2X,3=AI_2X_CLASSIC */
+    /** 0=OFF,1=CLASSIC,2=AI_2X,3=AI_2X_CLASSIC,4=AUTO */
     val enhancementMode: Preference<Int> =
         store.getInt("manyueEnhancementMode", ManyueEnhancementMode.OFF.value)
 

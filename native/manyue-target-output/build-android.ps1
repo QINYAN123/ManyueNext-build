@@ -94,6 +94,7 @@ $scriptPath = Join-Path $helperDir "patch_upstream.py"
 $templatePath = Join-Path $helperDir "CMakeLists.android.in"
 $resizeHeader = Join-Path $helperDir "manyue_output_resize.h"
 $statusHeader = Join-Path $helperDir "manyue_ncnn_status.h"
+$fileOutputHeader = Join-Path $helperDir "manyue_file_output.h"
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $sourceRoot = Join-Path $workRootPath "upstream"
 
@@ -113,6 +114,7 @@ foreach ($spec in $runnerSpecs) {
     $prepared = Join-Path $workRootPath ("patched\" + $spec.Directory)
     & $PythonLauncher @pythonArgs $scriptPath --source-root $extractedSource --destination $prepared `
         --variant $spec.Variant --helper-header $resizeHeader --status-header $statusHeader `
+        --file-output-header $fileOutputHeader `
         --cmake-template $templatePath
     if ($LASTEXITCODE -ne 0) { throw "Source patch failed for $($spec.Variant)" }
 

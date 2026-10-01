@@ -150,9 +150,10 @@ class PagerPageHolder(
     private suspend fun setImage() {
         progressIndicator?.setProgress(0)
 
-        val streamFn = page.stream ?: return
         // Sync Manyue preferences into process-wide runtime state (cheap, off the IO thread).
         eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.syncFrom(viewer.readerPreferences)
+        item.resetEnhancementState(eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.modeInt)
+        val streamFn = page.stream ?: return
 
         try {
             val (source, isAnimated, background, originalBytes) = withIOContext {
@@ -177,8 +178,7 @@ class PagerPageHolder(
                 // OFF and classic-only do not copy the complete original. AI owns the only full
                 // byte copy because it must persist native process input beyond this call.
                 val originalBytes = if (
-                    mode == eu.kanade.tachiyomi.ui.reader.manyue.ManyueEnhancementMode.AI_2X.value ||
-                    mode == eu.kanade.tachiyomi.ui.reader.manyue.ManyueEnhancementMode.AI_2X_CLASSIC.value
+                    eu.kanade.tachiyomi.ui.reader.manyue.ManyueReaderHook.needsAi(raw, mode)
                 ) raw.peek().readByteArray() else null
                 var source = raw
                 // Manyue enhancement hook (no-op when OFF / animated / failure)
@@ -214,9 +214,13 @@ class PagerPageHolder(
             }
             // Kick off async AI upscale (no-op when OFF/CLASSIC/unsupported/animated).
             // Callback verifies page identity before refreshing.
+            if (originalBytes == null) {
+                eu.kanade.tachiyomi.ui.reader.manyue.ManyuePrefetchManager.releaseCurrent(
+                    page.chapter.chapter.id ?: 0L, page.index,
+                )
+            }
             val aiMode = eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.modeInt
-            if (aiMode == eu.kanade.tachiyomi.ui.reader.manyue.ManyueEnhancementMode.AI_2X.value ||
-                aiMode == eu.kanade.tachiyomi.ui.reader.manyue.ManyueEnhancementMode.AI_2X_CLASSIC.value
+            if (eu.kanade.tachiyomi.ui.reader.manyue.ManyueEnhancementMode.fromInt(aiMode).usesAi()
             ) {
                 try {
                     val bridge = manyueBridge(pageConfig)
@@ -323,6 +327,10 @@ class PagerPageHolder(
         val screenWidth = (parent as? android.view.View)?.width?.takeIf { it > 0 }
             ?: resources.displayMetrics.widthPixels
         eu.kanade.tachiyomi.ui.reader.manyue.ManyueFoldableController.applyToView(this, screenWidth)
+        val readingWidth = eu.kanade.tachiyomi.ui.reader.manyue.ManyueFoldableController.readingWidthPx(viewer.pager.width)
+        if (eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.updateDisplayWidth(readingWidth)) {
+            viewer.pager.post { viewer.refreshManyue() }
+        }
     }
 
     /**

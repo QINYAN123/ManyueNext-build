@@ -5,7 +5,10 @@ import android.app.Application
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.graphics.Point
+import android.graphics.Rect
 import android.graphics.drawable.BitmapDrawable
+import android.net.Uri
 import android.os.Looper
 import android.os.SystemClock
 import android.view.MotionEvent
@@ -15,12 +18,15 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.davemorrissey.labs.subscaleview.ImageSource
 import com.davemorrissey.labs.subscaleview.SubsamplingScaleImageView
+import com.davemorrissey.labs.subscaleview.decoder.ImageRegionDecoder
+import com.davemorrissey.labs.subscaleview.provider.InputProvider
 import eu.kanade.tachiyomi.ui.reader.viewer.ReaderPageImageView
 import eu.kanade.tachiyomi.ui.reader.viewer.webtoon.WebtoonRecyclerView
 import java.io.File
 import java.time.Duration
 import java.util.concurrent.Executor
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -68,6 +74,119 @@ class ManyueWebtoonLifecycleTest {
         activity.finish()
     }
 
+    private fun createDecoderBackedView(
+        activity: Activity,
+        decoder: BlockingRegionDecoder,
+        fileName: String,
+    ): Pair<SubsamplingScaleImageView, java.util.concurrent.ExecutorService> {
+        val executor = Executors.newSingleThreadExecutor()
+        val view = SubsamplingScaleImageView(activity).apply {
+            setExecutor(executor)
+            setMaxTileSize(512)
+            setRegionDecoderFactory { decoder }
+        }
+        layout(view)
+        view.setImage(ImageSource.uri(activity, Uri.fromFile(pendingFile(activity, fileName))))
+        return view to executor
+    }
+
+    @Test fun detachedDisposeDoesNotWaitForRegionReadAndReleasesLeaseAfterDecoder() {
+        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        val allowDecodeToFinish = CountDownLatch(1)
+        val decoder = BlockingRegionDecoder(decodeRelease = allowDecodeToFinish)
+        val (view, executor) = createDecoderBackedView(activity, decoder, "dispose-blocked-tile.webp")
+        val leaseReleased = CountDownLatch(1)
+        val watchdog = Executors.newSingleThreadScheduledExecutor()
+        val releaseWatchdog = watchdog.schedule({ allowDecodeToFinish.countDown() }, 2, TimeUnit.SECONDS)
+        try {
+            assertTrue(decoder.initEntered.await(5, TimeUnit.SECONDS))
+            // initEntered is signalled from inside the decoder factory/init worker. Wait for the
+            // AsyncTask to finish and enqueue its main-thread result before draining the paused
+            // looper; otherwise idle() can run before onPostExecute schedules the tile read.
+            executor.submit { }.get(5, TimeUnit.SECONDS)
+            shadowOf(Looper.getMainLooper()).idle()
+            assertTrue("Expected a tile read to hold the decoder lock", decoder.decodeEntered.await(5, TimeUnit.SECONDS))
+
+            val startNanos = System.nanoTime()
+            view.disposeDetached { leaseReleased.countDown() }
+            val disposeMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos)
+            assertTrue("disposeDetached blocked the UI caller for ${disposeMillis}ms", disposeMillis < 500)
+            assertFalse("decoder was recycled before its region read finished", decoder.recycleCalled)
+            assertFalse("cache lease closed before decoder release", leaseReleased.await(100, TimeUnit.MILLISECONDS))
+
+            allowDecodeToFinish.countDown()
+            releaseWatchdog.cancel(false)
+            // AsyncTask posts onPostExecute from FutureTask.done(); wait until that post exists
+            // before draining the paused main looper and asserting stale-output cleanup.
+            executor.submit { }.get(5, TimeUnit.SECONDS)
+            shadowOf(Looper.getMainLooper()).idle()
+            assertTrue("background disposal did not finish", leaseReleased.await(5, TimeUnit.SECONDS))
+            assertTrue(decoder.recycleCalled)
+            assertFalse(decoder.recycledBeforeDecodeReturned)
+            assertTrue("late tile output must be recycled after the generation changes", decoder.decodedBitmap?.isRecycled == true)
+        } finally {
+            allowDecodeToFinish.countDown()
+            releaseWatchdog.cancel(false)
+            watchdog.shutdownNow()
+            executor.shutdownNow()
+            activity.finish()
+        }
+    }
+
+    @Test fun detachedDisposeKeepsLeaseUntilPendingInitDecoderIsReleased() {
+        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        val allowInitToFinish = CountDownLatch(1)
+        val decoder = BlockingRegionDecoder(initRelease = allowInitToFinish)
+        val (view, executor) = createDecoderBackedView(activity, decoder, "dispose-blocked-init.webp")
+        val leaseReleased = CountDownLatch(1)
+        val watchdog = Executors.newSingleThreadScheduledExecutor()
+        val releaseWatchdog = watchdog.schedule({ allowInitToFinish.countDown() }, 2, TimeUnit.SECONDS)
+        try {
+            assertTrue(decoder.initEntered.await(5, TimeUnit.SECONDS))
+
+            val startNanos = System.nanoTime()
+            view.disposeDetached { leaseReleased.countDown() }
+            val disposeMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos)
+            assertTrue("disposeDetached waited for decoder init on the UI caller", disposeMillis < 500)
+            assertFalse(decoder.recycleCalled)
+            assertFalse("cache lease closed while init still owned its decoder", leaseReleased.await(100, TimeUnit.MILLISECONDS))
+
+            allowInitToFinish.countDown()
+            releaseWatchdog.cancel(false)
+            // The decoder is transferred or deferred from TilesInitTask.onPostExecute on main.
+            executor.submit { }.get(5, TimeUnit.SECONDS)
+            shadowOf(Looper.getMainLooper()).idle()
+            assertTrue("deferred decoder was not released", leaseReleased.await(5, TimeUnit.SECONDS))
+            assertTrue(decoder.recycleCalled)
+            assertFalse(decoder.recycledBeforeInitReturned)
+        } finally {
+            allowInitToFinish.countDown()
+            releaseWatchdog.cancel(false)
+            watchdog.shutdownNow()
+            executor.shutdownNow()
+            activity.finish()
+        }
+    }
+
+    @Test fun detachedDisposeDoesNotWaitForQueuedInitThatNeverStarted() {
+        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        val decoder = BlockingRegionDecoder()
+        val view = SubsamplingScaleImageView(activity).apply {
+            setExecutor(Executor { }) // Deliberately retain the queued task without running it.
+            setRegionDecoderFactory { decoder }
+            setImage(ImageSource.uri(activity, Uri.fromFile(pendingFile(activity, "dispose-queued-init.webp"))))
+        }
+        val leaseReleased = CountDownLatch(1)
+        try {
+            view.disposeDetached { leaseReleased.countDown() }
+            assertTrue("disposal waited for an init task that never acquired decoder resources", leaseReleased.await(3, TimeUnit.SECONDS))
+            assertFalse(decoder.initEntered.await(100, TimeUnit.MILLISECONDS))
+            assertFalse(decoder.recycleCalled)
+        } finally {
+            activity.finish()
+        }
+    }
+
     private val config = ReaderPageImageView.Config(
         zoomDuration = 1,
         minimumScaleType = SubsamplingScaleImageView.SCALE_TYPE_FIT_WIDTH,
@@ -80,6 +199,44 @@ class ManyueWebtoonLifecycleTest {
 
     private class PendingImageView(context: Context) : ReaderPageImageView(context) {
         override fun aiImageExecutor(): Executor = Executor { }
+    }
+
+    private class BlockingRegionDecoder(
+        private val initRelease: CountDownLatch? = null,
+        private val decodeRelease: CountDownLatch? = null,
+    ) : ImageRegionDecoder {
+        val initEntered = CountDownLatch(1)
+        val initReturned = CountDownLatch(1)
+        val decodeEntered = CountDownLatch(1)
+        val decodeReturned = CountDownLatch(1)
+        @Volatile var decodedBitmap: Bitmap? = null
+        @Volatile var recycleCalled = false
+        @Volatile var recycledBeforeInitReturned = false
+        @Volatile var recycledBeforeDecodeReturned = false
+
+        override fun init(context: Context, provider: InputProvider): Point {
+            initEntered.countDown()
+            check(initRelease?.await(5, TimeUnit.SECONDS) != false) { "Timed out waiting to finish fake decoder init" }
+            initReturned.countDown()
+            return Point(2400, 3800)
+        }
+
+        override fun decodeRegion(sRect: Rect, sampleSize: Int): Bitmap {
+            decodeEntered.countDown()
+            check(decodeRelease?.await(5, TimeUnit.SECONDS) != false) { "Timed out waiting to finish fake tile decode" }
+            return Bitmap.createBitmap(32, 32, Bitmap.Config.ARGB_8888).also {
+                decodedBitmap = it
+                decodeReturned.countDown()
+            }
+        }
+
+        override fun isReady(): Boolean = !recycleCalled
+
+        override fun recycle() {
+            recycledBeforeInitReturned = initReturned.count != 0L
+            recycledBeforeDecodeReturned = decodeReturned.count != 0L
+            recycleCalled = true
+        }
     }
 
     private val landscapeConfig = ReaderPageImageView.Config(

@@ -20,13 +20,38 @@ object ManyueReaderHook {
     // non-suspending decode/enhance/encode work so full-size temporary bitmaps do not fan out.
     private val classicDispatcher = Dispatchers.Default.limitedParallelism(1)
 
+    /** Called on the holder's IO thread; avoid copying high-resolution AUTO originals for AI. */
+    fun needsAi(source: BufferedSource, modeInt: Int): Boolean {
+        if (!ManyueEnhancementMode.fromInt(modeInt).usesAi()) return false
+        if (modeInt != ManyueEnhancementMode.AUTO.value) return true
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        source.peek().inputStream().use { BitmapFactory.decodeStream(it, null, bounds) }
+        return ManyueAutoEnhancementPolicy.decide(
+            bounds.outWidth, ManyueRuntimeState.displayWidthPx, ManyueRuntimeState.aiScalePercent,
+        ).path != ManyueAutoEnhancementPolicy.Path.ORIGINAL_SIZE
+    }
+
     suspend fun applyClassic(
         source: BufferedSource,
         modeInt: Int,
         strength: Int,
         onState: (ManyueEnhancementState, String?) -> Unit = { _, _ -> },
+        displayWidthPx: Int = ManyueRuntimeState.displayWidthPx,
     ): BufferedSource {
         // Original/AI first frames need no classic worker or dispatcher hop.
+        if (modeInt == ManyueEnhancementMode.AUTO.value) {
+            val width = withContext(classicDispatcher) {
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                source.peek().inputStream().use { BitmapFactory.decodeStream(it, null, bounds) }
+                bounds.outWidth
+            }
+            val decision = ManyueAutoEnhancementPolicy.decide(width, displayWidthPx, ManyueRuntimeState.aiScalePercent)
+            if (decision.path != ManyueAutoEnhancementPolicy.Path.ORIGINAL_SIZE) return source
+            onState(ManyueEnhancementState.CLASSIC_PROCESSING, "智能模式：原尺寸增强")
+            return applyClassicOnWorker(source, strength) { state, detail ->
+                onState(state, detail ?: if (state == ManyueEnhancementState.CLASSIC_READY) "原尺寸增强，未运行 AI" else null)
+            }
+        }
         if (modeInt != ManyueEnhancementMode.CLASSIC.value) return source
         return applyClassicOnWorker(source, strength, onState)
     }

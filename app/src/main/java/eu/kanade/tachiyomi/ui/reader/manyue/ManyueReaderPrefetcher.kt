@@ -57,9 +57,7 @@ class ManyueReaderPrefetcher(context: Context) {
         ManyueEnhancementCache.updateReadingPosition(mangaId, chapterId, current.index)
 
         val mode = ManyueRuntimeState.modeInt
-        if (mode != ManyueEnhancementMode.AI_2X.value &&
-            mode != ManyueEnhancementMode.AI_2X_CLASSIC.value
-        ) {
+        if (!ManyueEnhancementMode.fromInt(mode).usesAi()) {
             coordinator.cancelAll()
             return
         }
@@ -303,7 +301,7 @@ internal class ManyuePrefetchJobCoordinator(private val scope: CoroutineScope) {
         return activeKey == CursorKey(chapterId, generation, mode) &&
             ManyueRuntimeState.generation == generation &&
             ManyueRuntimeState.modeInt == mode &&
-            (mode == ManyueEnhancementMode.AI_2X.value || mode == ManyueEnhancementMode.AI_2X_CLASSIC.value)
+            ManyueEnhancementMode.fromInt(mode).usesAi()
     }
 
     suspend fun ensureCurrent(chapterId: Long, generation: Long, mode: Int) {
@@ -315,7 +313,9 @@ internal class ManyuePrefetchJobCoordinator(private val scope: CoroutineScope) {
 
     /** Wait without pinning a thread, while mode/generation changes remain promptly cancellable. */
     suspend fun awaitReaderWork(chapterId: Long, generation: Long, mode: Int) {
-        while (ManyueReaderWorkGate.isBlocked()) {
+        while (ManyueReaderWorkGate.isBlocked() ||
+            (mode == ManyueEnhancementMode.AUTO.value && ManyueRuntimeState.displayWidthPx <= 0)
+        ) {
             ensureCurrent(chapterId, generation, mode)
             delay(READER_WORK_GATE_POLL_MS)
         }

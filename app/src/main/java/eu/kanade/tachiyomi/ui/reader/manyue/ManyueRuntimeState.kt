@@ -18,6 +18,8 @@ object ManyueRuntimeState {
         private set
     @Volatile var anime4kOverlay: Boolean = false
         private set
+    @Volatile var displayWidthPx: Int = 0
+        private set
     @Volatile var foldableMode: Int = -1
     @Volatile var foldableTargetWidth: Int = 2344
     @Volatile var generation: Long = 0L
@@ -38,14 +40,24 @@ object ManyueRuntimeState {
 
     @Synchronized
     fun updateClassicStrength(newStrength: Int) {
-        if (classicStrength == newStrength) return
-        classicStrength = newStrength.coerceIn(0, 100)
-        if (modeInt == ManyueEnhancementMode.CLASSIC.value ||
-            modeInt == ManyueEnhancementMode.AI_2X_CLASSIC.value
-        ) {
+        val safeStrength = newStrength.coerceIn(0, 100)
+        if (classicStrength == safeStrength) return
+        classicStrength = safeStrength
+        if (ManyueEnhancementMode.fromInt(modeInt).usesClassic()) {
             generation++
             ManyuePrefetchManager.reset()
         }
+    }
+
+    /** A window/fold width change invalidates automatic targets once, never on every scroll. */
+    @Synchronized
+    fun updateDisplayWidth(width: Int): Boolean {
+        if (width <= 0 || displayWidthPx == width) return false
+        displayWidthPx = width
+        if (modeInt != ManyueEnhancementMode.AUTO.value) return false
+        generation++
+        ManyuePrefetchManager.reset()
+        return true
     }
 
     @Synchronized

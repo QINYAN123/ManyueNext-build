@@ -121,7 +121,7 @@ android {
         create("benchmark") {
             initWith(release)
 
-            versionNameSuffix = "-benchmark"
+            versionNameSuffix = "-smart2-benchmark"
             applicationIdSuffix = ".benchmark"
 
             matchingFallbacks.addAll(commonMatchingFallbacks)

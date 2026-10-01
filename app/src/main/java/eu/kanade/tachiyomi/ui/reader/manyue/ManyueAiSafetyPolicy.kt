@@ -56,8 +56,7 @@ object ManyueAiSafetyPolicy {
         expectedGeneration: Long,
         currentGeneration: Long,
     ): Boolean {
-        val aiMode = currentMode == ManyueEnhancementMode.AI_2X.value ||
-            currentMode == ManyueEnhancementMode.AI_2X_CLASSIC.value
+        val aiMode = ManyueEnhancementMode.fromInt(currentMode).usesAi()
         return aiMode &&
             currentToken == expectedToken &&
             currentIdentity == expectedIdentity &&

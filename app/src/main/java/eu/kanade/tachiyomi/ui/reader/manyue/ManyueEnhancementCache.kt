@@ -325,7 +325,7 @@ object ManyueEnhancementCache {
 
     private fun classicVariantFile(bundle: File, strength: Int): File? {
         if (strength !in 1..100) return null
-        return File(bundle, "classic_$strength.webp")
+        return File(bundle, "classic_luma_v2_$strength.webp")
     }
 
     /** Atomically copy one complete encoded image into the cache bundle. */

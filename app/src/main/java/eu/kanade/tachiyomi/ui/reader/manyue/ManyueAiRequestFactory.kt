@@ -17,10 +17,9 @@ object ManyueAiRequestFactory {
         priority: Int,
         expectedMode: Int = ManyueRuntimeState.modeInt,
         generation: Long = ManyueRuntimeState.generation,
+        displayWidthPx: Int = ManyueRuntimeState.displayWidthPx,
     ): String? {
-        if (expectedMode != ManyueEnhancementMode.AI_2X.value &&
-            expectedMode != ManyueEnhancementMode.AI_2X_CLASSIC.value
-        ) return null
+        if (!ManyueEnhancementMode.fromInt(expectedMode).usesAi()) return null
         if (ManyueRuntimeState.modeInt != expectedMode || ManyueRuntimeState.generation != generation) return null
         if (ManyueAiRuntime.probe(context) != ManyueAiRuntime.Capability.READY || originalBytes.isEmpty() ||
             originalBytes.size > ManyueAiRuntime.MAX_INPUT_BYTES || ManyueImagePipeline.isAnimated(originalBytes)
@@ -40,7 +39,13 @@ object ManyueAiRequestFactory {
 
         val model = ManyueRuntimeState.aiModel
         val targetMode = model.scale
-        val targetWidth = ManyueAiUpscaler.customTargetWidth(width, ManyueRuntimeState.aiScalePercent)
+        val targetWidth = if (expectedMode == ManyueEnhancementMode.AUTO.value) {
+            val decision = ManyueAutoEnhancementPolicy.decide(width, displayWidthPx, ManyueRuntimeState.aiScalePercent)
+            if (decision.path != ManyueAutoEnhancementPolicy.Path.AI) return null
+            decision.targetWidth
+        } else {
+            ManyueAiUpscaler.customTargetWidth(width, ManyueRuntimeState.aiScalePercent)
+        }
         if (targetWidth < width) return null
         // The resolved width is in both cache and request identity; legacy tenths stays native x2.
         val targetScaleTenths = 20

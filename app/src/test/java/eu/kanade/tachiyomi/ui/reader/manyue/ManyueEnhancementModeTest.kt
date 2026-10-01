@@ -11,6 +11,7 @@ class ManyueEnhancementModeTest {
         assertEquals(ManyueEnhancementMode.CLASSIC, ManyueEnhancementMode.fromInt(1))
         assertEquals(ManyueEnhancementMode.AI_2X, ManyueEnhancementMode.fromInt(2))
         assertEquals(ManyueEnhancementMode.AI_2X_CLASSIC, ManyueEnhancementMode.fromInt(3))
+        assertEquals(ManyueEnhancementMode.AUTO, ManyueEnhancementMode.fromInt(4))
     }
     @Test fun `unknown falls back to OFF`() {
         assertEquals(ManyueEnhancementMode.OFF, ManyueEnhancementMode.fromInt(99))
