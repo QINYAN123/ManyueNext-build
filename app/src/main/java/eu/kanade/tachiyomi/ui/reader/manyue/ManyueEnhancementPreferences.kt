@@ -23,6 +23,10 @@ class ManyueEnhancementPreferences(private val store: PreferenceStore) {
     /** Optional Anime4KCPP post-filter overlay, kept off by default for lowest latency. */
     val anime4kOverlay: Preference<Boolean> = store.getBoolean("manyueAnime4kOverlay", false)
 
+    /** Independent screen-space filter; it does not schedule AI or re-encode images. */
+    val gpuDisplayFilter: Preference<Boolean> = store.getBoolean("manyueGpuDisplayFilter", false)
+    val gpuDisplayStrength: Preference<Int> = store.getInt("manyueGpuDisplayStrength", 25)
+
     /** -1=AUTO, 0=FULL, >0=manual px */
     val foldableMode: Preference<Int> = store.getInt("manyueFoldableMode", FOLD_AUTO)
 

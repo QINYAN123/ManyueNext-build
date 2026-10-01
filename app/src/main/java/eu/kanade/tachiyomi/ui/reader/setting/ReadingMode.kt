@@ -70,7 +70,7 @@ enum class ReadingMode(
         }
 
         fun toViewer(preference: Int?, activity: ReaderActivity): Viewer {
-            if (activity.appGraph.basePreferences.highQualityRenderer.get() && !activity.isManyueEnhancementActive()) {
+            if (activity.appGraph.basePreferences.highQualityRenderer.get() && !activity.needsManyueCanvasViewer()) {
                 return when (fromPreference(preference)) {
                     LEFT_TO_RIGHT -> WebGpuViewer(activity, isReversed = false, isVertical = false)
                     RIGHT_TO_LEFT -> WebGpuViewer(activity, isReversed = true, isVertical = false)

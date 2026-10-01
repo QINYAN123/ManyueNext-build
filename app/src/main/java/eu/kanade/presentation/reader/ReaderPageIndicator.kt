@@ -22,6 +22,7 @@ fun ReaderPageIndicator(
     totalPages: Int,
     sourceImageInfo: SourceImageInfo,
     modifier: Modifier = Modifier,
+    displayEnhancementLabel: String? = null,
 ) {
     if (currentPage <= 0 || totalPages <= 0) return
 
@@ -49,7 +50,10 @@ fun ReaderPageIndicator(
         shape = RoundedCornerShape(12.dp),
     ) {
         Text(
-            text = ReaderMetadataPresentation.text(currentPage, totalPages, sourceImageInfo, labels),
+            text = buildString {
+                append(ReaderMetadataPresentation.text(currentPage, totalPages, sourceImageInfo, labels))
+                displayEnhancementLabel?.let { append(" · $it") }
+            },
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
             style = MaterialTheme.typography.bodySmall,
         )

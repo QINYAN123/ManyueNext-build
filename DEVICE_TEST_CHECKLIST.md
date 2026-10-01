@@ -1,94 +1,47 @@
-# Manyue 真机验收清单
+# GPU1 与既有图片增强的真机对照
 
-本清单用于 ARM64 Android 真机，重点设备为荣耀折叠屏。代码审计机没有连接 ADB 设备，以下项目必须由用户操作后才能标记通过。
+设备优先使用荣耀 Magic V2。当前构建环境没有连接 ADB 设备，清单中的手机结果不得根据编译或宿主测试勾选。
 
-## 0. 安装与采集准备
+## 安装
 
-- [ ] 设备执行 `adb shell getprop ro.product.cpu.abi`，结果为 `arm64-v8a`。
-- [ ] 安装：`adb install -r ManyueNext-Mihon-Fork-v5-universal-debug.apk`。
-- [ ] 确认安装包：`adb shell dumpsys package app.mihon.dev | findstr versionName`。
-- [ ] 清日志：`adb logcat -c`。
-- [ ] 开一个日志窗口：`adb logcat | findstr /i "Manyue"`。
-- [ ] 需要首次 native 实跑时选择一张尚未产生 AI cache 的页面；cache 命中不会再次启动 native。
+- [ ] 用 `mihon-gpu-display-trial-arm64.apk` 覆盖上一版 benchmark 测试包。
+- [ ] 版本为 `0.20.12-gpu1-benchmark`（versionCode 39），包名 `app.mihon.benchmark`；正式 Mihon 的数据独立。
+- [ ] 保留同一漫画源、同一话、同一页面和相同屏幕帧率。不要卸载现有测试包来更新。
 
-## 1. UI 与模式入口
+## 先单独测试 GPU 滤镜
 
-进入 Reader → 设置 → General → Manyue 增强：
+阅读器设置 → General → Manyue 增强：下方图片模式选“原图 / OFF”，上方 GPU 显示滤镜选开。
 
-- [ ] 能看到并点击“原图 / OFF”。
-- [ ] 能看到并点击“经典增强”。
-- [ ] 能看到并点击“AI 超分”。
-- [ ] 能看到并点击“AI 超分 + 经典增强”。
-- [ ] 能选择 AI 输出宽度 AUTO / 原生 2× / MANUAL；MANUAL 显示 1360–2880px Slider。
-- [ ] 页面左上状态能区分排队、AI、经典、组合、跳过与失败，不再只显示“原图”。
-- [ ] “经典增强强度” Slider 可调，当前页会重新绑定并体现变化。
-- [ ] 折叠屏宽度有 AUTO / FULL / MANUAL。
-- [ ] MANUAL 被选中后显示 1360–2880px 宽度 Slider，调节会立即重排当前 Reader。
-- [ ] 普通手机或外屏选择 AUTO/MANUAL 不会破坏 Mihon 原始全宽布局。
+- [ ] 在 690×1421 的同一彩色条漫页，保持开关开启，先设 0%，再设 25%。两组使用同一个 Canvas 阅读器，能排除 WebGPU 切换差异。
+- [ ] 0% 显示强度为 0；25% 显示 GPU 显示滤镜且明确“非 AI”。原图分辨率始终为 690×1421，不出现伪造的 AI 输出尺寸。
+- [ ] 看文字轮廓、人物皮肤、天空渐变与暗部：有可辨增强，但不过分加粗、白边、噪点、色偏或压黑。
+- [ ] 缓慢阅读和快速滚动同一段；比较帧率/卡顿/发热，不将“没有等待 AI”当成“没有 GPU 绘制成本”。
+- [ ] 放大、缩小，跨越分块边界和漫画页边界，没有新增接缝或明显闪烁。
+- [ ] 连续拖动强度不会触发图片重新加载、AI 排队或 AI 重新运行。
+- [ ] 首选渲染器为 WebGPU 时，开关滤镜可能重新加载，但应留在当前章节页；仅改强度不切换渲染器。
+- [ ] 灰度、反色、亮度和阅读色罩按原设置工作；菜单与状态文字不被滤镜处理。
+- [ ] GIF/WebP 动画保持播放；滤镜附加绘制成本单独观察。
 
-## 2. native AI 完整链
+## 生命周期与折叠屏
 
-在一张普通非动画、非超长页面选择 AI 超分：
+- [ ] 内屏首次进入、外屏合拢、再次展开后，滤镜均按当前显示容器大小工作，没有巨大缓冲、黑屏或崩溃。
+- [ ] 进出设置、切章节、切翻页/条漫、旋转、后台再回来、退出再进入后，强度保存且状态正确。
+- [ ] GPU 开关关闭后恢复原显示；图片增强也关闭时恢复首选渲染器。
+- [ ] 无硬件绘制、Android 13 以下或 shader 初始化失败时，显示不可用/失败并保持阅读，不伪报滤镜已应用。
+- [ ] 连续阅读 20 页、多次进出阅读器，内存不会按总页数持续线性增长。
 
-- [ ] 日志出现 `Manyue AI queued ... priority=100`。
-- [ ] 日志出现 `Manyue native start ... LD_LIBRARY_PATH=...`。
-- [ ] 日志出现 `Manyue native process started`。
-- [ ] 日志出现 `Manyue native exit code=0 outputBytes=...`。
-- [ ] 日志最后出现 `Manyue reader replace chapter=... page=... token=...`。
-- [ ] 页面先显示原图，AI 成功后只替换同一页，没有闪到别页。
-- [ ] 选择 AI 超分 + 经典增强，完成图相对 AI 超分有经典增强效果。
-- [ ] 用 1400×1500 静态测试图选择“原生 2× + 组合”，得到约 840 万像素结果时，应保留 AI 图并提示经典后处理超过限制。
-- [ ] 模型已释放：`adb shell run-as app.mihon.dev ls -l files/ai_runtime_anime_dynamic_v3`，应看到非空 `x2.bin` 和 `x2.param`。
-- [ ] 若 native 失败，Reader 保持原图且 App 不崩溃；日志包含 exit code/timeout/native log tail。
+## 再测试既有 AI
 
-## 3. 调度、抢占与 stale-result
+- [ ] 分别选择 AI 超分与智能增强，观察逐页排队、准备、原生处理、等待显示、成功/失败；GPU 状态独立，不代表每张 AI 已完成。
+- [ ] 690×1421 在 1.25×/1.5×/2× 下约为 863×1777、1035×2132、1380×2842；原图文件保留。低倍率仍执行当前完整 2×模型。
+- [ ] 智能模式原图宽度足够时不运行 AI；选择 CPU 经典/智能组合与 GPU 同时开启时，会叠加处理效果和开销。
+- [ ] 滑动与图片替换、快速跳页、切 OFF、切章节、退出阅读器：旧结果不覆盖新设置，失败保持可读。
+- [ ] 折叠后智能目标宽度更新；极长图超过安全预算时原图可读。
 
-选择 AI 模式，从同一章节中部开始：
+## 可选采集（ADB）
 
-- [ ] 日志真实出现 current `priority=100`。
-- [ ] 日志真实出现 +1 `priority=30`、+2 `priority=20`、+3 `priority=10`。
-- [ ] 快速连续向前翻 8–10 页，新的当前页优先处理；旧低优先级任务出现 `Manyue AI cancelled` 或不再替换页面。
-- [ ] 停在新页，确认旧页结果不会覆盖新页。
-- [ ] AI 处理中切到 OFF，切换后不再出现旧 token 的 `Manyue reader replace`。
-- [ ] AI 处理中改变经典强度，旧 generation 结果不替换新设置页面。
-- [ ] AI 处理中切章节，旧章节 token 不替换新章节。
-- [ ] AI 处理中退出 Reader，App 不崩溃，后台不继续大量占用 CPU。
+使用包名 `app.mihon.benchmark`：`adb shell dumpsys gfxinfo app.mihon.benchmark reset`，对同一段分别滚动，再采集 `adb shell dumpsys gfxinfo app.mihon.benchmark framestats` 和 `adb shell dumpsys meminfo app.mihon.benchmark`。
 
-## 4. 折叠屏
+该 APK 非 debuggable，不能用 `run-as` 访问私有模型/cache。需要更深入日志时另用 debug 构建，不把不同优化级别的帧率直接对比。
 
-- [ ] App 已在内屏展开状态时，从书架直接首次打开 Reader；AUTO 首次即生效，不需要先折一次再展开。
-- [ ] 内屏展开 → 合拢外屏，宽度立即恢复 Mihon 全宽。
-- [ ] 外屏 → 展开内屏，宽度立即按 AUTO/MANUAL 重算。
-- [ ] FULL 始终使用屏幕全宽。
-- [ ] MANUAL 在内屏立即改变宽度，且不超过当前屏幕宽度。
-- [ ] AUTO 的正常比例页面可以得到大于 2344px 的目标（屏幕和 Golden Reference 足够大时），证明没有复用 AI 2344px cap。
-- [ ] Pager 横/竖翻页均无异常页宽或无法翻页。
-- [ ] Webtoon 在展开/合拢重排后仍停在当前页附近，不跳回章节页首。
-- [ ] 普通直板手机完整走一章，布局与原 Mihon 一致。
-
-## 5. 长图、内存和临时文件
-
-- [ ] 在 Webtoon 打开普通长图，滚动和 AI 替换无崩溃。
-- [ ] 打开极长图/4K 图；若超过阈值，应保留原图，不发生 OOM。
-- [ ] OFF 模式连续阅读 20 页，内存相对 Mihon 原路径无明显额外整图复制峰值。
-- [ ] 观察：`adb shell dumpsys meminfo app.mihon.dev`，连续翻页后内存会回落，不持续线性增长。
-- [ ] 完成/取消若干任务后执行 `adb shell run-as app.mihon.dev ls cache`；不应持续堆积 `manyue_in_*` 或 `manyue_work_*`。
-- [ ] 多次进入/退出 Reader 后，没有重复回调、重复替换或明显 listener 泄漏迹象。
-
-## 6. 回归范围
-
-- [ ] Keiyoushi 扩展仓库仍可添加。
-- [ ] 第三方插件仍可安装。
-- [ ] Baozi 图源仍可浏览。
-- [ ] 下载、历史、书架和章节切换行为无回归。
-- [ ] MangaDex“最近更新”仍正常。
-- [ ] MangaDex“热门”问题只记录为扩展侧已知问题，不为此修改 Mihon 主体。
-
-## 7. 建议提交的验收证据
-
-- [ ] 设备型号、系统版本、内/外屏分辨率与 `smallestScreenWidthDp`。
-- [ ] 一段完整的 `adb logcat | findstr /i "Manyue"` 日志。
-- [ ] 四种模式各一张截图。
-- [ ] AUTO/FULL/MANUAL 在内屏的截图。
-- [ ] 快速翻页、切 OFF、切章节、退出 Reader 四个场景的结果。
-- [ ] 长图测试前后两次 `dumpsys meminfo`。
+至少记录系统版本、内/外屏、0%/25% 画面与滚动情况。若有截图，仅以截图验证画质，不能用静态截图证明阅读帧率。

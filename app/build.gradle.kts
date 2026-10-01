@@ -31,6 +31,12 @@ configurations.matching { it.name.endsWith("UnitTestRuntimeClasspath") }.configu
     exclude(group = "org.conscrypt", module = "conscrypt-android")
 }
 
+// Android 15+ Robolectric setup accesses FileDescriptor through JDK SharedSecrets.
+// This is a host-test JVM option; it does not change the Android app runtime.
+tasks.withType<Test>().configureEach {
+    jvmArgs("--add-exports=java.base/jdk.internal.access=ALL-UNNAMED")
+}
+
 val keystorePropertiesFile = rootProject.file("keystore.properties")
 
 android {
@@ -40,7 +46,7 @@ android {
     defaultConfig {
         applicationId = "app.mihon"
 
-        versionCode = 38
+        versionCode = 39
         versionName = "0.20.12"
 
         buildConfigField("String", "COMMIT_COUNT", "\"${getLatestCommitCount()}\"")
@@ -121,7 +127,7 @@ android {
         create("benchmark") {
             initWith(release)
 
-            versionNameSuffix = "-smart2-benchmark"
+            versionNameSuffix = "-gpu1-benchmark"
             applicationIdSuffix = ".benchmark"
 
             matchingFallbacks.addAll(commonMatchingFallbacks)

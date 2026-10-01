@@ -229,6 +229,8 @@ class ReaderPreferences(
         eu.kanade.tachiyomi.ui.reader.manyue.ManyueAiModel.DEFAULT.id,
     )
     val manyueAnime4kOverlay: Preference<Boolean> = preferenceStore.getBoolean("manyueAnime4kOverlay", false)
+    val manyueGpuDisplayFilter: Preference<Boolean> = preferenceStore.getBoolean("manyueGpuDisplayFilter", false)
+    val manyueGpuDisplayStrength: Preference<Int> = preferenceStore.getInt("manyueGpuDisplayStrength", 25)
     val manyueFoldableMode: Preference<Int> = preferenceStore.getInt("manyueFoldableMode", -1)
     val manyueFoldableTargetWidth: Preference<Int> = preferenceStore.getInt("manyueFoldableTargetWidth", 2344)
 

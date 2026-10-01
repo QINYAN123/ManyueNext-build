@@ -6,6 +6,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
@@ -183,6 +184,54 @@ internal fun ColumnScope.GeneralPage(viewModel: ReaderSettingsViewModel) {
 
     val manyueMode by viewModel.preferences.manyueEnhancementMode.collectAsState()
     val readerActivity = LocalActivity.current as? ReaderActivity
+    val gpuEnabled by viewModel.preferences.manyueGpuDisplayFilter.collectAsState()
+    val gpuStrength by viewModel.preferences.manyueGpuDisplayStrength.collectAsState()
+    val gpuSupported = android.os.Build.VERSION.SDK_INT >= 33
+    var draftGpuStrength by remember(gpuStrength) { mutableIntStateOf(gpuStrength.coerceIn(0, 100)) }
+    DisposableEffect(readerActivity) {
+        onDispose {
+            // If a drag is cancelled by dismissing settings, discard its unsaved preview.
+            readerActivity?.onManyueGpuDisplayChanged(
+                viewModel.preferences.manyueGpuDisplayFilter.get(),
+                viewModel.preferences.manyueGpuDisplayStrength.get(),
+            )
+        }
+    }
+    Text("GPU 显示增强（试验）", style = MaterialTheme.typography.bodyMedium)
+    FilterChip(
+        selected = gpuEnabled,
+        enabled = gpuSupported || gpuEnabled,
+        onClick = {
+            val enabled = !gpuEnabled
+            viewModel.preferences.manyueGpuDisplayFilter.set(enabled)
+            readerActivity?.onManyueGpuDisplayChanged(enabled, gpuStrength)
+        },
+        label = { Text(if (gpuEnabled) "显示滤镜：开" else "显示滤镜：关") },
+    )
+    if (gpuEnabled && gpuSupported) {
+        Text("滤镜强度：$draftGpuStrength%", style = MaterialTheme.typography.bodyMedium)
+        tachiyomi.presentation.core.components.material.Slider(
+            value = draftGpuStrength,
+            valueRange = 0..100,
+            steps = 99,
+            onValueChange = {
+                draftGpuStrength = it
+                readerActivity?.onManyueGpuDisplayChanged(true, it)
+            },
+            onValueChangeFinished = {
+                viewModel.preferences.manyueGpuDisplayStrength.set(draftGpuStrength)
+            },
+        )
+    }
+    Text(
+        if (gpuSupported) "随显示增强边缘和轻微明暗层次，原图文件与分辨率保留。先选下方“原图 / OFF”单独试滤镜，建议强度 25%。设为 0% 可对照同一阅读器的原显示。滤镜不重建缺失细节；同时开启下方图片增强会叠加效果与开销。"
+        else "GPU 显示滤镜需要 Android 13 或以上；当前系统保留原有显示。",
+        style = MaterialTheme.typography.bodySmall,
+    )
+    if (readerActivity != null) {
+        val gpuStatus by readerActivity.manyueGpuDisplayStatus.collectAsState()
+        gpuStatus.label?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+    }
     Text("增强模式", style = MaterialTheme.typography.bodyMedium)
     androidx.compose.foundation.layout.FlowRow {
         listOf(
@@ -236,7 +285,7 @@ internal fun ColumnScope.GeneralPage(viewModel: ReaderSettingsViewModel) {
         style = MaterialTheme.typography.bodySmall,
     )
     Text(
-        text = "启用增强时会使用支持 Manyue 的兼容阅读器；关闭增强后恢复高质量渲染器。",
+        text = "启用图片增强或 GPU 滤镜时使用兼容阅读器；两者都关闭后恢复首选渲染器。",
         style = MaterialTheme.typography.bodySmall,
     )
     val aiDiagnostic by eu.kanade.tachiyomi.ui.reader.manyue.ManyueDiagnostics.latest.collectAsState()

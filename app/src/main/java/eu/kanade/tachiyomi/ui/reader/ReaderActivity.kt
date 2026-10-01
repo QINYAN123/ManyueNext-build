@@ -65,6 +65,8 @@ import eu.kanade.tachiyomi.ui.main.MainActivity
 import eu.kanade.tachiyomi.ui.reader.ReaderViewModel.SetAsCoverResult.AddToLibraryFirst
 import eu.kanade.tachiyomi.ui.reader.ReaderViewModel.SetAsCoverResult.Error
 import eu.kanade.tachiyomi.ui.reader.ReaderViewModel.SetAsCoverResult.Success
+import eu.kanade.tachiyomi.ui.reader.manyue.ManyueGpuDisplayController
+import eu.kanade.tachiyomi.ui.reader.manyue.ManyueGpuDisplayStatus
 import eu.kanade.tachiyomi.ui.reader.model.ReaderChapter
 import eu.kanade.tachiyomi.ui.reader.model.ReaderPage
 import eu.kanade.tachiyomi.ui.reader.model.ViewerChapters
@@ -81,6 +83,8 @@ import eu.kanade.tachiyomi.util.system.readerBackgroundColor
 import eu.kanade.tachiyomi.util.system.toShareIntent
 import eu.kanade.tachiyomi.util.system.toast
 import eu.kanade.tachiyomi.util.view.setComposeContent
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
@@ -134,6 +138,9 @@ class ReaderActivity : BaseActivity() {
     private var menuToggleToast: Toast? = null
     private var readingModeToast: Toast? = null
     private val displayRefreshHost = DisplayRefreshHost()
+    private var manyueGpuDisplayController: ManyueGpuDisplayController? = null
+    private val mutableGpuDisplayStatus = MutableStateFlow(ManyueGpuDisplayStatus())
+    val manyueGpuDisplayStatus = mutableGpuDisplayStatus.asStateFlow()
 
     private val windowInsetsController by lazy { WindowInsetsControllerCompat(window, window.decorView) }
 
@@ -169,6 +176,13 @@ class ReaderActivity : BaseActivity() {
 
         binding = ReaderActivityBinding.inflate(layoutInflater)
         setContentView(binding.root)
+        manyueGpuDisplayController = ManyueGpuDisplayController(binding.viewerContainer).also { controller ->
+            controller.status.onEach { mutableGpuDisplayStatus.value = it }.launchIn(lifecycleScope)
+            controller.configure(
+                readerPreferences.manyueGpuDisplayFilter.get(),
+                readerPreferences.manyueGpuDisplayStrength.get(),
+            )
+        }
         binding.setComposeOverlay()
         // Initialize fold state on first entry. Relying only on onConfigurationChanged() leaves
         // lastConfig null when Reader is opened directly on an already-unfolded inner screen.
@@ -332,6 +346,8 @@ class ReaderActivity : BaseActivity() {
      * Called when the activity is destroyed. Cleans up the viewer, configuration and any view.
      */
     override fun onDestroy() {
+        manyueGpuDisplayController?.close()
+        manyueGpuDisplayController = null
         super.onDestroy()
         viewModel.state.value.viewer?.destroy()
         eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.invalidateSession()
@@ -379,6 +395,31 @@ class ReaderActivity : BaseActivity() {
     fun isManyueEnhancementActive(): Boolean =
         eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.modeInt !=
             eu.kanade.tachiyomi.ui.reader.manyue.ManyueEnhancementMode.OFF.value
+
+    fun needsManyueCanvasViewer(): Boolean = isManyueEnhancementActive() ||
+        (Build.VERSION.SDK_INT >= 33 && readerPreferences.manyueGpuDisplayFilter.get())
+
+    fun onManyueGpuDisplayChanged(enabled: Boolean, strength: Int) {
+        if (isFinishing || isDestroyed) return
+        // A strength update only changes display parameters: no page reload, encoding or AI reset.
+        if (viewModel.state.value.viewer != null &&
+            (viewModel.state.value.viewer is WebGpuViewer) !=
+            (preferences.highQualityRenderer.get() && !needsManyueCanvasViewer())
+        ) {
+            // Switching WebGPU/Canvas decoders requires a viewer rebuild. Retain the selected
+            // chapter page, rather than returning to the page requested on initial reader entry.
+            val state = viewModel.state.value
+            state.viewerChapters?.currChapter?.let { chapter ->
+                val index = state.currentPage - 1
+                if (index >= 0 && state.selectedPageKey == "${chapter.chapter.id}:$index") {
+                    chapter.requestedPage = index
+                }
+            }
+            updateViewer()
+            binding.root.post { viewModel.state.value.viewerChapters?.let(::setChapters) }
+        }
+        manyueGpuDisplayController?.configure(enabled, strength)
+    }
 
     fun onManyueClassicStrengthChanged(strength: Int) {
         val runtime = eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState
@@ -500,6 +541,7 @@ class ReaderActivity : BaseActivity() {
     @Composable
     fun AppBars(state: ReaderViewModel.State) {
         val showPageNumber by readerPreferences.showPageNumber.collectAsState()
+        val gpuDisplayStatus by manyueGpuDisplayStatus.collectAsState()
         val isHttpSource = state.source is HttpSource
 
         val cropBorderPaged by readerPreferences.cropBorders.collectAsState()
@@ -521,6 +563,7 @@ class ReaderActivity : BaseActivity() {
                         currentPage = state.currentPage,
                         totalPages = state.totalPages,
                         sourceImageInfo = state.sourceImageInfo,
+                        displayEnhancementLabel = gpuDisplayStatus.label,
                     )
                 }
             },
