@@ -116,6 +116,7 @@ object ManyueRuntimeState {
 
     /** Read current values from the injected ReaderPreferences. Cheap; call on each page load. */
     fun syncFrom(prefs: ReaderPreferences) {
+        ManyuePerformanceDiagnostics.setEnabled(prefs.manyuePerformanceDiagnostics.get())
         // One-time performance upgrade; subsequent explicit model choices are respected.
         if (!prefs.manyueLiteModelMigrationDone.get()) {
             if (prefs.manyueAiModel.get() == ManyueAiModel.FAST_REAL_CUGAN.id) {

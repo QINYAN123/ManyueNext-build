@@ -226,6 +226,8 @@ class ReaderPreferences(
 
     val manyueAiDetailStrength = preferenceStore.getInt("manyueAiDetailStrength", 60)
 
+    val manyuePerformanceDiagnostics = preferenceStore.getBoolean("manyuePerformanceDiagnostics", false)
+
     val manyueLiteModelMigrationDone = preferenceStore.getBoolean("manyueLiteModelMigrationDone", false)
 
     val manyueAiModel: Preference<String> = preferenceStore.getString(

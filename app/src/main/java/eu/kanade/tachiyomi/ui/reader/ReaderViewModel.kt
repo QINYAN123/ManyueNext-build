@@ -40,11 +40,11 @@ import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.online.HttpSource
 import eu.kanade.tachiyomi.ui.reader.loader.ChapterLoader
 import eu.kanade.tachiyomi.ui.reader.loader.DownloadPageLoader
+import eu.kanade.tachiyomi.ui.reader.metadata.SourceImageInfo
 import eu.kanade.tachiyomi.ui.reader.model.InsertPage
 import eu.kanade.tachiyomi.ui.reader.model.ReaderChapter
 import eu.kanade.tachiyomi.ui.reader.model.ReaderPage
 import eu.kanade.tachiyomi.ui.reader.model.ViewerChapters
-import eu.kanade.tachiyomi.ui.reader.metadata.SourceImageInfo
 import eu.kanade.tachiyomi.ui.reader.setting.ReaderOrientation
 import eu.kanade.tachiyomi.ui.reader.setting.ReaderPreferences
 import eu.kanade.tachiyomi.ui.reader.setting.ReadingMode
@@ -485,6 +485,10 @@ class ReaderViewModel(
         }
 
         val selectedPageKey = "${page.chapter.chapter.id}:${page.index}"
+        eu.kanade.tachiyomi.ui.reader.manyue.ManyuePerformanceDiagnostics.event(
+            eu.kanade.tachiyomi.ui.reader.manyue.ManyuePerformanceRecorder.Stage.PAGE_SELECTED,
+            page.index,
+        )
         metadataCollectionJob?.cancel()
         mutableState.update {
             it.copy(

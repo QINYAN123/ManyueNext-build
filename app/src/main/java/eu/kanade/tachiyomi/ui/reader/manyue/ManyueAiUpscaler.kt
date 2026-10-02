@@ -6,6 +6,8 @@ import android.graphics.BitmapFactory
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import eu.kanade.tachiyomi.ui.reader.manyue.ManyuePerformanceRecorder.Metric
+import eu.kanade.tachiyomi.ui.reader.manyue.ManyuePerformanceRecorder.Stage
 import kotlinx.coroutines.CompletableDeferred
 import logcat.LogPriority
 import tachiyomi.core.common.util.system.logcat
@@ -160,7 +162,15 @@ object ManyueAiUpscaler {
                         }
                     }
                     if (!claimed) continue
-                    req.processingStartedAt = System.currentTimeMillis()
+                    req.processingStartedAt = System.nanoTime() / 1_000_000L
+                    ManyuePerformanceDiagnostics.event(
+                        Stage.STARTED,
+                        req.pageIndex,
+                        req.token,
+                        Metric.QUEUE_MS to (req.processingStartedAt - req.enqueuedAt).coerceAtLeast(0L),
+                        Metric.PRIORITY to req.priority.toLong(),
+                        Metric.QUEUE_DEPTH to queue.size.toLong(),
+                    )
                     notifyProgress(req, STATE_PREPARING)
                     try {
                         process(req)
@@ -234,8 +244,15 @@ object ManyueAiUpscaler {
             return
         }
         ensureStarted()
-        req.enqueuedAt = System.currentTimeMillis()
+        req.enqueuedAt = System.nanoTime() / 1_000_000L
         req.queued = true
+        ManyuePerformanceDiagnostics.event(
+            Stage.QUEUED, req.pageIndex, token,
+            Metric.PRIORITY to req.priority.toLong(), Metric.QUEUE_DEPTH to (queue.size + 1).toLong(),
+            Metric.SOURCE_WIDTH to req.sourceWidth.toLong(), Metric.SOURCE_HEIGHT to req.sourceHeight.toLong(),
+            Metric.WIDTH to req.targetWidth.toLong(), Metric.MODEL to req.model.ordinal.toLong(),
+            Metric.STRENGTH to req.aiDetailStrength.toLong(),
+        )
         queue.offer(req)
         yieldPrefetchToVisible(req)
     }
@@ -261,6 +278,7 @@ object ManyueAiUpscaler {
         val req = requests[token] ?: return
         // A finished cache entry is still reusable on a backward scroll.
         if (req.completed) return
+        if (!req.cancelled) ManyuePerformanceDiagnostics.event(Stage.CANCELLED, req.pageIndex, token)
         req.cancelled = true
         req.queued = false
         req.completionState = STATE_CANCELLED
@@ -316,6 +334,14 @@ object ManyueAiUpscaler {
     fun updatePriority(token: String, newPriority: Int) {
         val req = requests[token] ?: return
         if (req.cancelled || req.completed) return
+        if (newPriority != req.priority) {
+            ManyuePerformanceDiagnostics.event(
+                Stage.PRIORITY_CHANGED,
+                req.pageIndex,
+                token,
+                Metric.PRIORITY to newPriority.toLong(),
+            )
+        }
         if (req.processing) {
             req.priority = newPriority
             queue.peek()?.let(::yieldPrefetchToVisible)
@@ -344,6 +370,7 @@ object ManyueAiUpscaler {
         }
         if (req.completed || req.cancelled) {
             val finalState = if (req.cancelled) STATE_CANCELLED else req.completionState
+            if (finalState == STATE_READY) ManyuePerformanceDiagnostics.event(Stage.REUSED_RESULT, req.pageIndex, token)
             mainHandler.post { listener.onAiComplete(token, finalState, req.completionDetail ?: req.failureDetail) }
             return
         }
@@ -509,6 +536,13 @@ object ManyueAiUpscaler {
             val key = cacheKeyFor(req)
             val cachedImage = ManyueEnhancementCache.getImage(context, key)
             if (cachedImage != null) {
+                ManyuePerformanceDiagnostics.event(
+                    Stage.CACHE_HIT,
+                    req.pageIndex,
+                    req.token,
+                    Metric.WIDTH to cachedImage.width.toLong(),
+                    Metric.HEIGHT to cachedImage.height.toLong(),
+                )
                 req.completionDetail = cachedImage.detail
                 state = STATE_READY
                 return
@@ -572,6 +606,7 @@ object ManyueAiUpscaler {
                     },
                 )
                 logFile.writeText(telemetry)
+                ManyuePerformanceDiagnostics.nativeDetail(req.pageIndex, req.token, telemetry)
                 inferenceDetail =
                     ManyueLiteRuntime.displayDetail(telemetry) +
                     if (req.aiDetailStrength <= 0) "；AI 修复强度为 0，仅普通插值" else ""
@@ -694,6 +729,12 @@ object ManyueAiUpscaler {
                 0L
             }
             val postElapsedMs = SystemClock.elapsedRealtime() - postStartedAt
+            ManyuePerformanceDiagnostics.event(
+                Stage.AI_READY, req.pageIndex, req.token,
+                Metric.QUEUE_MS to waitMs, Metric.PREPARATION_MS to preparationElapsedMs,
+                Metric.NATIVE_MS to nativeElapsedMs, Metric.POST_MS to postElapsedMs,
+                Metric.WIDTH to outW.toLong(), Metric.HEIGHT to outH.toLong(),
+            )
             logcat {
                 "Manyue AI timings chapter=${req.chapterId} page=${req.pageIndex} " +
                     "source=${req.sourceWidth}x${req.sourceHeight} output=${outW}x$outH " +
@@ -732,6 +773,7 @@ object ManyueAiUpscaler {
             if (req.cancelled) state = STATE_CANCELLED
             req.completionState = state
             req.completed = true
+            if (state == STATE_FAILED) ManyuePerformanceDiagnostics.event(Stage.AI_FAILED, req.pageIndex, req.token)
             req.inputFile.delete()
             outDir?.deleteRecursively()
             notify(req, state)

@@ -64,8 +64,12 @@ import eu.kanade.tachiyomi.ui.main.MainActivity
 import eu.kanade.tachiyomi.ui.reader.ReaderViewModel.SetAsCoverResult.AddToLibraryFirst
 import eu.kanade.tachiyomi.ui.reader.ReaderViewModel.SetAsCoverResult.Error
 import eu.kanade.tachiyomi.ui.reader.ReaderViewModel.SetAsCoverResult.Success
+import eu.kanade.tachiyomi.ui.reader.manyue.ManyueFrameMonitor
 import eu.kanade.tachiyomi.ui.reader.manyue.ManyueGpuDisplayController
 import eu.kanade.tachiyomi.ui.reader.manyue.ManyueGpuDisplayStatus
+import eu.kanade.tachiyomi.ui.reader.manyue.ManyuePerformanceDiagnostics
+import eu.kanade.tachiyomi.ui.reader.manyue.ManyuePerformanceRecorder.Metric
+import eu.kanade.tachiyomi.ui.reader.manyue.ManyuePerformanceRecorder.Stage
 import eu.kanade.tachiyomi.ui.reader.metadata.ReaderMetadataPresentation
 import eu.kanade.tachiyomi.ui.reader.model.ReaderChapter
 import eu.kanade.tachiyomi.ui.reader.model.ReaderPage
@@ -139,6 +143,8 @@ class ReaderActivity : BaseActivity() {
     private var readingModeToast: Toast? = null
     private val displayRefreshHost = DisplayRefreshHost()
     private var manyueGpuDisplayController: ManyueGpuDisplayController? = null
+    private var manyueFrameMonitor: ManyueFrameMonitor? = null
+    private var manyueReaderResumed = false
     private val mutableGpuDisplayStatus = MutableStateFlow(ManyueGpuDisplayStatus())
     val manyueGpuDisplayStatus = mutableGpuDisplayStatus.asStateFlow()
 
@@ -346,6 +352,8 @@ class ReaderActivity : BaseActivity() {
      * Called when the activity is destroyed. Cleans up the viewer, configuration and any view.
      */
     override fun onDestroy() {
+        manyueFrameMonitor?.close()
+        manyueFrameMonitor = null
         manyueGpuDisplayController?.close()
         manyueGpuDisplayController = null
         super.onDestroy()
@@ -357,6 +365,10 @@ class ReaderActivity : BaseActivity() {
     }
 
     override fun onPause() {
+        manyueReaderResumed = false
+        manyueFrameMonitor?.close()
+        manyueFrameMonitor = null
+        ManyuePerformanceDiagnostics.event(Stage.READER_PAUSED)
         lifecycleScope.launchNonCancellable {
             viewModel.updateHistory()
         }
@@ -369,12 +381,17 @@ class ReaderActivity : BaseActivity() {
      */
     override fun onResume() {
         super.onResume()
+        manyueReaderResumed = true
+        updateManyueFrameMonitor()
+        ManyuePerformanceDiagnostics.event(Stage.READER_RESUMED)
+        recordManyueConfiguration()
         viewModel.restartReadTimer()
         setMenuVisibility(viewModel.state.value.menuVisible)
     }
 
     override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
         super.onConfigurationChanged(newConfig)
+        recordManyueConfiguration()
         // Manyue foldable: track inner-screen state. No-op on regular phones.
         runCatching {
             eu.kanade.tachiyomi.ui.reader.manyue.ManyueFoldableController.onConfigurationChanged(newConfig)
@@ -384,12 +401,63 @@ class ReaderActivity : BaseActivity() {
 
     fun onManyueModeChanged(mode: Int) {
         eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.updateMode(mode)
+        recordManyueConfiguration()
         if (preferences.highQualityRenderer.get()) {
             updateViewer()
             binding.root.post { viewModel.state.value.viewerChapters?.let(::setChapters) }
         } else {
             viewModel.state.value.viewer?.refreshManyue()
         }
+    }
+
+    fun onManyuePerformanceDiagnosticsChanged(enabled: Boolean) {
+        ManyuePerformanceDiagnostics.setEnabled(enabled)
+        updateManyueFrameMonitor()
+        recordManyueConfiguration()
+    }
+
+    fun resetManyuePerformanceDiagnostics() {
+        manyueFrameMonitor?.close()
+        manyueFrameMonitor = null
+        ManyuePerformanceDiagnostics.clear()
+        updateManyueFrameMonitor()
+        recordManyueConfiguration()
+    }
+
+    private fun updateManyueFrameMonitor() {
+        if (ManyuePerformanceDiagnostics.enabled && manyueReaderResumed && !isFinishing && !isDestroyed) {
+            if (manyueFrameMonitor == null) {
+                manyueFrameMonitor = ManyueFrameMonitor(window) {
+                    val state = viewModel.state.value
+                    !state.menuVisible && state.dialog == null
+                }
+            }
+        } else {
+            manyueFrameMonitor?.close()
+            manyueFrameMonitor = null
+        }
+    }
+
+    private fun recordManyueConfiguration() {
+        if (!ManyuePerformanceDiagnostics.enabled) return
+        val runtime = eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState
+        val thermalStatus = if (Build.VERSION.SDK_INT >=
+            29
+        ) {
+            getSystemService<android.os.PowerManager>()?.currentThermalStatus ?: -1
+        } else {
+            -1
+        }
+        ManyuePerformanceDiagnostics.event(
+            Stage.CONFIGURATION, -1, null,
+            Metric.MODE to runtime.modeInt.toLong(), Metric.MODEL to runtime.aiModel.ordinal.toLong(),
+            Metric.SCALE_PERCENT to runtime.aiScalePercent.toLong(),
+            Metric.STRENGTH to runtime.aiDetailStrength.toLong(),
+            Metric.CLASSIC_STRENGTH to runtime.classicStrength.toLong(),
+            Metric.WIDTH to resources.displayMetrics.widthPixels.toLong(),
+            Metric.HEIGHT to resources.displayMetrics.heightPixels.toLong(),
+            Metric.STATUS to thermalStatus.toLong(),
+        )
     }
 
     fun isManyueEnhancementActive(): Boolean =
@@ -436,11 +504,13 @@ class ReaderActivity : BaseActivity() {
 
     fun onManyueAiScaleChanged(percent: Int) {
         eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.updateAiScale(percent)
+        recordManyueConfiguration()
         viewModel.state.value.viewer?.refreshManyue()
     }
 
     fun onManyueAiDetailStrengthChanged(strength: Int) {
         eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.updateAiDetailStrength(strength)
+        recordManyueConfiguration()
         viewModel.state.value.viewer?.refreshManyue()
     }
 
@@ -448,6 +518,7 @@ class ReaderActivity : BaseActivity() {
         eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.updateAiModel(
             eu.kanade.tachiyomi.ui.reader.manyue.ManyueAiModel.fromId(modelId),
         )
+        recordManyueConfiguration()
         viewModel.state.value.viewer?.refreshManyue()
     }
 

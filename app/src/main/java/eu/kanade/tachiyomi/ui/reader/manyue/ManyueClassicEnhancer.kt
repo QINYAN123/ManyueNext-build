@@ -31,7 +31,12 @@ object ManyueClassicEnhancer {
      * The caller owns the input and successful output. Failed temporary outputs are released.
      * A zero effective level is a true no-op and returns the original bitmap.
      */
-    fun enhance(bitmap: Bitmap, strength: Int, isAiCombined: Boolean): Bitmap {
+    fun enhance(
+        bitmap: Bitmap,
+        strength: Int,
+        isAiCombined: Boolean,
+        isCancelled: () -> Boolean = { false },
+    ): Bitmap {
         val level = effectiveLevel(strength, isAiCombined)
         if (level == 0) return bitmap
 
@@ -68,6 +73,11 @@ object ManyueClassicEnhancer {
 
             var windowStart = 0
             for (y in 0 until height) {
+                if (y % 32 == 0 &&
+                    isCancelled()
+                ) {
+                    throw kotlinx.coroutines.CancellationException("Classic job cancelled")
+                }
                 bitmap.getPixels(sourceRow, 0, width, 0, y, width, 1)
                 for (x in 0 until width) {
                     val pixel = sourceRow[x]

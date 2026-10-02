@@ -1,9 +1,6 @@
 package eu.kanade.tachiyomi.ui.reader.viewer
 
 import android.content.Context
-import android.os.SystemClock
-import eu.kanade.tachiyomi.ui.reader.manyue.ManyueEnhancementCache
-import eu.kanade.tachiyomi.ui.reader.manyue.ManyueViewportPolicy
 import android.graphics.PointF
 import android.graphics.RectF
 import android.graphics.drawable.Animatable
@@ -12,6 +9,7 @@ import android.graphics.drawable.Drawable
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.AttributeSet
 import android.view.GestureDetector
 import android.view.MotionEvent
@@ -41,14 +39,16 @@ import com.davemorrissey.labs.subscaleview.SubsamplingScaleImageView.SCALE_TYPE_
 import com.github.chrisbanes.photoview.PhotoView
 import eu.kanade.tachiyomi.data.coil.cropBorders
 import eu.kanade.tachiyomi.data.coil.customDecoder
-import eu.kanade.tachiyomi.ui.reader.viewer.webtoon.WebtoonSubsamplingImageView
+import eu.kanade.tachiyomi.ui.reader.manyue.ManyueEnhancementCache
+import eu.kanade.tachiyomi.ui.reader.manyue.ManyueViewportPolicy
 import eu.kanade.tachiyomi.ui.reader.viewer.webtoon.WebtoonRecyclerView
-import java.util.concurrent.Executor
-import java.util.concurrent.Executors
+import eu.kanade.tachiyomi.ui.reader.viewer.webtoon.WebtoonSubsamplingImageView
 import eu.kanade.tachiyomi.util.system.animatorDurationScale
 import eu.kanade.tachiyomi.util.view.isVisibleOnScreen
-import java.io.File
 import okio.BufferedSource
+import java.io.File
+import java.util.concurrent.Executor
+import java.util.concurrent.Executors
 
 /**
  * A wrapper view for showing page image.
@@ -93,6 +93,7 @@ open class ReaderPageImageView @JvmOverloads constructor(
                 task.run()
             }, "manyue-reader-images").apply { isDaemon = true }
         }
+
         // AI tile decoding must not fan out across every attached strip at once.
         private val aiTileExecutor = Executors.newSingleThreadExecutor { task ->
             Thread({
@@ -256,11 +257,20 @@ open class ReaderPageImageView @JvmOverloads constructor(
                         !zoomView.isAttachedToWindow ||
                         !zoomView.isReady ||
                         this@ReaderPageImageView.config !== zoomConfig
-                    ) return
+                    ) {
+                        return
+                    }
 
                     val point = when (zoomConfig.zoomStartPosition) {
                         ZoomStartPosition.LEFT -> if (forward) PointF(0F, 0F) else PointF(zoomView.sWidth.toFloat(), 0F)
-                        ZoomStartPosition.RIGHT -> if (forward) PointF(zoomView.sWidth.toFloat(), 0F) else PointF(0F, 0F)
+                        ZoomStartPosition.RIGHT -> if (forward) {
+                            PointF(
+                                zoomView.sWidth.toFloat(),
+                                0F,
+                            )
+                        } else {
+                            PointF(0F, 0F)
+                        }
                         ZoomStartPosition.CENTER -> zoomView.center ?: return
                     }
 
@@ -316,16 +326,18 @@ open class ReaderPageImageView @JvmOverloads constructor(
         replacementHeight = 0
         cancelStagedImage()
         val current = pageView
-        if (current != null) try {
-            when (current) {
-                is SubsamplingScaleImageView -> current.recycle()
-                is AppCompatImageView -> current.dispose()
+        if (current != null) {
+            try {
+                when (current) {
+                    is SubsamplingScaleImageView -> current.recycle()
+                    is AppCompatImageView -> current.dispose()
+                }
+            } finally {
+                current.isVisible = false
+                val lease = pageCacheLease
+                pageCacheLease = null
+                if (lease != null) mainHandler.postDelayed(32L) { lease.close() }
             }
-        } finally {
-            current.isVisible = false
-            val lease = pageCacheLease
-            pageCacheLease = null
-            if (lease != null) mainHandler.postDelayed(32L) { lease.close() }
         }
     }
 
@@ -341,6 +353,8 @@ open class ReaderPageImageView @JvmOverloads constructor(
         onReady: (width: Int, height: Int) -> Unit,
         onError: (Throwable?) -> Unit,
         onDisplayError: (Throwable) -> Unit = {},
+        onPrepared: () -> Unit = {},
+        onSwapMeasured: (cpuNs: Long, waitNs: Long, deferredAttempts: Int) -> Unit = { _, _, _ -> },
     ): Long {
         cancelStagedImage()
         this.config = config
@@ -380,6 +394,8 @@ open class ReaderPageImageView @JvmOverloads constructor(
                 setCropBorders(config.cropBorders)
                 setOnImageEventListener(
                     object : SubsamplingScaleImageView.DefaultOnImageEventListener() {
+                        private var baseReadyAt = 0L
+                        private var deferredAttempts = 0
                         override fun onReady() {
                             // A small image can finish decoding before its first measured layout.
                             scheduleCommit()
@@ -393,6 +409,10 @@ open class ReaderPageImageView @JvmOverloads constructor(
 
                         private fun scheduleCommit() {
                             if (!isImageLoaded || !isReady || stagedCommit != null) return
+                            if (baseReadyAt == 0L) {
+                                baseReadyAt = android.os.SystemClock.elapsedRealtimeNanos()
+                                onPrepared()
+                            }
                             // SSIV may emit onReady from onDraw. Mutating FrameLayout children
                             // during dispatchDraw can skip a child or dereference a removed child.
                             lateinit var commit: Runnable
@@ -420,16 +440,21 @@ open class ReaderPageImageView @JvmOverloads constructor(
                             }
                             if (!isImageLoaded || !isReady) return
                             if (!maySwap()) {
+                                deferredAttempts++
                                 stagedCommit?.let {
                                     mainHandler.removeCallbacks(it)
                                     this@ReaderPageImageView.removeCallbacks(it)
                                     this@apply.removeCallbacks(it)
                                 }
-                                val retry = Runnable { stagedCommit = null; scheduleCommit() }
+                                val retry = Runnable {
+                                    stagedCommit = null
+                                    scheduleCommit()
+                                }
                                 stagedCommit = retry
                                 if (isAttachedToWindow) mainHandler.postDelayed(retry, 80L)
                                 return
                             }
+                            val commitStartedAt = android.os.SystemClock.elapsedRealtimeNanos()
                             cancelLandscapeZoom()
                             sourceGeneration++
                             activeSourceGeneration = sourceGeneration
@@ -439,9 +464,17 @@ open class ReaderPageImageView @JvmOverloads constructor(
                             val center = old?.center
                             val viewport = if (old?.isReady == true && center != null) {
                                 ManyueViewportPolicy.rescale(
-                                    old.scale, center.x, center.y, old.sWidth, old.sHeight, sWidth, sHeight,
+                                    old.scale,
+                                    center.x,
+                                    center.y,
+                                    old.sWidth,
+                                    old.sHeight,
+                                    sWidth,
+                                    sHeight,
                                 )
-                            } else null
+                            } else {
+                                null
+                            }
                             setupZoom(config)
                             if (viewport != null) {
                                 setScaleAndCenter(viewport.scale, PointF(viewport.centerX, viewport.centerY))
@@ -467,6 +500,11 @@ open class ReaderPageImageView @JvmOverloads constructor(
                             // layout/zoom callbacks to the whole RecyclerView during a swap.
                             background = pageBackground
                             onReady(sWidth, sHeight)
+                            onSwapMeasured(
+                                android.os.SystemClock.elapsedRealtimeNanos() - commitStartedAt,
+                                commitStartedAt - baseReadyAt,
+                                deferredAttempts,
+                            )
                         }
 
                         override fun onTileLoadError(e: Exception) {

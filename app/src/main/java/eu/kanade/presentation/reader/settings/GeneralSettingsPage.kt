@@ -5,20 +5,27 @@ import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import eu.kanade.tachiyomi.ui.reader.ReaderActivity
+import eu.kanade.tachiyomi.ui.reader.manyue.ManyuePerformanceDiagnostics
 import eu.kanade.tachiyomi.ui.reader.setting.ReaderPreferences
 import eu.kanade.tachiyomi.ui.reader.setting.ReaderSettingsViewModel
 import eu.kanade.tachiyomi.ui.reader.setting.ReadingMode
+import eu.kanade.tachiyomi.util.storage.getUriCompat
 import eu.kanade.tachiyomi.util.system.hasDisplayCutout
+import eu.kanade.tachiyomi.util.system.toShareIntent
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import tachiyomi.i18n.MR
 import tachiyomi.presentation.core.components.CheckboxItem
@@ -301,6 +308,44 @@ internal fun ColumnScope.GeneralPage(viewModel: ReaderSettingsViewModel) {
         text = "最近状态：$aiDiagnostic",
         style = MaterialTheme.typography.bodySmall,
     )
+
+    val diagnosticsEnabled by viewModel.preferences.manyuePerformanceDiagnostics.collectAsState()
+    val diagnosticsScope = rememberCoroutineScope()
+    var reportMessage by remember { mutableStateOf<String?>(null) }
+    var exporting by remember { mutableStateOf(false) }
+    FilterChip(
+        selected = diagnosticsEnabled,
+        onClick = {
+            val enabled = !diagnosticsEnabled
+            viewModel.preferences.manyuePerformanceDiagnostics.set(enabled)
+            readerActivity?.onManyuePerformanceDiagnosticsChanged(enabled)
+            reportMessage = null
+        },
+        label = { Text(if (diagnosticsEnabled) "性能诊断：开" else "性能诊断：关") },
+    )
+    Text("排队、推理、显示准备、替换与帧耗时。只保留最近记录，不含图片、源地址或账号。诊断不改变增强设置。", style = MaterialTheme.typography.bodySmall)
+    androidx.compose.foundation.layout.Row {
+        TextButton(onClick = {
+            readerActivity?.resetManyuePerformanceDiagnostics()
+            reportMessage = "已清空诊断记录"
+        }, enabled = !exporting) { Text("清空记录") }
+        TextButton(onClick = {
+            exporting = true
+            diagnosticsScope.launch {
+                try {
+                    val file =
+                        withContext(Dispatchers.IO) { ManyuePerformanceDiagnostics.export(context.applicationContext) }
+                    reportMessage = "已保存 ${file.name}，可在分享面板保存报告"
+                    context.startActivity(file.getUriCompat(context).toShareIntent(context, "application/json"))
+                } catch (_: Exception) {
+                    reportMessage = "报告导出失败，请重试"
+                } finally {
+                    exporting = false
+                }
+            }
+        }, enabled = !exporting) { Text(if (exporting) "正在导出" else "导出性能报告") }
+    }
+    reportMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
 
     Text("AI 模型", style = MaterialTheme.typography.bodyMedium)
     androidx.compose.foundation.layout.FlowRow {

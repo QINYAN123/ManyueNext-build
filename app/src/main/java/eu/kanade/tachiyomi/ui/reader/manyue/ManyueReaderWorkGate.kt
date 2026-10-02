@@ -10,6 +10,7 @@ object ManyueReaderWorkGate {
     const val THERMAL_STATUS_SEVERE = ManyueReaderPressurePolicy.THERMAL_STATUS_SEVERE
 
     private val policy = ManyueReaderPressurePolicy()
+    private var diagnosticThermalStatus = -1
 
     /** Keeps the current reader owner. [active] resets motion sampling when interaction ends. */
     @Synchronized
@@ -39,6 +40,15 @@ object ManyueReaderWorkGate {
 
     @Synchronized
     fun reportThermalStatus(reader: Any, status: Int) {
+        if (status != diagnosticThermalStatus) {
+            diagnosticThermalStatus = status
+            ManyuePerformanceDiagnostics.event(
+                ManyuePerformanceRecorder.Stage.THERMAL_CHANGED,
+                -1,
+                null,
+                ManyuePerformanceRecorder.Metric.STATUS to status.toLong(),
+            )
+        }
         policy.reportThermalStatus(reader, status)
     }
 

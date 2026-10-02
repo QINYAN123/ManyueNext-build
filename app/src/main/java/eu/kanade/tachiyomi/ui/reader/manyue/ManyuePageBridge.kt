@@ -6,6 +6,8 @@ import android.graphics.Rect
 import android.os.SystemClock
 import android.view.View
 import androidx.recyclerview.widget.RecyclerView
+import eu.kanade.tachiyomi.ui.reader.manyue.ManyuePerformanceRecorder.Metric
+import eu.kanade.tachiyomi.ui.reader.manyue.ManyuePerformanceRecorder.Stage
 import eu.kanade.tachiyomi.ui.reader.viewer.ReaderPageImageView
 import eu.kanade.tachiyomi.ui.reader.viewer.webtoon.WebtoonRecyclerView
 import kotlinx.coroutines.CancellationException
@@ -201,11 +203,22 @@ class ManyuePageBridge(
                         return@OnAiCompleteListener
                     }
                     onState(ManyueEnhancementState.AI_WAITING_DISPLAY, null)
+                    ManyuePerformanceDiagnostics.event(Stage.DISPLAY_STARTED, identity.pageIndex, t)
+                    val displayStartedAt = SystemClock.elapsedRealtime()
                     renderJob?.cancel()
                     renderJob = scope.launch {
                         var baseCacheLease: ManyueEnhancementCache.CacheLease? = null
                         var imageCacheLease: ManyueEnhancementCache.CacheLease? = null
                         try {
+                            // Invisible attached holders must not occupy the serial classic worker
+                            // while a visible page waits. AI itself still prefetches to disk normally.
+                            if (wantClassic && !awaitPageVisibility(
+                                    isCurrent = { isCurrent(t, identity, mode, expectedGeneration) },
+                                    isVisible = ::isPageVisible,
+                                )
+                            ) {
+                                return@launch
+                            }
                             // Prepare/cache/decode while scrolling or while this bound page is offscreen.
                             // Never hold the global decode lock while waiting for visibility:
                             // an attached offscreen Pager page may remain hidden indefinitely.
@@ -239,6 +252,7 @@ class ManyuePageBridge(
                                         else -> null
                                     },
                                 )
+                                val classicStartedAt = SystemClock.elapsedRealtime()
                                 if (wantClassic && strength > 0 && classicSafe) {
                                     var classic = withContext(Dispatchers.IO) {
                                         val pinned = ManyueAiUpscaler.pinnedCachedImage(context, tok, strength)
@@ -247,7 +261,10 @@ class ManyuePageBridge(
                                     }
                                     if (classic == null) {
                                         val created = withContext(classicDispatcher) {
-                                            buildClassicVariant(context, tok, strength)
+                                            val job = kotlinx.coroutines.currentCoroutineContext()[Job]
+                                            buildClassicVariant(context, tok, strength, identity.pageIndex) {
+                                                job?.isActive == false
+                                            }
                                         }
                                         if (created != null) {
                                             classic = withContext(Dispatchers.IO) {
@@ -271,15 +288,30 @@ class ManyuePageBridge(
                                         )
                                     }
                                 }
+                                ManyuePerformanceDiagnostics.event(
+                                    Stage.DISPLAY_PREPARED,
+                                    identity.pageIndex,
+                                    t,
+                                    Metric.DISPLAY_PREP_MS to (SystemClock.elapsedRealtime() - displayStartedAt),
+                                    Metric.CLASSIC_PREP_MS to (SystemClock.elapsedRealtime() - classicStartedAt),
+                                )
                                 DisplayResult(image, baseImage, state, displayDetail)
                             } ?: return@launch
                             if (!isCurrent(t, identity, mode, expectedGeneration)) return@launch
                             // Native/cache work is already done, but the first source decode owns
                             // the strip's geometry and first-load callback. Do not freeze a placeholder.
+                            val sourceWaitStartedAt = SystemClock.elapsedRealtime()
                             if (!awaitSourceReady(t, identity, mode, expectedGeneration)) return@launch
+                            ManyuePerformanceDiagnostics.event(
+                                Stage.SOURCE_READY,
+                                identity.pageIndex,
+                                t,
+                                Metric.SOURCE_WAIT_MS to (SystemClock.elapsedRealtime() - sourceWaitStartedAt),
+                            )
                             // Keep completed results encoded in the cache until this holder actually
                             // intersects the viewport. Attached RecyclerView children can be offscreen;
                             // staging them would enqueue base-tile decodes ahead of the page being read.
+                            val visibilityStartedAt = SystemClock.elapsedRealtime()
                             if (!awaitPageVisibility(
                                     isCurrent = { isCurrent(t, identity, mode, expectedGeneration) },
                                     isVisible = ::isPageVisible,
@@ -287,6 +319,12 @@ class ManyuePageBridge(
                             ) {
                                 return@launch
                             }
+                            ManyuePerformanceDiagnostics.event(
+                                Stage.PAGE_VISIBLE,
+                                identity.pageIndex,
+                                t,
+                                Metric.VISIBILITY_WAIT_MS to (SystemClock.elapsedRealtime() - visibilityStartedAt),
+                            )
                             if (!isCurrent(t, identity, mode, expectedGeneration)) return@launch
                             stageFile(
                                 image = display.image,
@@ -306,6 +344,7 @@ class ManyuePageBridge(
                         } catch (_: CancellationException) {
                             // Holder was rebound or detached.
                         } catch (error: Throwable) {
+                            ManyuePerformanceDiagnostics.event(Stage.DISPLAY_FAILED, identity.pageIndex, t)
                             logcat(LogPriority.WARN, error) { "Manyue AI render failed; original retained" }
                             if (isCurrent(t, identity, mode, expectedGeneration)) {
                                 onState(ManyueEnhancementState.FAILED, "AI 结果显示失败")
@@ -436,16 +475,36 @@ class ManyuePageBridge(
         context: Context,
         token: String,
         strength: Int,
+        pageIndex: Int,
+        isCancelled: () -> Boolean,
     ): ManyueEnhancementCache.CachedImage? {
         var input: Bitmap? = null
         var enhanced: Bitmap? = null
         try {
+            val decodeStartedAt = SystemClock.elapsedRealtime()
             val source = ManyueAiUpscaler.loadCachedBitmap(context, token) ?: return null
+            val decodeMs = SystemClock.elapsedRealtime() - decodeStartedAt
             input = source
-            val output = ManyueClassicEnhancer.enhance(source, strength, isAiCombined = true)
+            val filterStartedAt = SystemClock.elapsedRealtime()
+            val output = ManyueClassicEnhancer.enhance(source, strength, isAiCombined = true, isCancelled = isCancelled)
+            val filterMs = SystemClock.elapsedRealtime() - filterStartedAt
             enhanced = output
             if (output === input) return null
-            return ManyueAiUpscaler.cacheClassicImage(context, token, strength, output)
+            if (isCancelled()) throw CancellationException()
+            val encodeStartedAt = SystemClock.elapsedRealtime()
+            val cached = ManyueAiUpscaler.cacheClassicImage(context, token, strength, output)
+            ManyuePerformanceDiagnostics.event(
+                Stage.CLASSIC_DETAIL,
+                pageIndex,
+                token,
+                Metric.CLASSIC_DECODE_MS to decodeMs,
+                Metric.CLASSIC_FILTER_MS to filterMs,
+                Metric.CLASSIC_ENCODE_MS to (SystemClock.elapsedRealtime() - encodeStartedAt),
+                Metric.CLASSIC_STRENGTH to strength.toLong(),
+            )
+            return cached
+        } catch (error: CancellationException) {
+            throw error
         } catch (error: Throwable) {
             logcat(LogPriority.WARN, error) { "Manyue classic AI variant failed; keeping AI output" }
             return null
@@ -522,7 +581,28 @@ class ManyuePageBridge(
                             "page=${expectedIdentity.pageIndex} token=$token stageWaitMs=${SystemClock.elapsedRealtime() - stageStartedAt}"
                     }
                 },
+                onPrepared = {
+                    ManyuePerformanceDiagnostics.event(
+                        Stage.BASE_READY,
+                        expectedIdentity.pageIndex,
+                        token,
+                        Metric.BASE_DECODE_MS to (SystemClock.elapsedRealtime() - stageStartedAt),
+                    )
+                },
+                onSwapMeasured = { cpuNs, waitNs, attempts ->
+                    ManyuePerformanceDiagnostics.event(
+                        Stage.DISPLAYED,
+                        expectedIdentity.pageIndex,
+                        token,
+                        Metric.SWAP_CPU_NS to cpuNs,
+                        Metric.SWAP_WAIT_NS to waitNs,
+                        Metric.DEFERRED_ATTEMPTS to attempts.toLong(),
+                        Metric.WIDTH to target.width.toLong(),
+                        Metric.HEIGHT to target.height.toLong(),
+                    )
+                },
                 onError = { error ->
+                    ManyuePerformanceDiagnostics.event(Stage.DISPLAY_FAILED, expectedIdentity.pageIndex, token)
                     callbackRanSynchronously = true
                     if (isCurrent(token, expectedIdentity, expectedMode, expectedGeneration) &&
                         mayFallback && classicVariant

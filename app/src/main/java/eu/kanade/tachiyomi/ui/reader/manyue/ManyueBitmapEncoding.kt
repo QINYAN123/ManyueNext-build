@@ -7,6 +7,17 @@ import android.os.Build
 internal object ManyueBitmapEncoding {
     @Suppress("DEPRECATION")
     fun lossyWebpFormat(): Bitmap.CompressFormat =
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) Bitmap.CompressFormat.WEBP_LOSSY
-        else Bitmap.CompressFormat.WEBP
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            Bitmap.CompressFormat.WEBP_LOSSY
+        } else {
+            Bitmap.CompressFormat.WEBP
+        }
+
+    /** Lossless quality is compression effort, not pixel quality; legacy Android uses PNG. */
+    fun fastLosslessFormat(): Bitmap.CompressFormat =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            Bitmap.CompressFormat.WEBP_LOSSLESS
+        } else {
+            Bitmap.CompressFormat.PNG
+        }
 }

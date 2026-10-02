@@ -1,11 +1,11 @@
-# Lite1 与图片增强的真机对照
+# Lite2 与图片增强的真机对照
 
-设备优先使用荣耀 Magic V2。当前构建环境没有连接 ADB 设备，清单中的手机结果不得根据编译或宿主测试勾选。
+已连接荣耀 Magic V2（Android 16、Adreno 740），安装覆盖、原生 CPU/Vulkan、连续倍率、格式/透明度/取消、内屏阅读快滚和诊断导出已有实测。具体结果和限制见 `MANYUE_DIAGNOSTICS.md`。下列尚未勾选项目仍待完整验收，不得根据编译或短时滚动推断已通过。
 
 ## 安装
 
-- [ ] 用 `mihon-lite1-arm64.apk` 覆盖上一版 benchmark 测试包。
-- [ ] 版本为 `0.20.12-lite1-benchmark`（versionCode 41），包名 `app.mihon.benchmark`；正式 Mihon 的数据独立。
+- [ ] 用 `mihon-lite2-arm64.apk` 覆盖上一版 benchmark 测试包。
+- [ ] 版本为 `0.20.12-lite2-benchmark`（versionCode 42），包名 `app.mihon.benchmark`；正式 Mihon 的数据独立。
 - [ ] 保留同一漫画源、同一话、同一页面和相同屏幕帧率。不要卸载现有测试包来更新。
 
 ## 先单独测试轻量模型
@@ -46,12 +46,14 @@
 ## 再测试既有 AI
 
 - [ ] 分别选择 AI 超分与智能增强，观察逐页排队、准备、原生处理、等待显示、成功/失败；GPU 状态独立，不代表每张 AI 已完成。
-- [ ] 690×1421 在 1.25×/1.5×/2× 下约为 863×1777、1035×2132、1380×2842；原图文件保留。低倍率仍执行当前完整 2×模型。
+- [ ] 690×1421 在 1.25×/1.5×/2× 下约为 863×1777、1035×2132、1380×2842；原图文件保留。旧 Real-CUGAN/Real-ESRGAN 低倍率仍执行完整 2×模型；Lite 直接生成所需输出尺寸。
 - [ ] 旧模型智能模式原图宽度足够时不运行 AI；Lite 智能模式做 1×修复。显式组合经典增强与 GPU 同时开启时，会叠加处理效果和开销。
 - [ ] 滑动与图片替换、快速跳页、切 OFF、切章节、退出阅读器：旧结果不覆盖新设置，失败保持可读。
 - [ ] 折叠后智能目标宽度更新；极长图超过安全预算时原图可读。
 
 ## 可选采集（ADB）
+
+Lite2 可直接在阅读器设置 → 常规中打开性能诊断，复现后导出 JSON；默认关闭，不自动上传。报告区分新推理、缓存、经典处理、基础图块解码、替换提交和帧耗时。关闭后停止采集并保留当前记录，再开启或清空会开始新会话。
 
 使用包名 `app.mihon.benchmark`：`adb shell dumpsys gfxinfo app.mihon.benchmark reset`，对同一段分别滚动，再采集 `adb shell dumpsys gfxinfo app.mihon.benchmark framestats` 和 `adb shell dumpsys meminfo app.mihon.benchmark`。
 

@@ -66,8 +66,16 @@ class ManyueEnhancementCacheTest {
             val image = java.io.File(bundle, "image.webp").apply { writeBytes(byteArrayOf(1)) }
             java.io.File(bundle, "manifest.json").writeText("""{"image":"image.webp","width":1000,"height":2000}""")
             java.io.File(bundle, "classic_25.webp").writeBytes(byteArrayOf(2))
-            assertNull(ManyueEnhancementCache.cachedImage(bundle, classicStrength = 25), "Old classic output must not masquerade as the new algorithm")
-            val variant = java.io.File(bundle, "classic_luma_v2_25.webp").apply { writeBytes(byteArrayOf(2)) }
+            assertNull(
+                ManyueEnhancementCache.cachedImage(bundle, classicStrength = 25),
+                "Old classic output must not masquerade as the new algorithm",
+            )
+            java.io.File(bundle, "classic_luma_v2_25.webp").writeBytes(byteArrayOf(2))
+            assertNull(
+                ManyueEnhancementCache.cachedImage(bundle, classicStrength = 25),
+                "Lossy variants must not be reused",
+            )
+            val variant = java.io.File(bundle, "classic_luma_v3_25.img").apply { writeBytes(byteArrayOf(2)) }
 
             assertEquals(image, ManyueEnhancementCache.cachedImage(bundle)?.file)
             assertEquals(variant, ManyueEnhancementCache.cachedImage(bundle, classicStrength = 25)?.file)

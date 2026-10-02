@@ -329,7 +329,7 @@ object ManyueEnhancementCache {
 
     private fun classicVariantFile(bundle: File, strength: Int): File? {
         if (strength !in 1..100) return null
-        return File(bundle, "classic_luma_v2_$strength.webp")
+        return File(bundle, "classic_luma_v3_$strength.img")
     }
 
     /** Atomically copy one complete encoded image into the cache bundle. */
@@ -428,13 +428,9 @@ object ManyueEnhancementCache {
             if (image.isFile && image.length() > 0L) return cachedImage(bundle, strength)
             temporary = File.createTempFile("manyue-ai-classic-", ".tmp", context.cacheDir)
             val encoded = FileOutputStream(temporary).use {
-                @Suppress("DEPRECATION")
-                val format = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                    Bitmap.CompressFormat.WEBP_LOSSY
-                } else {
-                    Bitmap.CompressFormat.WEBP
-                }
-                bitmap.compress(format, 96, it)
+                // Avoid slow lossy re-encoding after AI. WEBP_LOSSLESS 0 is fast compression
+                // effort with unchanged pixels; Android 8–10 uses lossless PNG by its header.
+                bitmap.compress(ManyueBitmapEncoding.fastLosslessFormat(), 0, it)
             }
             check(encoded && temporary.length() > 0L) { "classic AI cache encoding failed" }
             synchronized(diskLock) {
