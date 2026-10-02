@@ -1,5 +1,7 @@
 # Lightweight Android SR with continuous target dimensions
 
+This document records the Perf1 research baseline and design rationale. The current trained Lite model and resident Android integration are described in [MANYUE_LITE.md](MANYUE_LITE.md); QuickSR/LMF research checkpoints below are not the Lite weights.
+
 The intended behavior is retained originals, subtle restoration near 1x for sufficiently clear color comics, and learned reconstruction at a user-selected target width for blurry images. A width heuristic can propose a scale; manual output size and detail strength remain independent controls. Width alone cannot detect JPEG artifacts or blur.
 
 ## Verified pretrained baseline

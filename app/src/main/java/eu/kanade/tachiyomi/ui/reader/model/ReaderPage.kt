@@ -1,12 +1,12 @@
 package eu.kanade.tachiyomi.ui.reader.model
 
 import eu.kanade.tachiyomi.source.model.Page
-import eu.kanade.tachiyomi.ui.reader.metadata.SourceImageInfo
 import eu.kanade.tachiyomi.ui.reader.manyue.ManyueEnhancementState
-import java.io.InputStream
+import eu.kanade.tachiyomi.ui.reader.metadata.SourceImageInfo
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import java.io.InputStream
 
 open class ReaderPage(
     index: Int,
@@ -64,11 +64,23 @@ open class ReaderPage(
                 enhancementState = state,
                 enhancementDetail = detail,
                 enhancedWidth = if (
-                    state == ManyueEnhancementState.AI_READY || state == ManyueEnhancementState.AI_CLASSIC_READY
-                ) current.enhancedWidth else null,
+                    state == ManyueEnhancementState.AI_READY || state == ManyueEnhancementState.AI_CLASSIC_READY ||
+                    state == ManyueEnhancementState.INTERPOLATED_READY ||
+                    state == ManyueEnhancementState.CLASSIC_READY
+                ) {
+                    current.enhancedWidth
+                } else {
+                    null
+                },
                 enhancedHeight = if (
-                    state == ManyueEnhancementState.AI_READY || state == ManyueEnhancementState.AI_CLASSIC_READY
-                ) current.enhancedHeight else null,
+                    state == ManyueEnhancementState.AI_READY || state == ManyueEnhancementState.AI_CLASSIC_READY ||
+                    state == ManyueEnhancementState.INTERPOLATED_READY ||
+                    state == ManyueEnhancementState.CLASSIC_READY
+                ) {
+                    current.enhancedHeight
+                } else {
+                    null
+                },
             ) ?: current
         }
     }

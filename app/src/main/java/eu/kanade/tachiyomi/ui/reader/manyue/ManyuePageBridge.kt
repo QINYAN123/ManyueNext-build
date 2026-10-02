@@ -10,19 +10,19 @@ import eu.kanade.tachiyomi.ui.reader.viewer.ReaderPageImageView
 import eu.kanade.tachiyomi.ui.reader.viewer.webtoon.WebtoonRecyclerView
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.asCoroutineDispatcher
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlin.coroutines.resume
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import logcat.LogPriority
 import tachiyomi.core.common.util.system.logcat
+import kotlin.coroutines.resume
 
 /**
  * Per-page bridge between the async AI scheduler and a ReaderPageImageView.
@@ -92,7 +92,10 @@ class ManyuePageBridge(
                         val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
                         android.graphics.BitmapFactory.decodeByteArray(originalBytes, 0, originalBytes.size, bounds)
                         ManyueAutoEnhancementPolicy.decide(
-                            bounds.outWidth, ManyueRuntimeState.displayWidthPx, ManyueRuntimeState.aiScalePercent,
+                            bounds.outWidth,
+                            ManyueRuntimeState.displayWidthPx,
+                            ManyueRuntimeState.aiScalePercent,
+                            ManyueRuntimeState.aiModel.continuousScale,
                         )
                     }
                     if (!isCurrentBeforeToken(identity, mode, expectedGeneration)) return@launch
@@ -118,7 +121,7 @@ class ManyuePageBridge(
                 } ?: run {
                     val capability = withContext(Dispatchers.IO) { ManyueAiRuntime.probe(context) }
                     val detail = if (capability == ManyueAiRuntime.Capability.READY) {
-                        "图片格式、尺寸或固定 2× 安全预算不适用"
+                        "图片格式或所选模型的像素预算不适用"
                     } else {
                         capability.userMessage
                     }
@@ -134,17 +137,22 @@ class ManyuePageBridge(
                 token = t
 
                 val strength = ManyueRuntimeState.classicStrength
-                val wantClassic = ManyueEnhancementMode.fromInt(mode).usesClassic()
+                val wantClassic = ManyueEnhancementMode.fromInt(mode).usesClassic(ManyueRuntimeState.aiModel)
                 val completionListener = ManyueAiUpscaler.OnAiCompleteListener { tok, state, detail ->
                     if (!isCurrent(t, identity, mode, expectedGeneration)) return@OnAiCompleteListener
                     if (state == ManyueAiUpscaler.STATE_PROCESSING) {
                         onState(ManyueEnhancementState.AI_PROCESSING, null)
                         return@OnAiCompleteListener
                     }
-                    if (state == ManyueAiUpscaler.STATE_PREPARING || state == ManyueAiUpscaler.STATE_WAITING_RESOURCES) {
+                    if (state == ManyueAiUpscaler.STATE_PREPARING ||
+                        state == ManyueAiUpscaler.STATE_WAITING_RESOURCES
+                    ) {
                         onState(
-                            if (state == ManyueAiUpscaler.STATE_PREPARING) ManyueEnhancementState.AI_PREPARING
-                            else ManyueEnhancementState.AI_WAITING_RESOURCES,
+                            if (state == ManyueAiUpscaler.STATE_PREPARING) {
+                                ManyueEnhancementState.AI_PREPARING
+                            } else {
+                                ManyueEnhancementState.AI_WAITING_RESOURCES
+                            },
                             null,
                         )
                         return@OnAiCompleteListener
@@ -164,7 +172,14 @@ class ManyuePageBridge(
                                     if (!awaitDisplayPause(t, identity, mode, expectedGeneration)) return@launch
                                     val bytes = withContext(Dispatchers.IO) { reloadOriginal() }
                                     if (bytes != null && isCurrent(t, identity, mode, expectedGeneration)) {
-                                        tryStartAi(context, identity, bytes, onEnhancedDimensions, onState, reloadOriginal)
+                                        tryStartAi(
+                                            context,
+                                            identity,
+                                            bytes,
+                                            onEnhancedDimensions,
+                                            onState,
+                                            reloadOriginal,
+                                        )
                                     }
                                 } catch (error: CancellationException) {
                                     throw error
@@ -207,16 +222,23 @@ class ManyuePageBridge(
                                     return@withLock null
                                 }
                                 var image = baseImage
-                                var state = ManyueEnhancementState.AI_READY
+                                var state = ManyueRuntimeState.aiModel.displayedState(
+                                    ManyueRuntimeState.aiDetailStrength,
+                                )
                                 val classicSafe = ManyueAiSafetyPolicy.isPixelBudgetSafe(
-                                    baseImage.width, baseImage.height, ManyueAiSafetyPolicy.MAX_CLASSIC_PIXELS,
+                                    baseImage.width,
+                                    baseImage.height,
+                                    ManyueAiSafetyPolicy.MAX_CLASSIC_PIXELS,
                                 )
                                 var displayDetail = mergeDisplayDetails(detail, baseImage.detail)
-                                displayDetail = mergeDisplayDetails(displayDetail, when {
-                                    wantClassic && strength <= 0 -> "经典增强强度为 0"
-                                    wantClassic && !classicSafe -> "经典增强超过内存限制，已保留 AI 超分"
-                                    else -> null
-                                })
+                                displayDetail = mergeDisplayDetails(
+                                    displayDetail,
+                                    when {
+                                        wantClassic && strength <= 0 -> "经典增强强度为 0"
+                                        wantClassic && !classicSafe -> "经典增强超过内存限制，已保留 AI 超分"
+                                        else -> null
+                                    },
+                                )
                                 if (wantClassic && strength > 0 && classicSafe) {
                                     var classic = withContext(Dispatchers.IO) {
                                         val pinned = ManyueAiUpscaler.pinnedCachedImage(context, tok, strength)
@@ -237,7 +259,11 @@ class ManyuePageBridge(
                                     }
                                     if (classic != null) {
                                         image = classic
-                                        state = ManyueEnhancementState.AI_CLASSIC_READY
+                                        state =
+                                            ManyueRuntimeState.aiModel.displayedState(
+                                                ManyueRuntimeState.aiDetailStrength,
+                                                classicApplied = true,
+                                            )
                                     } else {
                                         displayDetail = mergeDisplayDetails(
                                             displayDetail,
@@ -258,7 +284,9 @@ class ManyuePageBridge(
                                     isCurrent = { isCurrent(t, identity, mode, expectedGeneration) },
                                     isVisible = ::isPageVisible,
                                 )
-                            ) return@launch
+                            ) {
+                                return@launch
+                            }
                             if (!isCurrent(t, identity, mode, expectedGeneration)) return@launch
                             stageFile(
                                 image = display.image,
@@ -317,9 +345,13 @@ class ManyuePageBridge(
         expectedGeneration: Long,
     ): Boolean {
         while (isCurrent(expectedToken, expectedIdentity, expectedMode, expectedGeneration)) {
-            if (!view.isAttachedToWindow) awaitAttachment()
-            else if (view.isManyueImageReady()) return true
-            else delay(32L)
+            if (!view.isAttachedToWindow) {
+                awaitAttachment()
+            } else if (view.isManyueImageReady()) {
+                return true
+            } else {
+                delay(32L)
+            }
         }
         return false
     }
@@ -346,8 +378,12 @@ class ManyuePageBridge(
             }
             val pageVisible = view.isShown && view.getGlobalVisibleRect(visibleRect)
             val settled = pageVisible && view.isManyueImageReady() && !view.isManyueInteractionActive() &&
-                (recycler == null || (recycler.scrollState == RecyclerView.SCROLL_STATE_IDLE &&
-                    !recycler.isComputingLayout))
+                (
+                    recycler == null || (
+                        recycler.scrollState == RecyclerView.SCROLL_STATE_IDLE &&
+                            !recycler.isComputingLayout
+                        )
+                    )
             val now = SystemClock.uptimeMillis()
             if (settled) {
                 // The strip RecyclerView already owns a 300 ms quiet window. Do not add
@@ -452,7 +488,7 @@ class ManyuePageBridge(
                 maySwap = {
                     if (recycler is WebtoonRecyclerView) {
                         view.isAttachedToWindow && view.isShown && view.getGlobalVisibleRect(Rect()) &&
-                            recycler.canSwapManyueImage()
+                            recycler.canSwapManyueImage(ManyueRuntimeState.aiModel.continuousScale)
                     } else if (view.isManyueInteractionActive()) {
                         quietSince = 0L
                         false
@@ -494,7 +530,7 @@ class ManyuePageBridge(
                         logcat(LogPriority.WARN, error) {
                             "Manyue classic cache image failed; falling back to AI output"
                         }
-                        readyState = ManyueEnhancementState.AI_READY
+                        readyState = ManyueRuntimeState.aiModel.displayedState(ManyueRuntimeState.aiDetailStrength)
                         readyDetail = mergeDisplayDetails(
                             readyDetail,
                             "经典增强结果读取失败，已保留 AI 超分",

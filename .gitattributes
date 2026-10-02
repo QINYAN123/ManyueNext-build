@@ -8,7 +8,17 @@
 *.jar binary
 *.so binary
 *.bin binary
+*.pt binary
+*.pth binary
+*.f32 binary
+*-chw-f32 binary
+*.npy binary
+*.npz binary
 *.param -text whitespace=cr-at-eol
+
+# The model metadata and audited training bundle have checksums over exact bytes.
+app/src/main/assets/ai/models-Manyue-Lite/** -text whitespace=cr-at-eol
+native/manyue-lite/training/** -text whitespace=cr-at-eol
 
 # Images
 *.webp binary

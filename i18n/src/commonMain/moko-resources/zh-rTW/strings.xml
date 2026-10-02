@@ -950,7 +950,7 @@
     <string name="reader_enhancement_classic_ready">經典增強</string>
     <string name="reader_enhancement_ai_queued">AI 超分排隊中</string>
     <string name="reader_enhancement_ai_processing">AI 超分處理中</string>
-    <string name="reader_enhancement_ai_waiting_display">AI 超分已完成，等待停止滑動</string>
+    <string name="reader_enhancement_ai_waiting_display">AI 已完成，準備顯示或等待安全替換</string>
     <string name="reader_enhancement_ai_ready">AI 超分</string>
     <string name="reader_enhancement_ai_classic_ready">AI 超分 + 經典增強</string>
     <string name="reader_enhancement_skipped">已略過增強</string>
@@ -958,4 +958,5 @@
     <string name="reader_source_image_loading">原圖讀取中</string>
     <string name="reader_source_image_unavailable">原圖未知</string>
     <string name="show_r18_content_session">本次執行顯示 R18 內容（重新啟動後自動隱藏）</string>
+    <string name="reader_enhancement_interpolated_ready">一般插值</string>
 </resources>

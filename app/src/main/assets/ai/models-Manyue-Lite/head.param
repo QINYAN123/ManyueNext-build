@@ -1,0 +1,6 @@
+7767517
+4 4
+Input input 0 1 in0
+Convolution head_reduce 1 1 in0 head_reduce_out 0=32 1=1 2=1 3=1 4=0 5=1 6=736 11=1 12=1 13=1 14=0 15=0 16=0 18=0.0
+ReLU head_relu 1 1 head_reduce_out head_relu_out 0=0.0
+Convolution head_residual 1 1 head_relu_out out0 0=3 1=1 2=1 3=1 4=0 5=1 6=96 11=1 12=1 13=1 14=0 15=0 16=0 18=0.0

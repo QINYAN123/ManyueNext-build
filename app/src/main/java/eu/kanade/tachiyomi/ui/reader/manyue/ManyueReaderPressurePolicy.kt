@@ -1,5 +1,6 @@
 package eu.kanade.tachiyomi.ui.reader.manyue
 
+import kotlin.math.abs
 import kotlin.math.hypot
 
 /** Pure, clock-injectable policy behind [ManyueReaderWorkGate]. */
@@ -16,6 +17,11 @@ internal class ManyueReaderPressurePolicy(
     private var fastScrollSamples = 0
     private var badFrameSamples = 0
     private var goodFrameSamples = 0
+    private var sampledExpectedIntervalNanos: Long? = null
+    private var stableFrameCadenceMultiplier = 1
+    private val frameCadenceSamples = IntArray(FRAME_CADENCE_WINDOW_SAMPLES)
+    private var frameCadenceSampleCount = 0
+    private var frameCadenceSampleCursor = 0
 
     @Synchronized
     fun update(reader: Any, active: Boolean) {
@@ -92,12 +98,35 @@ internal class ManyueReaderPressurePolicy(
         if (frameIntervalNanos <= 0L || expectedIntervalNanos <= 0L) {
             badFrameSamples = 0
             goodFrameSamples = 0
+            resetFrameCadenceSamples()
             return
+        }
+
+        val previousExpectedIntervalNanos = sampledExpectedIntervalNanos
+        if (previousExpectedIntervalNanos == null ||
+            isRefreshIntervalChange(previousExpectedIntervalNanos, expectedIntervalNanos)
+        ) {
+            sampledExpectedIntervalNanos = expectedIntervalNanos
+            stableFrameCadenceMultiplier = 1
+            badFrameSamples = 0
+            goodFrameSamples = 0
+            badFrameUntilNanos = null
+            resetFrameCadenceSamples()
+        } else {
+            sampledExpectedIntervalNanos = expectedIntervalNanos
+        }
+
+        recordFrameCadenceSample(classifyFrameCadence(frameIntervalNanos, expectedIntervalNanos))
+        val detectedCadence = stableFrameCadence()
+        if (detectedCadence != null && detectedCadence != stableFrameCadenceMultiplier) {
+            stableFrameCadenceMultiplier = detectedCadence
+            badFrameSamples = 0
+            goodFrameSamples = 0
         }
 
         val now = nanoTime()
         val isBadFrame = frameIntervalNanos.toDouble() >
-            expectedIntervalNanos.toDouble() * BAD_FRAME_MULTIPLIER
+            expectedIntervalNanos.toDouble() * stableFrameCadenceMultiplier * BAD_FRAME_MULTIPLIER
         if (isBadFrame) {
             badFrameSamples++
             goodFrameSamples = 0
@@ -119,6 +148,7 @@ internal class ManyueReaderPressurePolicy(
         if (owner !== reader) return
         badFrameSamples = 0
         goodFrameSamples = 0
+        resetFrameCadenceSamples()
     }
 
     @Synchronized
@@ -132,6 +162,14 @@ internal class ManyueReaderPressurePolicy(
         val now = nanoTime()
         return thermalPressure || isBefore(now, fastScrollUntilNanos) || isBefore(now, badFrameUntilNanos)
     }
+
+    /** Visible Lite jobs continue through fast motion, while measured jank/heat still pause work. */
+    @Synchronized
+    fun isLiteVisibleWorkBlocked(): Boolean =
+        thermalPressure || isBefore(nanoTime(), badFrameUntilNanos)
+
+    @Synchronized
+    fun isLiteDisplayBlocked(): Boolean = isBefore(nanoTime(), badFrameUntilNanos)
 
     /** Display commits wait for measured motion/frame pressure, but not thermal status alone. */
     @Synchronized
@@ -154,6 +192,54 @@ internal class ManyueReaderPressurePolicy(
         resetScrollSampling()
         badFrameSamples = 0
         goodFrameSamples = 0
+        sampledExpectedIntervalNanos = null
+        stableFrameCadenceMultiplier = 1
+        resetFrameCadenceSamples()
+    }
+
+    private fun isRefreshIntervalChange(previous: Long, current: Long): Boolean =
+        abs(current.toDouble() - previous.toDouble()) >
+            previous.toDouble() * REFRESH_INTERVAL_CHANGE_PERCENT / 100.0
+
+    /** Returns the nearest stable-vsync multiple only when the sample is within a narrow band. */
+    private fun classifyFrameCadence(frameIntervalNanos: Long, expectedIntervalNanos: Long): Int {
+        var closestMultiplier = 0
+        var closestError = Double.MAX_VALUE
+        for (multiplier in MIN_STABLE_FRAME_CADENCE_MULTIPLIER..MAX_STABLE_FRAME_CADENCE_MULTIPLIER) {
+            val cadenceNanos = expectedIntervalNanos.toDouble() * multiplier
+            val error = abs(frameIntervalNanos.toDouble() - cadenceNanos)
+            if (error <= cadenceNanos * FRAME_CADENCE_TOLERANCE_PERCENT / 100.0 && error < closestError) {
+                closestMultiplier = multiplier
+                closestError = error
+            }
+        }
+        return closestMultiplier
+    }
+
+    private fun recordFrameCadenceSample(multiplier: Int) {
+        frameCadenceSamples[frameCadenceSampleCursor] = multiplier
+        frameCadenceSampleCursor = (frameCadenceSampleCursor + 1) % FRAME_CADENCE_WINDOW_SAMPLES
+        frameCadenceSampleCount = (frameCadenceSampleCount + 1).coerceAtMost(FRAME_CADENCE_WINDOW_SAMPLES)
+    }
+
+    /** Requires six of the most recent eight samples to share the same integer vsync cadence. */
+    private fun stableFrameCadence(): Int? {
+        if (frameCadenceSampleCount < FRAME_CADENCE_MIN_SAMPLES) return null
+        val counts = IntArray(MAX_STABLE_FRAME_CADENCE_MULTIPLIER + 1)
+        frameCadenceSamples.forEach { multiplier ->
+            if (multiplier in MIN_STABLE_FRAME_CADENCE_MULTIPLIER..MAX_STABLE_FRAME_CADENCE_MULTIPLIER) {
+                counts[multiplier]++
+            }
+        }
+        val candidate = (MIN_STABLE_FRAME_CADENCE_MULTIPLIER..MAX_STABLE_FRAME_CADENCE_MULTIPLIER)
+            .maxByOrNull { counts[it] } ?: return null
+        return candidate.takeIf { counts[it] >= FRAME_CADENCE_MIN_SAMPLES }
+    }
+
+    private fun resetFrameCadenceSamples() {
+        frameCadenceSamples.fill(0)
+        frameCadenceSampleCount = 0
+        frameCadenceSampleCursor = 0
     }
 
     private fun isBefore(now: Long, deadline: Long?): Boolean = deadline?.let { now - it < 0L } == true
@@ -171,5 +257,11 @@ internal class ManyueReaderPressurePolicy(
         const val BAD_FRAME_REQUIRED_SAMPLES = 3
         const val GOOD_FRAME_SAMPLES_TO_CLEAR = 2
         const val FRAME_PRESSURE_HOLD_NANOS = 350_000_000L
+        const val MIN_STABLE_FRAME_CADENCE_MULTIPLIER = 1
+        const val MAX_STABLE_FRAME_CADENCE_MULTIPLIER = 4
+        const val FRAME_CADENCE_WINDOW_SAMPLES = 8
+        const val FRAME_CADENCE_MIN_SAMPLES = 6
+        const val FRAME_CADENCE_TOLERANCE_PERCENT = 8.0
+        const val REFRESH_INTERVAL_CHANGE_PERCENT = 5.0
     }
 }

@@ -37,6 +37,13 @@ object ManyueAiSafetyPolicy {
         return width.toLong() * height.toLong() <= maxPixels.toLong()
     }
 
+    fun isNativeWorkSafe(model: ManyueAiModel, sourceWidth: Int, sourceHeight: Int, targetWidth: Int): Boolean {
+        if (!isPixelBudgetSafe(sourceWidth, sourceHeight, MAX_DISPLAY_PIXELS)) return false
+        val targetHeight = ManyueAiUpscaler.targetHeight(sourceWidth, sourceHeight, targetWidth)
+        if (!isPixelBudgetSafe(targetWidth, targetHeight, MAX_DISPLAY_PIXELS)) return false
+        return model.continuousScale || isPredictedNativeOutputSafe(sourceWidth, sourceHeight, MAX_DISPLAY_PIXELS)
+    }
+
     fun isPredictedNativeOutputSafe(sourceWidth: Int, sourceHeight: Int, maxPixels: Int): Boolean {
         if (sourceWidth <= 0 || sourceHeight <= 0) return false
         return isPixelBudgetSafe(

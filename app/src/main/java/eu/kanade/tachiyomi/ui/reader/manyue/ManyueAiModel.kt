@@ -1,8 +1,8 @@
 package eu.kanade.tachiyomi.ui.reader.manyue
 
 /**
- * The two supported AI paths have fixed 2x model inference. The worker can resize that
- * result to a requested 1x–2x target before encoding, without modifying the source file.
+ * Lite reconstructs pixels directly at the requested size using a shared low-resolution
+ * encoder. The legacy networks still infer at 2x before native target resizing.
  * Keeping the model identity in the request/cache key prevents a result rendered by
  * Real-CUGAN from being mistaken for a Real-ESRGAN result after the user switches modes.
  */
@@ -14,7 +14,17 @@ enum class ManyueAiModel(
     val runtimeDir: String,
     val modelFiles: List<String>,
     val scale: Int = 2,
+    val continuousScale: Boolean = false,
 ) {
+    MOBILE_LITE(
+        id = "manyue_lite_v1",
+        label = "轻量 · Manyue Lite 1–2×",
+        runnerName = "libmanyue_lite.so",
+        assetDir = "ai/models-Manyue-Lite",
+        runtimeDir = "models-Manyue-Lite-v1",
+        modelFiles = listOf("trunk.param", "trunk.bin", "head.param", "head.bin", "head.f32"),
+        continuousScale = true,
+    ),
     FAST_REAL_CUGAN(
         id = "realcugan_fast",
         label = "快速 · Real-CUGAN x2",
@@ -34,9 +44,21 @@ enum class ManyueAiModel(
     ;
 
     companion object {
-        val DEFAULT = FAST_REAL_CUGAN
+        val DEFAULT = MOBILE_LITE
 
         fun fromId(id: String?): ManyueAiModel =
             entries.firstOrNull { it.id == id } ?: DEFAULT
     }
+
+    val cacheIdentity: String
+        get() = if (continuousScale) "$id:${ManyueLiteAssets.MODEL_REVISION}" else id
+
+    internal fun displayedState(detailStrength: Int, classicApplied: Boolean = false): ManyueEnhancementState =
+        if (continuousScale && detailStrength <= 0) {
+            if (classicApplied) ManyueEnhancementState.CLASSIC_READY else ManyueEnhancementState.INTERPOLATED_READY
+        } else if (classicApplied) {
+            ManyueEnhancementState.AI_CLASSIC_READY
+        } else {
+            ManyueEnhancementState.AI_READY
+        }
 }

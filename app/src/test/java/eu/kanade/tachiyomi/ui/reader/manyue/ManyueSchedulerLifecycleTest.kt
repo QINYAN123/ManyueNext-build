@@ -2,8 +2,6 @@ package eu.kanade.tachiyomi.ui.reader.manyue
 
 import android.app.Application
 import android.os.Looper
-import java.nio.file.Files
-import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
@@ -19,6 +17,8 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.LooperMode
+import java.nio.file.Files
+import java.util.concurrent.ConcurrentHashMap
 
 @RunWith(RobolectricTestRunner::class)
 @Config(application = Application::class, sdk = [34], manifest = Config.NONE)
@@ -42,6 +42,7 @@ class ManyueSchedulerLifecycleTest {
             ManyueAiUpscaler.cancel(token)
         }
     }
+
     @Test fun completionWaitersObserveCancellationWithoutDrainingMainLooper() = runBlocking {
         val token = register(81)
         val waiting = async(start = CoroutineStart.UNDISPATCHED) {
@@ -121,7 +122,7 @@ class ManyueSchedulerLifecycleTest {
             (2..4).forEach { index ->
                 val req = request(tokens.getValue(index))
                 assertFalse(req.cancelled)
-                assertEquals(100, req.priority)
+                assertEquals(if (index == 4) 120 else 100, req.priority)
             }
             ManyuePrefetchManager.updateVisiblePages(setOf(92L to 3, 92L to 4))
             assertFalse(request(tokens.getValue(2)).cancelled)
@@ -189,7 +190,7 @@ class ManyueSchedulerLifecycleTest {
             ManyuePrefetchManager.onChapterChanged(93, 0, visible = emptySet())
 
             assertFalse(selectedRequest.cancelled)
-            assertEquals(100, selectedRequest.priority)
+            assertEquals(120, selectedRequest.priority)
             runBlocking {
                 withTimeout(1_000L) {
                     ManyuePrefetchManager.awaitCurrentDecision(93, 0)

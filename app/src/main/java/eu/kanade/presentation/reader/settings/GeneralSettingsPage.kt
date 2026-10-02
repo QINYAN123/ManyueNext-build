@@ -9,8 +9,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.produceState
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import eu.kanade.tachiyomi.ui.reader.ReaderActivity
@@ -183,6 +183,8 @@ internal fun ColumnScope.GeneralPage(viewModel: ReaderSettingsViewModel) {
     )
 
     val manyueMode by viewModel.preferences.manyueEnhancementMode.collectAsState()
+    val aiModelId by viewModel.preferences.manyueAiModel.collectAsState()
+    val selectedAiModel = eu.kanade.tachiyomi.ui.reader.manyue.ManyueAiModel.fromId(aiModelId)
     val readerActivity = LocalActivity.current as? ReaderActivity
     val gpuEnabled by viewModel.preferences.manyueGpuDisplayFilter.collectAsState()
     val gpuStrength by viewModel.preferences.manyueGpuDisplayStrength.collectAsState()
@@ -224,8 +226,11 @@ internal fun ColumnScope.GeneralPage(viewModel: ReaderSettingsViewModel) {
         )
     }
     Text(
-        if (gpuSupported) "随显示增强边缘和轻微明暗层次，原图文件与分辨率保留。先选下方“原图 / OFF”单独试滤镜，建议强度 25%。设为 0% 可对照同一阅读器的原显示。滤镜不重建缺失细节；同时开启下方图片增强会叠加效果与开销。"
-        else "GPU 显示滤镜需要 Android 13 或以上；当前系统保留原有显示。",
+        if (gpuSupported) {
+            "随显示增强边缘和轻微明暗层次，原图文件与分辨率保留。先选下方“原图 / OFF”单独试滤镜，建议强度 25%。设为 0% 可对照同一阅读器的原显示。滤镜不重建缺失细节；同时开启下方图片增强会叠加效果与开销。"
+        } else {
+            "GPU 显示滤镜需要 Android 13 或以上；当前系统保留原有显示。"
+        },
         style = MaterialTheme.typography.bodySmall,
     )
     if (readerActivity != null) {
@@ -238,7 +243,7 @@ internal fun ColumnScope.GeneralPage(viewModel: ReaderSettingsViewModel) {
             "原图 / OFF" to 0,
             "原尺寸细节增强" to 1,
             "AI 超分" to 2,
-            "AI 超分 + 细节增强" to 3,
+            "AI 超分 + 经典细节增强" to 3,
             "智能增强" to 4,
         ).map { (label, value) ->
             FilterChip(
@@ -253,20 +258,22 @@ internal fun ColumnScope.GeneralPage(viewModel: ReaderSettingsViewModel) {
     }
 
     val manyueStrength by viewModel.preferences.manyueClassicStrength.collectAsState()
-    var draftStrength by remember(manyueStrength) { mutableIntStateOf(manyueStrength.coerceIn(0, 100)) }
-    Text("细节与明暗增强强度：$draftStrength", style = MaterialTheme.typography.bodyMedium)
-    tachiyomi.presentation.core.components.material.Slider(
-        value = draftStrength,
-        valueRange = 0..100,
-        steps = 99,
-        onValueChange = { draftStrength = it },
-        onValueChangeFinished = {
-            if (draftStrength != manyueStrength) {
-                viewModel.preferences.manyueClassicStrength.set(draftStrength)
-                readerActivity?.onManyueClassicStrengthChanged(draftStrength)
-            }
-        },
-    )
+    if (eu.kanade.tachiyomi.ui.reader.manyue.ManyueEnhancementMode.fromInt(manyueMode).usesClassic(selectedAiModel)) {
+        var draftStrength by remember(manyueStrength) { mutableIntStateOf(manyueStrength.coerceIn(0, 100)) }
+        Text("经典细节增强（CPU）强度：$draftStrength", style = MaterialTheme.typography.bodyMedium)
+        tachiyomi.presentation.core.components.material.Slider(
+            value = draftStrength,
+            valueRange = 0..100,
+            steps = 99,
+            onValueChange = { draftStrength = it },
+            onValueChangeFinished = {
+                if (draftStrength != manyueStrength) {
+                    viewModel.preferences.manyueClassicStrength.set(draftStrength)
+                    readerActivity?.onManyueClassicStrengthChanged(draftStrength)
+                }
+            },
+        )
+    }
     if (manyueMode == 4) {
         Text("按阅读区实际宽度判断：不够宽时 AI 超分；已经足够时原尺寸增强。压缩严重的图可手动选择 AI 超分。", style = MaterialTheme.typography.bodySmall)
     }
@@ -275,9 +282,10 @@ internal fun ColumnScope.GeneralPage(viewModel: ReaderSettingsViewModel) {
     val aiCapability by produceState<eu.kanade.tachiyomi.ui.reader.manyue.ManyueAiRuntime.Capability?>(
         initialValue = null,
         key1 = context,
+        key2 = selectedAiModel,
     ) {
         value = withContext(Dispatchers.IO) {
-            eu.kanade.tachiyomi.ui.reader.manyue.ManyueAiRuntime.probe(context.applicationContext)
+            eu.kanade.tachiyomi.ui.reader.manyue.ManyueAiRuntime.probe(context.applicationContext, selectedAiModel)
         }
     }
     Text(
@@ -294,7 +302,6 @@ internal fun ColumnScope.GeneralPage(viewModel: ReaderSettingsViewModel) {
         style = MaterialTheme.typography.bodySmall,
     )
 
-    val aiModelId by viewModel.preferences.manyueAiModel.collectAsState()
     Text("AI 模型", style = MaterialTheme.typography.bodyMedium)
     androidx.compose.foundation.layout.FlowRow {
         eu.kanade.tachiyomi.ui.reader.manyue.ManyueAiModel.entries.map { model ->
@@ -309,12 +316,27 @@ internal fun ColumnScope.GeneralPage(viewModel: ReaderSettingsViewModel) {
         }
     }
     Text(
-        "快速模式使用 Real-CUGAN，质量模式使用 Real-ESRGAN；原图进行 2× 推理，原生程序直接编码所选倍率的结果。较低倍率可减少输出处理开销，模型推理量仍相同。",
+        if (selectedAiModel.continuousScale) {
+            "轻量模型同时支持原尺寸修复和连续倍率超分，直接生成所选尺寸。优先使用 GPU；实际后端记录在每页完成状态中。"
+        } else {
+            "Real-CUGAN 与 Real-ESRGAN 仍运行完整 2×模型，再按所选倍率输出；降低倍率不会减少核心推理量。"
+        },
         style = MaterialTheme.typography.bodySmall,
     )
     val aiScalePercent by viewModel.preferences.manyueAiScalePercent.collectAsState()
     var draftScale by remember(aiScalePercent) { mutableIntStateOf(aiScalePercent.coerceIn(100, 200)) }
-    Text((if (manyueMode == 4) "智能模式最高倍率：%.2f×" else "自定义超分倍率：%.2f×").format(draftScale / 100f), style = MaterialTheme.typography.bodyMedium)
+    Text(
+        (
+            if (manyueMode ==
+                4
+            ) {
+                "智能模式最高倍率：%.2f×"
+            } else {
+                "自定义超分倍率：%.2f×"
+            }
+            ).format(draftScale / 100f),
+        style = MaterialTheme.typography.bodyMedium,
+    )
     tachiyomi.presentation.core.components.material.Slider(
         value = draftScale,
         valueRange = 100..200,
@@ -330,14 +352,42 @@ internal fun ColumnScope.GeneralPage(viewModel: ReaderSettingsViewModel) {
         },
     )
     Text(
-        if (manyueMode == 4) "智能模式输出不超过阅读区宽度与所选上限；上限 1.00× 时只做原尺寸增强。需要 AI 的图片仍运行 2×模型。原图文件保留。"
-        else "1.00×输出增强后的原尺寸，仍执行 2×模型；1.01–2.00×保持比例输出。原图文件保留，超出安全预算时显示原图。",
+        if (selectedAiModel.continuousScale) {
+            if (manyueMode == 4) {
+                "不够宽时按阅读区宽度与倍率上限超分；已经足够宽时进行 1×轻量 AI 修复。原图文件保留。"
+            } else {
+                "1×做原尺寸 AI 修复；1.01–2×直接按目标尺寸重建。倍率越低，输出重建计算越少；原图文件保留。"
+            }
+        } else if (manyueMode == 4) {
+            "智能模式输出不超过阅读区宽度与所选上限。需要 AI 时仍运行 2×模型；原图文件保留。"
+        } else {
+            "1×仍执行 2×模型再缩回原尺寸；1.01–2×保持比例输出。原图文件保留。"
+        },
         style = MaterialTheme.typography.bodySmall,
     )
+    if (selectedAiModel.continuousScale) {
+        val aiDetailStrength by viewModel.preferences.manyueAiDetailStrength.collectAsState()
+        var draftDetail by remember(aiDetailStrength) { mutableIntStateOf(aiDetailStrength.coerceIn(0, 100)) }
+        Text("AI 修复强度：$draftDetail", style = MaterialTheme.typography.bodyMedium)
+        tachiyomi.presentation.core.components.material.Slider(
+            value = draftDetail,
+            valueRange = 0..100,
+            steps = 99,
+            onValueChange = { draftDetail = it },
+            onValueChangeFinished = {
+                if (draftDetail != aiDetailStrength) {
+                    viewModel.preferences.manyueAiDetailStrength.set(draftDetail)
+                    readerActivity?.onManyueAiDetailStrengthChanged(draftDetail)
+                }
+            },
+        )
+        Text("控制模型修复的力度，与输出倍率独立；0 为普通插值，60 为温和修复。建议先关闭额外叠加增强，避免过锐。", style = MaterialTheme.typography.bodySmall)
+    }
     val anime4kOverlay by viewModel.preferences.manyueAnime4kOverlay.collectAsState()
     androidx.compose.foundation.layout.FlowRow {
         FilterChip(
-            selected = anime4kOverlay,
+            selected = anime4kOverlay && !selectedAiModel.continuousScale,
+            enabled = !selectedAiModel.continuousScale,
             onClick = {
                 val enabled = !anime4kOverlay
                 viewModel.preferences.manyueAnime4kOverlay.set(enabled)
@@ -346,7 +396,9 @@ internal fun ColumnScope.GeneralPage(viewModel: ReaderSettingsViewModel) {
             label = { Text(if (anime4kOverlay) "Anime4KCPP CPU 叠加：开" else "Anime4KCPP CPU 叠加：关") },
         )
     }
-    if (anime4kOverlay) {
+    if (selectedAiModel.continuousScale) {
+        Text("轻量模型使用自身的 AI 修复强度；Anime4KCPP CPU 叠加仅用于旧模型。", style = MaterialTheme.typography.bodySmall)
+    } else if (anime4kOverlay) {
         Text(
             "Anime4KCPP ACNet B4 在后台 CPU 后处理，可能增加出图等待；它不是 GPU shader。关闭时只使用所选 AI 模型。",
             style = MaterialTheme.typography.bodySmall,

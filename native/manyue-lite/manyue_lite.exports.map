@@ -1,0 +1,8 @@
+{
+    global:
+        Java_eu_kanade_tachiyomi_ui_reader_manyue_ManyueLiteNative_nativeCreate;
+        Java_eu_kanade_tachiyomi_ui_reader_manyue_ManyueLiteNative_nativeUpscale;
+        Java_eu_kanade_tachiyomi_ui_reader_manyue_ManyueLiteNative_nativeCancel;
+        Java_eu_kanade_tachiyomi_ui_reader_manyue_ManyueLiteNative_nativeDestroy;
+    local: *;
+};

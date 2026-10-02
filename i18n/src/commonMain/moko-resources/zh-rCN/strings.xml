@@ -952,4 +952,5 @@
     <string name="reader_source_image_current">当前图像</string>
     <string name="reader_source_image_status_loading">正在读取图像尺寸</string>
     <string name="reader_source_image_status_unavailable">图像尺寸未知</string>
+    <string name="reader_enhancement_interpolated_ready">普通插值</string>
 </resources>

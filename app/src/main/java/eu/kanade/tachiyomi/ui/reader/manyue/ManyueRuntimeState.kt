@@ -8,20 +8,31 @@ import eu.kanade.tachiyomi.ui.reader.setting.ReaderPreferences
  * Defaults keep the original fast path (mode=OFF).
  */
 object ManyueRuntimeState {
-    @Volatile var modeInt: Int = 0          // ManyueEnhancementMode.OFF
+    @Volatile var modeInt: Int = 0 // ManyueEnhancementMode.OFF
         private set
+
     @Volatile var classicStrength: Int = 25
         private set
+
     @Volatile var aiModel: ManyueAiModel = ManyueAiModel.DEFAULT
         private set
+
     @Volatile var aiScalePercent: Int = 200
         private set
+
+    @Volatile var aiDetailStrength: Int = 60
+        private set
+
     @Volatile var anime4kOverlay: Boolean = false
         private set
+
     @Volatile var displayWidthPx: Int = 0
         private set
+
     @Volatile var foldableMode: Int = -1
+
     @Volatile var foldableTargetWidth: Int = 2344
+
     @Volatile var generation: Long = 0L
         private set
 
@@ -43,7 +54,7 @@ object ManyueRuntimeState {
         val safeStrength = newStrength.coerceIn(0, 100)
         if (classicStrength == safeStrength) return
         classicStrength = safeStrength
-        if (ManyueEnhancementMode.fromInt(modeInt).usesClassic()) {
+        if (ManyueEnhancementMode.fromInt(modeInt).usesClassic(aiModel)) {
             generation++
             ManyuePrefetchManager.reset()
         }
@@ -78,6 +89,17 @@ object ManyueRuntimeState {
     }
 
     @Synchronized
+    fun updateAiDetailStrength(strength: Int) {
+        val safe = strength.coerceIn(0, 100)
+        if (aiDetailStrength == safe) return
+        aiDetailStrength = safe
+        if (aiModel.continuousScale) {
+            generation++
+            ManyuePrefetchManager.reset()
+        }
+    }
+
+    @Synchronized
     fun updateAnime4kOverlay(enabled: Boolean) {
         if (anime4kOverlay == enabled) return
         anime4kOverlay = enabled
@@ -94,11 +116,19 @@ object ManyueRuntimeState {
 
     /** Read current values from the injected ReaderPreferences. Cheap; call on each page load. */
     fun syncFrom(prefs: ReaderPreferences) {
+        // One-time performance upgrade; subsequent explicit model choices are respected.
+        if (!prefs.manyueLiteModelMigrationDone.get()) {
+            if (prefs.manyueAiModel.get() == ManyueAiModel.FAST_REAL_CUGAN.id) {
+                prefs.manyueAiModel.set(ManyueAiModel.MOBILE_LITE.id)
+            }
+            prefs.manyueLiteModelMigrationDone.set(true)
+        }
         updateMode(prefs.manyueEnhancementMode.get())
         updateClassicStrength(prefs.manyueClassicStrength.get())
         updateAiModel(ManyueAiModel.fromId(prefs.manyueAiModel.get()))
         updateAnime4kOverlay(prefs.manyueAnime4kOverlay.get())
         updateAiScale(prefs.manyueAiScalePercent.get())
+        updateAiDetailStrength(prefs.manyueAiDetailStrength.get())
         foldableMode = prefs.manyueFoldableMode.get()
         foldableTargetWidth = prefs.manyueFoldableTargetWidth.get()
     }

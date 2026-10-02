@@ -6,6 +6,9 @@ import android.graphics.BitmapFactory
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import kotlinx.coroutines.CompletableDeferred
+import logcat.LogPriority
+import tachiyomi.core.common.util.system.logcat
 import java.io.File
 import java.io.FileOutputStream
 import java.security.MessageDigest
@@ -15,9 +18,6 @@ import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.PriorityBlockingQueue
 import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
-import kotlinx.coroutines.CompletableDeferred
-import logcat.LogPriority
-import tachiyomi.core.common.util.system.logcat
 
 /**
  * AI upscaling scheduler. Single-thread priority queue.
@@ -67,7 +67,7 @@ object ManyueAiUpscaler {
         val targetMode: Int,
         val targetWidth: Int,
         val targetScaleTenths: Int = 20,
-        var priority: Int = 10,
+        @Volatile var priority: Int = 10,
         val expectedMode: Int = ManyueEnhancementMode.AI_2X.value,
         val generation: Long = 0L,
         val sourceFingerprint: String = "",
@@ -86,17 +86,23 @@ object ManyueAiUpscaler {
         val requestKey: String = "",
         val model: ManyueAiModel = ManyueAiModel.DEFAULT,
         val anime4kOverlay: Boolean = false,
+        val aiDetailStrength: Int = 0,
+        val enqueueSequence: Long = sequence.incrementAndGet(),
+        @Volatile var nativeCancellation: (() -> Unit)? = null,
     ) : Comparable<Request> {
         internal val terminal = CompletableDeferred<Int>()
 
         override fun compareTo(other: Request): Int =
-            other.priority.compareTo(this.priority)
+            other.priority.compareTo(this.priority).takeIf { it != 0 }
+                ?: enqueueSequence.compareTo(other.enqueueSequence)
 
         override fun equals(other: Any?): Boolean =
             other is Request && other.token == token
 
         override fun hashCode(): Int = token.hashCode()
     }
+
+    private val sequence = java.util.concurrent.atomic.AtomicLong()
 
     private val cancellationExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { task ->
         Thread(task, "manyue-ai-cancel").apply { isDaemon = true }
@@ -107,6 +113,8 @@ object ManyueAiUpscaler {
     private val listeners = ConcurrentHashMap<String, CopyOnWriteArrayList<OnAiCompleteListener>>()
     private val mainHandler: Handler by lazy { Handler(Looper.getMainLooper()) }
     private var started = false
+
+    @Volatile private var activeRequest: Request? = null
     private val workPacer = ManyueWorkPacer()
 
     @Synchronized
@@ -117,8 +125,20 @@ object ManyueAiUpscaler {
             runCatching { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND) }
             while (!Thread.currentThread().isInterrupted) {
                 try {
-                    val req = queue.poll(1, TimeUnit.SECONDS) ?: continue
-                    if (ManyueReaderWorkGate.isBlocked() || workPacer.isBlocked()) {
+                    val req = queue.poll(1, TimeUnit.SECONDS)
+                    if (req == null) {
+                        ManyueLiteRuntime.releaseWhenIdleOnWorker(
+                            ManyueRuntimeState.aiModel.continuousScale &&
+                                ManyueEnhancementMode.fromInt(ManyueRuntimeState.modeInt).usesAi(),
+                        )
+                        continue
+                    }
+                    if (req.cancelled || req.completed) continue
+                    if (!requestIsCurrent(req)) {
+                        cancel(req.token)
+                        continue
+                    }
+                    if (ManyueReaderWorkGate.isAiWorkBlocked(req.model, req.priority) || workPacer.isBlocked()) {
                         synchronized(this@ManyueAiUpscaler) {
                             if (!req.cancelled && !req.completed) queue.offer(req)
                         }
@@ -126,9 +146,16 @@ object ManyueAiUpscaler {
                         continue
                     }
                     val claimed = synchronized(this@ManyueAiUpscaler) {
-                        req.queued = false
-                        if (req.cancelled || req.completed || req.processing) false else {
+                        if (queue.peek()?.let { shouldYieldToVisible(req, it) } == true) {
+                            queue.offer(req)
+                            false
+                        } else if (req.cancelled || req.completed || req.processing) {
+                            req.queued = false
+                            false
+                        } else {
+                            req.queued = false
                             req.processing = true
+                            activeRequest = req
                             true
                         }
                     }
@@ -139,6 +166,7 @@ object ManyueAiUpscaler {
                         process(req)
                     } finally {
                         req.processing = false
+                        activeRequest = null
                     }
                 } catch (t: Throwable) {
                     logcat(LogPriority.ERROR, t) { "Manyue AI worker survived an unexpected error" }
@@ -164,11 +192,12 @@ object ManyueAiUpscaler {
         sourceFingerprint: String = "",
         targetScaleTenths: Int = 20,
         model: ManyueAiModel = ManyueRuntimeState.aiModel,
-        anime4kOverlay: Boolean = ManyueRuntimeState.anime4kOverlay,
+        anime4kOverlay: Boolean = ManyueRuntimeState.anime4kOverlay && !model.continuousScale,
+        aiDetailStrength: Int = if (model.continuousScale) ManyueRuntimeState.aiDetailStrength else 0,
     ): String {
         val requestKey = listOf(
             mangaId, chapterId, pageIndex, targetMode, targetWidth, targetScaleTenths,
-            expectedMode, generation, sourceFingerprint, model.id, anime4kOverlay,
+            expectedMode, generation, sourceFingerprint, model.cacheIdentity, anime4kOverlay, aiDetailStrength,
         ).joinToString("|")
         tokensByRequestKey[requestKey]?.let { existingToken ->
             val existing = requests[existingToken]
@@ -185,7 +214,7 @@ object ManyueAiUpscaler {
             token, mangaId, chapterId, pageIndex, inputFile,
             sourceWidth, sourceHeight, targetMode, targetWidth, targetScaleTenths, priority,
             expectedMode, generation, sourceFingerprint, requestKey = requestKey,
-            model = model, anime4kOverlay = anime4kOverlay,
+            model = model, anime4kOverlay = anime4kOverlay, aiDetailStrength = aiDetailStrength,
         )
         requests[token] = req
         tokensByRequestKey[requestKey] = token
@@ -199,27 +228,50 @@ object ManyueAiUpscaler {
             notify(req, STATE_FAILED, req.failureDetail)
             return
         }
-        if (req.cancelled || req.completed || req.queued || req.processing) return
+        if (req.cancelled || req.completed) return
+        if (req.queued || req.processing) {
+            yieldPrefetchToVisible(req)
+            return
+        }
         ensureStarted()
         req.enqueuedAt = System.currentTimeMillis()
         req.queued = true
         queue.offer(req)
+        yieldPrefetchToVisible(req)
     }
+
+    private fun yieldPrefetchToVisible(visible: Request) {
+        val active = activeRequest ?: return
+        if (shouldYieldToVisible(active, visible)) {
+            cancelRequest(active.token, "预读让出资源，优先处理当前可见页")
+        }
+    }
+
+    internal fun shouldYieldToVisible(active: Request, visible: Request): Boolean =
+        active.model.continuousScale && visible.model.continuousScale &&
+            active.token != visible.token && active.priority < 100 && visible.priority >= 100 &&
+            !active.cancelled && !active.completed && !visible.cancelled && !visible.completed
 
     /** Cancel queued or running native work. Completion still has a second stale-result guard. */
     fun cancel(token: String) {
+        cancelRequest(token, "已移出预读范围，保留原图")
+    }
+
+    private fun cancelRequest(token: String, reason: String) {
         val req = requests[token] ?: return
         // A finished cache entry is still reusable on a backward scroll.
         if (req.completed) return
         req.cancelled = true
         req.queued = false
         req.completionState = STATE_CANCELLED
-        req.failureDetail = "已移出预读范围，保留原图"
+        req.failureDetail = reason
         queue.remove(req)
         req.requestKey.takeIf(String::isNotEmpty)?.let { tokensByRequestKey.remove(it, token) }
         notify(req, STATE_CANCELLED, req.failureDetail)
         // Page selection happens on Main. Process termination and file cleanup do not.
+        val cancelNative = req.nativeCancellation
         cancellationExecutor.execute {
+            runCatching { cancelNative?.invoke() }
             runCatching { req.runningProcess?.destroy() }
             runCatching { req.runningProcess?.destroyForcibly() }
             req.inputFile.delete()
@@ -239,11 +291,12 @@ object ManyueAiUpscaler {
         sourceFingerprint: String,
         targetScaleTenths: Int = 20,
         model: ManyueAiModel = ManyueRuntimeState.aiModel,
-        anime4kOverlay: Boolean = ManyueRuntimeState.anime4kOverlay,
+        anime4kOverlay: Boolean = ManyueRuntimeState.anime4kOverlay && !model.continuousScale,
+        aiDetailStrength: Int = if (model.continuousScale) ManyueRuntimeState.aiDetailStrength else 0,
     ): String? {
         val key = listOf(
             mangaId, chapterId, pageIndex, targetMode, targetWidth, targetScaleTenths,
-            expectedMode, generation, sourceFingerprint, model.id, anime4kOverlay,
+            expectedMode, generation, sourceFingerprint, model.cacheIdentity, anime4kOverlay, aiDetailStrength,
         ).joinToString("|")
         val token = tokensByRequestKey[key] ?: return null
         val req = requests[token]
@@ -258,14 +311,23 @@ object ManyueAiUpscaler {
         return token
     }
 
-    /** Update a queued task's priority (re-offers it). No-op if already cancelled/started. */
+    /** Reorder queued work; active priorities also follow visibility so prefetch can yield. */
     @Synchronized
     fun updatePriority(token: String, newPriority: Int) {
         val req = requests[token] ?: return
-        if (req.cancelled || req.completed || req.processing) return
+        if (req.cancelled || req.completed) return
+        if (req.processing) {
+            req.priority = newPriority
+            queue.peek()?.let(::yieldPrefetchToVisible)
+            return
+        }
         val wasQueued = queue.remove(req)
         req.priority = newPriority
         if (wasQueued) queue.offer(req)
+        if (wasQueued) yieldPrefetchToVisible(req)
+        // Visibility priorities arrive in map iteration order. If a newly visible page was
+        // promoted first, lowering the old active page must still release its native work.
+        if (req === activeRequest) queue.peek()?.let(::yieldPrefetchToVisible)
     }
 
     @Synchronized
@@ -423,8 +485,9 @@ object ManyueAiUpscaler {
             ManyueEnhancementMode.AI_2X.value, req.targetMode, req.targetWidth, 0,
             req.sourceFingerprint,
             req.targetScaleTenths,
-            modelId = req.model.id,
+            modelId = req.model.cacheIdentity,
             anime4kOverlay = req.anime4kOverlay,
+            aiDetailStrength = req.aiDetailStrength,
         )
 
     private fun process(req: Request) {
@@ -452,24 +515,22 @@ object ManyueAiUpscaler {
             }
 
             val modelDir = ensureModel(context, req.model)
-            if (ManyueAiRuntime.probe(context) != ManyueAiRuntime.Capability.READY) {
-                req.failedAt = System.currentTimeMillis(); return
+            if (ManyueAiRuntime.probe(context, req.model) != ManyueAiRuntime.Capability.READY) {
+                req.failedAt = System.currentTimeMillis()
+                return
             }
             if (req.inputFile.length() > ManyueAiRuntime.MAX_INPUT_BYTES) {
                 req.failureDetail = "原图文件超过 AI 输入限制，已保留原图"
-                req.failedAt = System.currentTimeMillis(); return
+                req.failedAt = System.currentTimeMillis()
+                return
             }
             // Refuse long pages before launch when the predicted 2x image exceeds the display
             // budget. The encoded result stays on disk and the reader decodes it off the main
             // thread through its tiled image path.
-            if (!ManyueAiSafetyPolicy.isPredictedNativeOutputSafe(
-                    req.sourceWidth,
-                    req.sourceHeight,
-                    minOf(ManyueAiRuntime.MAX_MODEL_OUTPUT_PIXELS, ManyueAiSafetyPolicy.MAX_DISPLAY_PIXELS),
-                )
-            ) {
-                req.failureDetail = "长图的 2 倍推理结果超过像素限制，已保留原图"
-                req.failedAt = System.currentTimeMillis(); return
+            if (!ManyueAiSafetyPolicy.isNativeWorkSafe(req.model, req.sourceWidth, req.sourceHeight, req.targetWidth)) {
+                req.failureDetail = "所选模型的图像处理结果超过像素限制，已保留原图"
+                req.failedAt = System.currentTimeMillis()
+                return
             }
 
             val resolved = req.targetWidth
@@ -482,7 +543,8 @@ object ManyueAiUpscaler {
                 )
             ) {
                 req.failureDetail = "自定义倍率结果超过显示像素限制，已保留原图"
-                req.failedAt = System.currentTimeMillis(); return
+                req.failedAt = System.currentTimeMillis()
+                return
             }
 
             outDir = File(context.cacheDir, "manyue_work_${req.token}").apply { mkdirs() }
@@ -494,22 +556,45 @@ object ManyueAiUpscaler {
             val nativeStartedAt = SystemClock.elapsedRealtime()
             val preparationElapsedMs = nativeStartedAt - preparationStartedAt
             expensiveWorkStartedAt = System.nanoTime()
-            ManyueAiRuntime.upscale(
-                context = context,
-                inputFile = req.inputFile,
-                outputFile = outFile,
-                modelDir = modelDir,
-                logFile = logFile,
-                model = req.model,
-                outputFormat = if (req.anime4kOverlay) "png" else "webp",
-                targetWidth = resolved,
-                isCancelled = { req.cancelled || !requestIsCurrent(req) },
-                onProcessStarted = {
-                    req.runningProcess = it
-                    notifyProgress(req, STATE_PROCESSING)
-                },
-            )
+            var inferenceDetail: String? = null
+            if (req.model.continuousScale) {
+                val telemetry = ManyueLiteRuntime.upscale(
+                    modelDir,
+                    req.inputFile,
+                    outFile,
+                    resolved,
+                    req.aiDetailStrength,
+                    isCancelled = { req.cancelled || !requestIsCurrent(req) },
+                    onCancellationReady = { cancel ->
+                        req.nativeCancellation = cancel
+                        if (req.cancelled || !requestIsCurrent(req)) cancel()
+                        notifyProgress(req, STATE_PROCESSING)
+                    },
+                )
+                logFile.writeText(telemetry)
+                inferenceDetail =
+                    ManyueLiteRuntime.displayDetail(telemetry) +
+                    if (req.aiDetailStrength <= 0) "；AI 修复强度为 0，仅普通插值" else ""
+            } else {
+                ManyueLiteRuntime.releaseOnWorker()
+                ManyueAiRuntime.upscale(
+                    context = context,
+                    inputFile = req.inputFile,
+                    outputFile = outFile,
+                    modelDir = modelDir,
+                    logFile = logFile,
+                    model = req.model,
+                    outputFormat = if (req.anime4kOverlay) "png" else "webp",
+                    targetWidth = resolved,
+                    isCancelled = { req.cancelled || !requestIsCurrent(req) },
+                    onProcessStarted = {
+                        req.runningProcess = it
+                        notifyProgress(req, STATE_PROCESSING)
+                    },
+                )
+            }
             val nativeElapsedMs = SystemClock.elapsedRealtime() - nativeStartedAt
+            req.nativeCancellation = null
             req.runningProcess = null
             if (!requestIsCurrent(req)) return
 
@@ -518,7 +603,7 @@ object ManyueAiUpscaler {
             val outW = opts.outWidth
             val outH = opts.outHeight
             if (!hasExpectedTargetOutput(req.sourceWidth, req.sourceHeight, resolved, outW, outH)) {
-                req.failureDetail = "AI 原生输出尺寸不符（需要 ${resolved}×$resolvedHeight，实际 ${outW}×$outH），已保留原图"
+                req.failureDetail = "AI 原生输出尺寸不符（需要 $resolved×$resolvedHeight，实际 $outW×$outH），已保留原图"
                 req.failedAt = System.currentTimeMillis()
                 return
             }
@@ -528,11 +613,12 @@ object ManyueAiUpscaler {
                     minOf(ManyueAiRuntime.MAX_MODEL_OUTPUT_PIXELS, ManyueAiSafetyPolicy.MAX_DISPLAY_PIXELS),
                 )
             ) {
-                req.failedAt = System.currentTimeMillis(); return
+                req.failedAt = System.currentTimeMillis()
+                return
             }
             var selectedOutputFile = outFile
             var overlayApplied = false
-            var overlayDetail: String? = null
+            var overlayDetail: String? = inferenceDetail
             if (req.anime4kOverlay) {
                 // ACNet factor=1 still runs its CNN at 2x internally, then scales back down.
                 // Cap that intermediate to the same 12 MP display budget (input <= 3 MP).
@@ -574,7 +660,7 @@ object ManyueAiUpscaler {
                             overlayDetail = "Anime4KCPP 输出尺寸不匹配，已保留 AI 超分"
                             logcat {
                                 "Manyue Anime4K dimension mismatch " +
-                                    "ai=${outW}x${outH} overlay=${overlayBounds.outWidth}x${overlayBounds.outHeight}; keeping AI output"
+                                    "ai=${outW}x$outH overlay=${overlayBounds.outWidth}x${overlayBounds.outHeight}; keeping AI output"
                             }
                         }
                     } else {
@@ -583,8 +669,8 @@ object ManyueAiUpscaler {
                     }
                 }
             }
-            // The worker resizes its unencoded x2 result to the requested dimensions before
-            // its first encode. Commit that file directly; Android only reads the bounds here.
+            // Lite renders the target directly; legacy workers resize their unencoded x2
+            // result before encoding. Android commits the encoded file and only reads bounds.
             val postStartedAt = SystemClock.elapsedRealtime()
             if (!requestIsCurrent(req)) return
             val cacheCommitted = ManyueEnhancementCache.putImage(
@@ -614,7 +700,8 @@ object ManyueAiUpscaler {
                     "queueWaitMs=$waitMs preparationMs=$preparationElapsedMs nativeMs=$nativeElapsedMs postMs=$postElapsedMs"
             }
             ManyueDiagnostics.record(
-                "第 ${req.pageIndex + 1} 页 AI 完成 ${outW}×$outH（排队 ${waitMs}ms，准备/资源等待 ${preparationElapsedMs}ms，原生 ${nativeElapsedMs}ms，后处理/缓存 ${postElapsedMs}ms）" +
+                "第 ${req.pageIndex + 1} 页 AI 完成 $outW×$outH（排队 ${waitMs}ms，" +
+                    "准备/资源等待 ${preparationElapsedMs}ms，原生 ${nativeElapsedMs}ms，后处理/缓存 ${postElapsedMs}ms）" +
                     (overlayDetail?.let { "；$it" } ?: ""),
             )
             state = STATE_READY
@@ -637,9 +724,10 @@ object ManyueAiUpscaler {
             ManyueDiagnostics.record("${req.failureDetail}；已保留原图")
         } finally {
             expensiveWorkStartedAt?.let {
-                workPacer.afterWork(it, pressureActive = ManyueReaderWorkGate.isBlocked())
+                workPacer.afterWork(it, pressureActive = ManyueReaderWorkGate.isAiWorkBlocked(req.model, req.priority))
             }
             req.runningProcess = null
+            req.nativeCancellation = null
             req.queued = false
             if (req.cancelled) state = STATE_CANCELLED
             req.completionState = state
@@ -654,7 +742,7 @@ object ManyueAiUpscaler {
     private fun awaitReaderIdle(req: Request): Boolean {
         val previousState = req.progressState
         var waited = false
-        while (ManyueReaderWorkGate.isBlocked()) {
+        while (ManyueReaderWorkGate.isAiWorkBlocked(req.model, req.priority)) {
             if (!requestIsCurrent(req)) return false
             if (!waited) notifyProgress(req, STATE_WAITING_RESOURCES)
             waited = true
@@ -668,7 +756,9 @@ object ManyueAiUpscaler {
     internal fun targetHeight(sourceWidth: Int, sourceHeight: Int, targetWidth: Int): Int {
         if (sourceWidth <= 0 || sourceHeight <= 0 || targetWidth < sourceWidth ||
             targetWidth.toLong() > sourceWidth.toLong() * 2L
-        ) return 0
+        ) {
+            return 0
+        }
         val height = (sourceHeight.toLong() * targetWidth + sourceWidth / 2L) / sourceWidth
         return if (height in 1L..Int.MAX_VALUE.toLong()) height.toInt() else 0
     }
@@ -712,7 +802,9 @@ object ManyueAiUpscaler {
     private fun ensureModel(context: Context, model: ManyueAiModel): File {
         verifiedModels[model]?.let { if (it.isDirectory) return it }
         val dir = File(context.filesDir, model.runtimeDir).apply { mkdirs() }
-        MODEL_SHA256.getValue(model).forEach { (name, expectedHash) ->
+        val hashes = if (model.continuousScale) ManyueLiteAssets.MODEL_SHA256 else MODEL_SHA256.getValue(model)
+        check(hashes.keys == model.modelFiles.toSet()) { "模型完整性清单不全" }
+        hashes.forEach { (name, expectedHash) ->
             val dst = File(dir, name)
             if (!dst.isFile || sha256(dst) != expectedHash) {
                 val pending = File(dir, "$name.pending")

@@ -1144,4 +1144,5 @@
     <string name="reader_source_image_current">Current image</string>
     <string name="reader_source_image_status_loading">Reading image size</string>
     <string name="reader_source_image_status_unavailable">Image size unknown</string>
+    <string name="reader_enhancement_interpolated_ready">Interpolation</string>
 </resources>

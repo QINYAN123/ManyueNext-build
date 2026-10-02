@@ -2,8 +2,8 @@ package eu.kanade.tachiyomi.ui.reader.manyue
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import logcat.LogPriority
 import okio.Buffer
@@ -27,7 +27,10 @@ object ManyueReaderHook {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         source.peek().inputStream().use { BitmapFactory.decodeStream(it, null, bounds) }
         return ManyueAutoEnhancementPolicy.decide(
-            bounds.outWidth, ManyueRuntimeState.displayWidthPx, ManyueRuntimeState.aiScalePercent,
+            bounds.outWidth,
+            ManyueRuntimeState.displayWidthPx,
+            ManyueRuntimeState.aiScalePercent,
+            ManyueRuntimeState.aiModel.continuousScale,
         ).path != ManyueAutoEnhancementPolicy.Path.ORIGINAL_SIZE
     }
 
@@ -45,7 +48,12 @@ object ManyueReaderHook {
                 source.peek().inputStream().use { BitmapFactory.decodeStream(it, null, bounds) }
                 bounds.outWidth
             }
-            val decision = ManyueAutoEnhancementPolicy.decide(width, displayWidthPx, ManyueRuntimeState.aiScalePercent)
+            val decision = ManyueAutoEnhancementPolicy.decide(
+                width,
+                displayWidthPx,
+                ManyueRuntimeState.aiScalePercent,
+                ManyueRuntimeState.aiModel.continuousScale,
+            )
             if (decision.path != ManyueAutoEnhancementPolicy.Path.ORIGINAL_SIZE) return source
             onState(ManyueEnhancementState.CLASSIC_PROCESSING, "智能模式：原尺寸增强")
             return applyClassicOnWorker(source, strength) { state, detail ->

@@ -18,6 +18,7 @@ data class ReaderMetadataLabels(
     val aiClassicReady: String = "AI + Classic",
     val skipped: String = "Skipped",
     val failed: String = "Failed",
+    val interpolatedReady: String = "Interpolation",
 )
 
 object ReaderMetadataPresentation {
@@ -49,6 +50,7 @@ object ReaderMetadataPresentation {
                     ManyueEnhancementState.AI_WAITING_DISPLAY -> labels.aiWaitingDisplay
                     ManyueEnhancementState.AI_READY -> labels.aiReady
                     ManyueEnhancementState.AI_CLASSIC_READY -> labels.aiClassicReady
+                    ManyueEnhancementState.INTERPOLATED_READY -> labels.interpolatedReady
                     ManyueEnhancementState.SKIPPED -> labels.skipped
                     ManyueEnhancementState.FAILED -> labels.failed
                 }

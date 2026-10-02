@@ -1,10 +1,31 @@
 # Third-party notices
 
-This Mihon-based Manyue build includes an optional, on-device fixed-2× AI model
-path with configurable 1×–2× output dimensions. The following
+This Mihon-based Manyue build includes an optional, on-device continuously
+scaled Manyue Lite model and legacy fixed-2× AI paths with configurable 1×–2×
+output dimensions. The following
 components are redistributed only for that feature. Their original license
 texts are preserved in the source at `app/src/main/assets/licenses/` and in the
 APK under `assets/licenses/`.
+
+## Manyue Lite training data and runtime
+
+- Model: project-created 5,955-parameter continuous-scale residual network,
+  trained from scratch; model files and training scripts use the project's Apache-2.0 license.
+- Training illustrations: *Pepper&Carrot*, David Revoy and contributors.
+- Official source and credits: https://www.peppercarrot.com/ and
+  https://www.peppercarrot.com/en/about/index.html
+- Illustration license: CC BY 4.0, https://creativecommons.org/licenses/by/4.0/
+- Attribution guidance: https://www.peppercarrot.com/en/documentation/120_License_best_practices.html
+- Training changes: crops, scaling, synthetic blur/compression and model fitting;
+  chapters are separated between train, validation and test. Original training pages
+  are not packaged in the APK. The dataset license and project model license are separate.
+- Model card, dataset provenance, quality measurements and exact weight digests:
+  `assets/ai/models-Manyue-Lite/` and `native/manyue-lite/training/` in the source archive.
+- Runtime: NCNN 20241226 Vulkan (BSD-3-Clause), stb_image (MIT/public-domain dual license),
+  libwebp 1.5.0 (BSD-style license and patent grant). Preserved texts appear in
+  `assets/licenses/`; the new `libmanyue_lite.so` uses these codecs and resident NCNN inference.
+
+The illustrations' creators do not endorse or participate in this application.
 
 ## Real-ESRGAN animevideo-v3 model
 
@@ -71,6 +92,10 @@ OpenCV is no longer linked into these two executables. The distribution retains
 the earlier codec notices for compatibility, together with the libwebp COPYING
 and PATENTS texts and stb license. See `assets/licenses/` for copyright,
 redistribution conditions and warranty disclaimers.
+
+The Lite JNI runtime also uses stb and statically linked libwebp 1.5.0. Its
+direct target-size output is lossless WebP, independent of the legacy CLI
+resizing policy above.
 
 No upstream project or contributor endorses this application. All third-party
 software is provided under its respective license and without warranty.

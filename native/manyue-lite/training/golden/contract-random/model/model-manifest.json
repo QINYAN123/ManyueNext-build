@@ -1,0 +1,91 @@
+{
+  "schema_version": 1,
+  "model_id": "manyue-lite-continuous-v1",
+  "contract": "manyue-lite-continuous-v1",
+  "purpose": "contract-or-development-export",
+  "architecture": {
+    "encoder": [
+      "Conv3x3 3->16 + Hardtanh[0,1]",
+      "Conv3x3 16->16 + Hardtanh[0,1]",
+      "Conv3x3 16->16 + Hardtanh[0,1]"
+    ],
+    "head": [
+      "Conv1x1 23->32 + ReLU",
+      "Conv1x1 32->3 raw residual"
+    ],
+    "channels": 16,
+    "hidden": 32,
+    "parameters": 5955,
+    "input_order": [
+      "features16",
+      "baseRGB3",
+      "sx",
+      "sy",
+      "phaseX",
+      "phaseY"
+    ],
+    "halo_input_pixels": 4,
+    "head_output": "unclamped RGB residual only; caller applies the scale-aware residual cap, adds base, applies strength/100, and clamps"
+  },
+  "sampling_contract": {
+    "feature_resize": "bilinear half-pixel; align_corners=false",
+    "base_resize": "bicubic a=-0.75 with source-edge extension",
+    "source_coordinate": "FP32 ratio-first: ((float32(global_output)+0.5)*float32(input_size/output_size))-0.5; each operation rounded to FP32; no FMA",
+    "condition_scale": "(actual_output_size / input_size - 1.5) / 0.5",
+    "condition_phase": "2 * (source_coordinate - round_ties_to_even(source_coordinate)) in FP32",
+    "target_dimensions": "target_width=positive-half-up(source_width*requested_scale); target_height=positive-half-up(source_height*target_width/source_width)",
+    "residual_cap": "limit=0.02+0.02*(actual_output_width/input_width-1); clamp raw residual to [-limit,+limit] before applying strength",
+    "final_output": "clamp(base + clamp(residual,-limit,+limit) * strength_percent/100, 0, 1)"
+  },
+  "runtime": {
+    "ncnn_param_magic": 7767517,
+    "input_blob": "in0",
+    "output_blob": "out0",
+    "trunk_weight_layout": "float32 OIHW then bias per convolution",
+    "head_weight_layout": "float32 OIHW then bias per convolution",
+    "head_f32_layout": [
+      "conv1 OIHW [32,23,1,1]",
+      "conv1 bias [32]",
+      "conv2 OIHW [3,32,1,1]",
+      "conv2 bias [3]"
+    ],
+    "head_f32_values": 867
+  },
+  "training": {
+    "checkpoint_sha256": "59aeb5d1f39cb770460530bfa43586b853f13a7f31e7b786a5e1bb93bc83454e",
+    "checkpoint_name": "golden-state.pt",
+    "checkpoint_contract": "manyue-lite-continuous-v1",
+    "weights_origin": "random nonzero-head contract golden",
+    "random_seed": 77192,
+    "trained": false
+  },
+  "license": {
+    "weights": "Apache-2.0",
+    "weight_license_basis": "Project distribution choice matching the Apache-2.0 source repository; this is not an inference that CC BY 4.0 automatically determines weight licensing.",
+    "training_data": "Not applicable: deterministic synthetic contract fixture, not trained on comic pages.",
+    "training_data_license_url": null
+  },
+  "quality_report": null,
+  "files": {
+    "trunk.param": {
+      "bytes": 590,
+      "sha256": "a0f0bc1d915161e3e0f8a3ae925ba6bdc5f84d2a3e2babc9465b52424655eda3"
+    },
+    "trunk.bin": {
+      "bytes": 20364,
+      "sha256": "5c62b9fa0e515b036f2730c99ab1b0f15947abfb88e46f0601c9414a1f860b56"
+    },
+    "head.param": {
+      "bytes": 318,
+      "sha256": "77a7f865b40d212cf0c3374c4e58ba0eecc01f2c17dda28e7a412a6aab195d4e"
+    },
+    "head.bin": {
+      "bytes": 3476,
+      "sha256": "2f39ddb7746b2f4c2ddff3bf88f00f41e51f31ed96b4db3364918adc52db2cb6"
+    },
+    "head.f32": {
+      "bytes": 3468,
+      "sha256": "df740208b592f3b921cef4e0f2788720b3b214259cbda136aa7110b5f18f04b3"
+    }
+  }
+}

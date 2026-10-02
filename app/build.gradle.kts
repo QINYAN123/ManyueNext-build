@@ -46,7 +46,7 @@ android {
     defaultConfig {
         applicationId = "app.mihon"
 
-        versionCode = 40
+        versionCode = 41
         versionName = "0.20.12"
 
         buildConfigField("String", "COMMIT_COUNT", "\"${getLatestCommitCount()}\"")
@@ -127,7 +127,7 @@ android {
         create("benchmark") {
             initWith(release)
 
-            versionNameSuffix = "-perf1-benchmark"
+            versionNameSuffix = "-lite1-benchmark"
             applicationIdSuffix = ".benchmark"
 
             matchingFallbacks.addAll(commonMatchingFallbacks)
@@ -162,6 +162,8 @@ android {
                 "libmanyue_realesr",
                 "libmanyue_realcugan",
                 "libmanyue_anime4k",
+                // Lite JNI is verified by digest before loading; AGP must preserve its bytes.
+                "libmanyue_lite",
                 "libncnn",
                 "libomp",
                 "libquickjs",

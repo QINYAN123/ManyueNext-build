@@ -42,6 +42,7 @@ fun ReaderPageIndicator(
         aiClassicReady = stringResource(MR.strings.reader_enhancement_ai_classic_ready),
         skipped = stringResource(MR.strings.reader_enhancement_skipped),
         failed = stringResource(MR.strings.reader_enhancement_failed),
+        interpolatedReady = stringResource(MR.strings.reader_enhancement_interpolated_ready),
     )
     Surface(
         modifier = modifier,

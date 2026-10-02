@@ -1,0 +1,9 @@
+__pycache__/
+**/__pycache__/
+.venv/
+data/peppercarrot/train/
+data/peppercarrot/validation/
+data/peppercarrot/test/
+golden/*-generated/
+runs/continuous-lite-final.pt
+runs/training-log.jsonl

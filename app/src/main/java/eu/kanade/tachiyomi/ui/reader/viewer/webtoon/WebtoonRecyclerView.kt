@@ -2,11 +2,10 @@ package eu.kanade.tachiyomi.ui.reader.viewer.webtoon
 
 import android.animation.AnimatorSet
 import android.animation.ValueAnimator
+import android.content.Context
 import android.os.Build
 import android.os.PowerManager
-import android.content.Context
 import android.os.SystemClock
-import eu.kanade.tachiyomi.ui.reader.manyue.ManyueReaderWorkGate
 import android.util.AttributeSet
 import android.view.Choreographer
 import android.view.HapticFeedbackConstants
@@ -16,6 +15,7 @@ import android.view.animation.DecelerateInterpolator
 import androidx.core.animation.doOnEnd
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
+import eu.kanade.tachiyomi.ui.reader.manyue.ManyueReaderWorkGate
 import eu.kanade.tachiyomi.ui.reader.viewer.GestureDetectorWithLongTap
 import kotlin.math.abs
 
@@ -78,8 +78,12 @@ class WebtoonRecyclerView @JvmOverloads constructor(
         scrollState != SCROLL_STATE_IDLE || SystemClock.uptimeMillis() - manyueLastInteraction < 300L
 
     /** Stable scrolling can display a prepared result; pinch, layout, and measured pressure cannot. */
-    fun canSwapManyueImage(): Boolean {
-        if (isZooming || manyueAnimating > 0 || isComputingLayout || ManyueReaderWorkGate.isDisplayBlocked()) return false
+    fun canSwapManyueImage(continuousScale: Boolean = false): Boolean {
+        if (isZooming || manyueAnimating > 0 || isComputingLayout ||
+            ManyueReaderWorkGate.isDisplayBlocked(continuousScale)
+        ) {
+            return false
+        }
         return scrollState != SCROLL_STATE_IDLE ||
             (!manyueTouchActive && SystemClock.uptimeMillis() - manyueLastInteraction >= 120L)
     }

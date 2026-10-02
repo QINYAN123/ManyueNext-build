@@ -3,8 +3,8 @@ package eu.kanade.tachiyomi.ui.reader.manyue
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -71,7 +71,9 @@ object ManyueImagePipeline {
                     bounds.outHeight,
                     ManyueAiSafetyPolicy.MAX_CLASSIC_PIXELS,
                 )
-            ) return@withContext null
+            ) {
+                return@withContext null
+            }
             val decoded = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
                 ?: return@withContext null
             bmp = decoded
@@ -154,9 +156,16 @@ object ManyueImagePipeline {
                 val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
                 BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
                 if (ManyueAutoEnhancementPolicy.decide(
-                        bounds.outWidth, ManyueRuntimeState.displayWidthPx, preferences.aiScalePercent.get(),
+                        bounds.outWidth,
+                        ManyueRuntimeState.displayWidthPx,
+                        preferences.aiScalePercent.get(),
+                        ManyueAiModel.fromId(preferences.aiModel.get()).continuousScale,
                     ).path == ManyueAutoEnhancementPolicy.Path.ORIGINAL_SIZE
-                ) classicEnhance(bytes, preferences.classicStrength.get(), isAiCombined = false) else null
+                ) {
+                    classicEnhance(bytes, preferences.classicStrength.get(), isAiCombined = false)
+                } else {
+                    null
+                }
             }
         }
     }

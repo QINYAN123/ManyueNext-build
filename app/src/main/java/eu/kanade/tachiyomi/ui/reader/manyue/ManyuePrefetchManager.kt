@@ -19,7 +19,9 @@ object ManyuePrefetchManager {
     private val tokens = java.util.concurrent.ConcurrentHashMap<PageKey, MutableSet<String>>()
     private val currentDecisions = java.util.concurrent.ConcurrentHashMap<PageKey, CompletableDeferred<Unit>>()
     private val rememberedCurrentDecisions = linkedSetOf<PageKey>()
+
     @Volatile private var currentChapterId: Long = Long.MIN_VALUE
+
     @Volatile private var currentPage: Int = -1
 
     fun reset() {
@@ -148,6 +150,8 @@ object ManyuePrefetchManager {
 
             val distance = key.pageIndex - currentPage
             when {
+                key.chapterId == currentChapterId && key.pageIndex == currentPage ->
+                    pageTokens.forEach { ManyueAiUpscaler.updatePriority(it, 120) }
                 key in visiblePages -> pageTokens.forEach { ManyueAiUpscaler.updatePriority(it, 100) }
                 key.chapterId != currentChapterId -> {
                     pageTokens.forEach(ManyueAiUpscaler::cancel)

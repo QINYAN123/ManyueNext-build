@@ -3,24 +3,42 @@ package eu.kanade.tachiyomi.ui.reader.manyue
 import android.app.Application
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import eu.kanade.tachiyomi.ui.reader.model.ReaderPage
 import eu.kanade.tachiyomi.ui.reader.metadata.SourceImageInfo
-import java.io.ByteArrayOutputStream
+import eu.kanade.tachiyomi.ui.reader.model.ReaderPage
 import kotlinx.coroutines.runBlocking
 import okio.Buffer
-import org.junit.Assert.*
+import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import java.io.ByteArrayOutputStream
 
 @RunWith(RobolectricTestRunner::class)
 @Config(application = Application::class, sdk = [34], manifest = Config.NONE)
 class ManyueAutomaticReaderTest {
+    private val oldModel = ManyueRuntimeState.aiModel
+
+    @org.junit.Before fun selectLegacyModel() {
+        ManyueRuntimeState.updateAiModel(ManyueAiModel.FAST_REAL_CUGAN)
+    }
+
+    @org.junit.After fun restoreModel() {
+        ManyueRuntimeState.updateAiModel(oldModel)
+    }
+
     private fun image(): ByteArray {
         val bmp = Bitmap.createBitmap(12, 16, Bitmap.Config.ARGB_8888)
         bmp.eraseColor(0xff785032.toInt())
-        val bytes = ByteArrayOutputStream().use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it); it.toByteArray() }
+        val bytes = ByteArrayOutputStream().use {
+            bmp.compress(Bitmap.CompressFormat.PNG, 100, it)
+            it.toByteArray()
+        }
         bmp.recycle()
         return bytes
     }
@@ -42,7 +60,12 @@ class ManyueAutomaticReaderTest {
         val bytes = image()
         val source = Buffer().write(bytes)
         val states = mutableListOf<ManyueEnhancementState>()
-        assertSame(source, ManyueReaderHook.applyClassic(source, 4, 25, { state, _ -> states += state }, displayWidthPx = 24))
+        assertSame(
+            source,
+            ManyueReaderHook.applyClassic(source, 4, 25, { state, _ ->
+                states += state
+            }, displayWidthPx = 24),
+        )
         assertArrayEquals(bytes, source.readByteArray())
         assertTrue(states.isEmpty())
     }

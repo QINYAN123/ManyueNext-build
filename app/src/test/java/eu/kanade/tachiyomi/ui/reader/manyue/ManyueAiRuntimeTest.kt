@@ -10,7 +10,7 @@ import java.nio.file.Files
 class ManyueAiRuntimeTest {
 
     @Test fun `both native models use bounded reader-first execution`() {
-        for (model in ManyueAiModel.entries) {
+        for (model in ManyueAiModel.entries.filterNot { it.continuousScale }) {
             val command = ManyueAiRuntime.buildCommand("worker", "input", "output", "models", model, "webp", 1035)
             assertEquals("0", command[command.indexOf("-t") + 1])
             assertEquals("1:1:1", command[command.indexOf("-j") + 1])
@@ -99,7 +99,15 @@ class ManyueAiRuntimeTest {
 
     @Test fun `native command requires an explicit positive target width`() {
         assertThrows(IllegalArgumentException::class.java) {
-            ManyueAiRuntime.buildCommand("worker", "input", "output", "models", ManyueAiModel.DEFAULT, "webp", 0)
+            ManyueAiRuntime.buildCommand(
+                "worker",
+                "input",
+                "output",
+                "models",
+                ManyueAiModel.FAST_REAL_CUGAN,
+                "webp",
+                0,
+            )
         }
     }
 

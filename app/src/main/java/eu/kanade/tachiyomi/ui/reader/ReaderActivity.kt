@@ -50,7 +50,6 @@ import eu.kanade.presentation.reader.OrientationSelectDialog
 import eu.kanade.presentation.reader.ReaderContentOverlay
 import eu.kanade.presentation.reader.ReaderPageActionsDialog
 import eu.kanade.presentation.reader.ReaderPageIndicator
-import eu.kanade.tachiyomi.ui.reader.metadata.ReaderMetadataPresentation
 import eu.kanade.presentation.reader.ReadingModeSelectDialog
 import eu.kanade.presentation.reader.appbars.ReaderAppBars
 import eu.kanade.presentation.reader.components.ChapterNavigatorType
@@ -67,6 +66,7 @@ import eu.kanade.tachiyomi.ui.reader.ReaderViewModel.SetAsCoverResult.Error
 import eu.kanade.tachiyomi.ui.reader.ReaderViewModel.SetAsCoverResult.Success
 import eu.kanade.tachiyomi.ui.reader.manyue.ManyueGpuDisplayController
 import eu.kanade.tachiyomi.ui.reader.manyue.ManyueGpuDisplayStatus
+import eu.kanade.tachiyomi.ui.reader.metadata.ReaderMetadataPresentation
 import eu.kanade.tachiyomi.ui.reader.model.ReaderChapter
 import eu.kanade.tachiyomi.ui.reader.model.ReaderPage
 import eu.kanade.tachiyomi.ui.reader.model.ViewerChapters
@@ -426,12 +426,21 @@ class ReaderActivity : BaseActivity() {
         val previous = runtime.classicStrength
         runtime.updateClassicStrength(strength)
         if (previous != runtime.classicStrength &&
-            eu.kanade.tachiyomi.ui.reader.manyue.ManyueEnhancementMode.fromInt(runtime.modeInt).usesClassic()
-        ) viewModel.state.value.viewer?.refreshManyue()
+            eu.kanade.tachiyomi.ui.reader.manyue.ManyueEnhancementMode.fromInt(
+                runtime.modeInt,
+            ).usesClassic(runtime.aiModel)
+        ) {
+            viewModel.state.value.viewer?.refreshManyue()
+        }
     }
 
     fun onManyueAiScaleChanged(percent: Int) {
         eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.updateAiScale(percent)
+        viewModel.state.value.viewer?.refreshManyue()
+    }
+
+    fun onManyueAiDetailStrengthChanged(strength: Int) {
+        eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.updateAiDetailStrength(strength)
         viewModel.state.value.viewer?.refreshManyue()
     }
 

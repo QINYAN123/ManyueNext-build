@@ -3,7 +3,6 @@ package eu.kanade.tachiyomi.ui.reader.manyue
 import android.app.Application
 import android.graphics.Bitmap
 import android.os.Build
-import java.io.ByteArrayOutputStream
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -15,6 +14,7 @@ import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.LooperMode
 import org.robolectric.util.ReflectionHelpers
+import java.io.ByteArrayOutputStream
 
 @RunWith(RobolectricTestRunner::class)
 @Config(application = Application::class, sdk = [34], manifest = Config.NONE)
@@ -41,6 +41,7 @@ class ManyueNativeTargetRequestTest {
         val oldNativeDir = context.applicationInfo.nativeLibraryDir
         val oldMode = ManyueRuntimeState.modeInt
         val oldScale = ManyueRuntimeState.aiScalePercent
+        val oldModel = ManyueRuntimeState.aiModel
         var token: String? = null
         try {
             // Exercise request construction without starting an Android native executable.
@@ -48,6 +49,7 @@ class ManyueNativeTargetRequestTest {
             context.applicationInfo.nativeLibraryDir = context.cacheDir.resolve("test-native").path
             probeField.set(null, context.applicationInfo.nativeLibraryDir to ManyueAiRuntime.Capability.READY)
             startedField.setBoolean(null, true)
+            ManyueRuntimeState.updateAiModel(ManyueAiModel.FAST_REAL_CUGAN)
             ManyueRuntimeState.updateMode(mode)
             ManyueRuntimeState.updateAiScale(scalePercent)
             val bitmap = Bitmap.createBitmap(8, 17, Bitmap.Config.ARGB_8888)
@@ -68,11 +70,17 @@ class ManyueNativeTargetRequestTest {
             )
             if (expectedTarget == null) {
                 assertNull(token)
-                assertEquals(inputsBefore, context.cacheDir.listFiles()?.filter { it.name.startsWith("manyue_in_") }?.toSet())
+                assertEquals(
+                    inputsBefore,
+                    context.cacheDir.listFiles()?.filter {
+                        it.name.startsWith("manyue_in_")
+                    }?.toSet(),
+                )
                 return
             }
             assertNotNull("1x target must enqueue real x2 inference instead of bypassing AI", token)
             val requestsField = scheduler.javaClass.getDeclaredField("requests").apply { isAccessible = true }
+
             @Suppress("UNCHECKED_CAST")
             val requests = requestsField.get(null) as Map<String, ManyueAiUpscaler.Request>
             val request = requireNotNull(requests[token])
@@ -86,6 +94,7 @@ class ManyueNativeTargetRequestTest {
             token?.let(scheduler::cancel)
             ManyueRuntimeState.updateAiScale(oldScale)
             ManyueRuntimeState.updateMode(oldMode)
+            ManyueRuntimeState.updateAiModel(oldModel)
             startedField.setBoolean(null, oldStarted)
             probeField.set(null, oldProbe)
             ReflectionHelpers.setStaticField(Build::class.java, "SUPPORTED_64_BIT_ABIS", oldAbis)

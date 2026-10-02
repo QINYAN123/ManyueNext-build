@@ -3,11 +3,6 @@ package eu.kanade.tachiyomi.ui.reader.manyue
 import android.content.Context
 import android.graphics.Bitmap
 import android.os.Build
-import java.io.File
-import java.io.FileInputStream
-import java.io.FileOutputStream
-import java.security.MessageDigest
-import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -15,6 +10,11 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
+import java.security.MessageDigest
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.resume
 
 /**
@@ -25,6 +25,7 @@ object ManyueEnhancementCache {
 
     // Native target resizing and the optional overlay order change invalidate older results.
     const val MODEL_VERSION = "anime_native_target_v8"
+
     // Retain the directory so existing bundles still count toward the budget and can be evicted.
     private const val CACHE_DIR_NAME = "manyue_ai_anime_fixed2_v7"
     private const val LEGACY_CACHE_DIR_NAME = "manyue_ai_anime_fixed2_v6"
@@ -264,11 +265,14 @@ object ManyueEnhancementCache {
         targetScaleTenths: Int = 20,
         modelId: String = "legacy",
         anime4kOverlay: Boolean = false,
+        aiDetailStrength: Int = 0,
     ): String {
         // v9.5 overlay=true entries could contain a plain AI image after a silent overlay failure.
         // MODEL_VERSION also isolates results encoded before native target resizing.
         val overlayKeyVersion = if (anime4kOverlay) "overlay-v8" else "v7"
-        val raw = "$MODEL_VERSION|$mangaId|$chapterId|$pageIndex|$mode|$targetMode|$targetWidth|$targetScaleTenths|$classicStrength|$sourceFingerprint|$modelId|overlay=$anime4kOverlay|$overlayKeyVersion"
+        val raw = "$MODEL_VERSION|$mangaId|$chapterId|$pageIndex|$mode|$targetMode|$targetWidth|" +
+            "$targetScaleTenths|$classicStrength|$sourceFingerprint|$modelId|" +
+            "overlay=$anime4kOverlay|$overlayKeyVersion|detail=$aiDetailStrength"
         val md = MessageDigest.getInstance("MD5").digest(raw.toByteArray())
         return md.joinToString("") { "%02x".format(it) }
     }
@@ -680,7 +684,9 @@ object ManyueEnhancementCache {
         if (identity == null) return false
         if (position != null && identity.mangaId == position.mangaId && identity.chapterId == position.chapterId &&
             identity.pageIndex >= position.pageIndex - NEAR_PREVIOUS_PAGES
-        ) return true
+        ) {
+            return true
+        }
         return position?.mangaId?.let { mangaId ->
             identity.mangaId == mangaId && (identity.chapterId to identity.pageIndex) in visiblePages
         } ?: false
@@ -700,7 +706,9 @@ object ManyueEnhancementCache {
             if (key in deletingBundles || (leasesByBundle[key] ?: 0) > 0) return false
             if (respectReadingProtection &&
                 isIdentityProtected(candidate.identity, readingPosition, protectedPageSnapshot)
-            ) return false
+            ) {
+                return false
+            }
             deletingBundles += key
         }
         val deleted = try {
@@ -765,5 +773,4 @@ object ManyueEnhancementCache {
         parent.parentFile?.canonicalFile == cacheRoot &&
             parent.name.matches(Regex("manyue_work_[A-Za-z0-9_-]+"))
     }.getOrDefault(false)
-
 }

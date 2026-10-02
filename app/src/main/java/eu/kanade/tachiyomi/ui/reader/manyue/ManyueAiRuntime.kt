@@ -3,6 +3,7 @@ package eu.kanade.tachiyomi.ui.reader.manyue
 import android.content.Context
 import android.os.Build
 import android.os.SystemClock
+import tachiyomi.core.common.util.system.logcat
 import java.io.File
 import java.io.FileInputStream
 import java.io.RandomAccessFile
@@ -10,7 +11,6 @@ import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.util.concurrent.CancellationException
 import java.util.concurrent.TimeUnit
-import tachiyomi.core.common.util.system.logcat
 
 /**
  * Thin wrapper around the bundled arm64 ncnn command-line workers executed via ProcessBuilder.
@@ -31,11 +31,14 @@ object ManyueAiRuntime {
     private const val OVERLAY_TIMEOUT_SECONDS = 90L
     private const val WAIT_SLICE_MS = 250L
     private const val LOG_TAIL_BYTES = 4096
+
     // Keep the proven automatic tile selection; tiny fixed tiles previously increased dispatch
     // overhead. Reduce pipeline concurrency and pace pages instead of guessing a device tile size.
     private const val TILE_SIZE = 0
+
     // A single process can still fan out its load/proc/save pipeline. Prefer reader headroom.
     private const val JOBS = "1:1:1"
+
     // The packaged Real-CUGAN model is up2x-no-denoise. Upstream selects
     // up2x-conservative for -1, so the model selector must be 0.
     private const val REAL_CUGAN_NOISE_LEVEL = "0"
@@ -54,11 +57,12 @@ object ManyueAiRuntime {
     fun isSupported(context: Context): Boolean = probe(context) == Capability.READY
 
     /** Fast after the first call; verifies the exact packaged native files once per install path. */
-    fun probe(context: Context): Capability {
+    fun probe(context: Context, model: ManyueAiModel = ManyueRuntimeState.aiModel): Capability {
+        if (model.continuousScale) return probeLite(context)
         if (!isSupported()) return Capability.UNSUPPORTED_ABI
         val nativeDir = context.applicationInfo.nativeLibraryDir
         cachedProbe?.takeIf { it.first == nativeDir }?.let { return it.second }
-        val runners = ManyueAiModel.entries.map { File(nativeDir, it.runnerName) }
+        val runners = ManyueAiModel.entries.filterNot { it.continuousScale }.map { File(nativeDir, it.runnerName) }
         val ncnn = File(nativeDir, "libncnn.so")
         val libomp = File(nativeDir, "libomp.so")
         val result = runCatching {
@@ -70,7 +74,9 @@ object ManyueAiRuntime {
                     sha256(File(nativeDir, ManyueAiModel.FAST_REAL_CUGAN.runnerName)) != EXPECTED_REAL_CUGAN_SHA256 ||
                     sha256(ncnn) != EXPECTED_NCNN_SHA256 ||
                     sha256(libomp) != EXPECTED_LIBOMP_SHA256 -> Capability.CORRUPT_BINARY
-                runners.any { !it.canExecute() && (!it.setExecutable(true, false) || !it.canExecute()) } -> Capability.NOT_EXECUTABLE
+                runners.any {
+                    !it.canExecute() && (!it.setExecutable(true, false) || !it.canExecute())
+                } -> Capability.NOT_EXECUTABLE
                 else -> Capability.READY
             }
         }.getOrElse {
@@ -79,6 +85,30 @@ object ManyueAiRuntime {
         }
         cachedProbe = nativeDir to result
         logcat { "Manyue capability=$result nativeDir=$nativeDir" }
+        return result
+    }
+
+    @Volatile private var cachedLiteProbe: Pair<String, Capability>? = null
+
+    private fun probeLite(context: Context): Capability {
+        if (!isSupported()) return Capability.UNSUPPORTED_ABI
+        val nativeDir = context.applicationInfo.nativeLibraryDir
+        cachedLiteProbe?.takeIf { it.first == nativeDir }?.let { return it.second }
+        val expected = mapOf(
+            ManyueAiModel.MOBILE_LITE.runnerName to ManyueLiteAssets.NATIVE_SHA256,
+            "libncnn.so" to EXPECTED_NCNN_SHA256,
+            "libomp.so" to EXPECTED_LIBOMP_SHA256,
+        )
+        val result = runCatching {
+            if (expected.keys.any { !File(nativeDir, it).isFile }) {
+                Capability.MISSING_BINARY
+            } else if (expected.any { (name, hash) -> sha256(File(nativeDir, name)) != hash }) {
+                Capability.CORRUPT_BINARY
+            } else {
+                Capability.READY
+            }
+        }.getOrDefault(Capability.CORRUPT_BINARY)
+        cachedLiteProbe = nativeDir to result
         return result
     }
 
@@ -113,7 +143,8 @@ object ManyueAiRuntime {
         val nativeDir = context.applicationInfo.nativeLibraryDir
         val binary = File(nativeDir, model.runnerName)
         val ncnn = File(nativeDir, "libncnn.so")
-        require(probe(context) == Capability.READY) { "AI runtime unavailable: ${probe(context)}" }
+        require(!model.continuousScale) { "Lite uses resident JNI, not the fixed-2x CLI" }
+        require(probe(context, model) == Capability.READY) { "AI runtime unavailable: ${probe(context, model)}" }
         require(inputFile.isFile && inputFile.length() > 0L) { "AI input missing or empty: $inputFile" }
         require(binary.isFile && binary.length() > 0L) { "native binary missing: $binary" }
         require(ncnn.isFile && ncnn.length() > 0L) { "libncnn missing: $ncnn" }
@@ -199,6 +230,7 @@ object ManyueAiRuntime {
         outputFormat: String,
         targetWidth: Int,
     ): List<String> {
+        require(!model.continuousScale) { "Lite cannot run as a CLI model" }
         require(targetWidth > 0) { "AI target width must be positive" }
         return buildList {
             add(binaryPath)

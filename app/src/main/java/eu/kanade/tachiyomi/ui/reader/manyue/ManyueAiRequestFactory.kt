@@ -2,10 +2,10 @@ package eu.kanade.tachiyomi.ui.reader.manyue
 
 import android.content.Context
 import android.graphics.BitmapFactory
-import java.io.File
-import java.util.UUID
 import logcat.LogPriority
 import tachiyomi.core.common.util.system.logcat
+import java.io.File
+import java.util.UUID
 
 /** Creates validated native requests for visible holders and the bounded chapter prefetch cursor. */
 object ManyueAiRequestFactory {
@@ -21,32 +21,32 @@ object ManyueAiRequestFactory {
     ): String? {
         if (!ManyueEnhancementMode.fromInt(expectedMode).usesAi()) return null
         if (ManyueRuntimeState.modeInt != expectedMode || ManyueRuntimeState.generation != generation) return null
-        if (ManyueAiRuntime.probe(context) != ManyueAiRuntime.Capability.READY || originalBytes.isEmpty() ||
+        val model = ManyueRuntimeState.aiModel
+        if (ManyueAiRuntime.probe(context, model) != ManyueAiRuntime.Capability.READY || originalBytes.isEmpty() ||
             originalBytes.size > ManyueAiRuntime.MAX_INPUT_BYTES || ManyueImagePipeline.isAnimated(originalBytes)
-        ) return null
+        ) {
+            return null
+        }
 
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeByteArray(originalBytes, 0, originalBytes.size, bounds)
         val width = bounds.outWidth
         val height = bounds.outHeight
         if (width <= 0 || height <= 0) return null
-        if (!ManyueAiSafetyPolicy.isPredictedNativeOutputSafe(
-                width,
-                height,
-                minOf(ManyueAiRuntime.MAX_MODEL_OUTPUT_PIXELS, ManyueAiSafetyPolicy.MAX_DISPLAY_PIXELS),
-            )
-        ) return null
-
-        val model = ManyueRuntimeState.aiModel
         val targetMode = model.scale
         val targetWidth = if (expectedMode == ManyueEnhancementMode.AUTO.value) {
-            val decision = ManyueAutoEnhancementPolicy.decide(width, displayWidthPx, ManyueRuntimeState.aiScalePercent)
+            val decision = ManyueAutoEnhancementPolicy.decide(
+                width,
+                displayWidthPx,
+                ManyueRuntimeState.aiScalePercent,
+                model.continuousScale,
+            )
             if (decision.path != ManyueAutoEnhancementPolicy.Path.AI) return null
             decision.targetWidth
         } else {
             ManyueAiUpscaler.customTargetWidth(width, ManyueRuntimeState.aiScalePercent)
         }
-        if (targetWidth < width) return null
+        if (!ManyueAiSafetyPolicy.isNativeWorkSafe(model, width, height, targetWidth)) return null
         // The resolved width is in both cache and request identity; legacy tenths stays native x2.
         val targetScaleTenths = 20
         val resolved = targetWidth
@@ -56,7 +56,9 @@ object ManyueAiRequestFactory {
                 resolvedHeight,
                 ManyueAiSafetyPolicy.MAX_DISPLAY_PIXELS,
             )
-        ) return null
+        ) {
+            return null
+        }
 
         val sourceFingerprint = ManyueAiUpscaler.fingerprint(originalBytes)
         val reusable = ManyueAiUpscaler.findReusableToken(
@@ -71,7 +73,8 @@ object ManyueAiRequestFactory {
             sourceFingerprint = sourceFingerprint,
             targetScaleTenths = targetScaleTenths,
             model = model,
-            anime4kOverlay = ManyueRuntimeState.anime4kOverlay,
+            anime4kOverlay = ManyueRuntimeState.anime4kOverlay && !model.continuousScale,
+            aiDetailStrength = if (model.continuousScale) ManyueRuntimeState.aiDetailStrength else 0,
         )
         if (reusable != null) {
             ManyueAiUpscaler.promotePriority(reusable, priority)
@@ -99,7 +102,8 @@ object ManyueAiRequestFactory {
                 generation = generation,
                 sourceFingerprint = sourceFingerprint,
                 model = model,
-                anime4kOverlay = ManyueRuntimeState.anime4kOverlay,
+                anime4kOverlay = ManyueRuntimeState.anime4kOverlay && !model.continuousScale,
+                aiDetailStrength = if (model.continuousScale) ManyueRuntimeState.aiDetailStrength else 0,
             )
             ManyuePrefetchManager.register(identity.chapterId, identity.pageIndex, token)
             ManyueAiUpscaler.queue(token)

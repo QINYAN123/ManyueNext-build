@@ -12,6 +12,7 @@ enum class ManyueEnhancementState {
     AI_WAITING_DISPLAY,
     AI_READY,
     AI_CLASSIC_READY,
+    INTERPOLATED_READY,
     SKIPPED,
     FAILED,
 }

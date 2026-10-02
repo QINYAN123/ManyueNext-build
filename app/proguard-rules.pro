@@ -94,6 +94,9 @@
 # KotlinX Datetime
 -keep,allowoptimization class kotlinx.datetime.** { public protected *; }
 
+# JNI entry points use their package/class/method names from the native library.
+-keep class eu.kanade.tachiyomi.ui.reader.manyue.ManyueLiteNative { *; }
+
 # Methods called by Shizuku only
 -keepclassmembers class mihon.app.shizuku.ShellInterface {
     public <init>();

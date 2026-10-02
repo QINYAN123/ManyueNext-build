@@ -224,6 +224,10 @@ class ReaderPreferences(
     val manyueClassicStrength: Preference<Int> = preferenceStore.getInt("manyueClassicStrength", 25)
     val manyueAiScalePercent: Preference<Int> = preferenceStore.getInt("manyueAiScalePercent", 200)
 
+    val manyueAiDetailStrength = preferenceStore.getInt("manyueAiDetailStrength", 60)
+
+    val manyueLiteModelMigrationDone = preferenceStore.getBoolean("manyueLiteModelMigrationDone", false)
+
     val manyueAiModel: Preference<String> = preferenceStore.getString(
         "manyueAiModel",
         eu.kanade.tachiyomi.ui.reader.manyue.ManyueAiModel.DEFAULT.id,

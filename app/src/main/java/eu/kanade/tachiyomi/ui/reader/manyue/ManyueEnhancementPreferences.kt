@@ -18,6 +18,8 @@ class ManyueEnhancementPreferences(private val store: PreferenceStore) {
     /** Fixed native x2 model selected for AI requests. */
     val aiScalePercent: Preference<Int> = store.getInt("manyueAiScalePercent", 200)
 
+    val aiDetailStrength: Preference<Int> = store.getInt("manyueAiDetailStrength", 60)
+
     val aiModel: Preference<String> = store.getString("manyueAiModel", ManyueAiModel.DEFAULT.id)
 
     /** Optional Anime4KCPP post-filter overlay, kept off by default for lowest latency. */
