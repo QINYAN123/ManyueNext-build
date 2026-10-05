@@ -67,7 +67,7 @@ class ManyueLitePolicyTest {
     }
 
     @Test
-    fun `only visible lite work bypasses fast scroll`() {
+    fun `visible AI and prepared results continue through fast scroll while prefetch waits`() {
         val owner = Any()
         try {
             ManyueReaderWorkGate.update(owner, active = true)
@@ -77,11 +77,9 @@ class ManyueLitePolicyTest {
             ManyueReaderWorkGate.reportScroll(owner, dx = 0, dy = 5000, viewportHeightPx = 400)
 
             assertTrue(ManyueReaderWorkGate.isBlocked())
-            assertTrue(ManyueReaderWorkGate.isDisplayBlocked())
-            assertFalse(ManyueReaderWorkGate.isDisplayBlocked(continuousScale = true))
-            assertFalse(ManyueReaderWorkGate.isAiWorkBlocked(ManyueAiModel.MOBILE_LITE, priority = 100))
-            assertTrue(ManyueReaderWorkGate.isAiWorkBlocked(ManyueAiModel.MOBILE_LITE, priority = 99))
-            assertTrue(ManyueReaderWorkGate.isAiWorkBlocked(ManyueAiModel.FAST_REAL_CUGAN, priority = 100))
+            assertFalse(ManyueReaderWorkGate.isDisplayBlocked())
+            assertFalse(ManyueReaderWorkGate.isAiWorkBlocked(priority = 100))
+            assertTrue(ManyueReaderWorkGate.isAiWorkBlocked(priority = 99))
         } finally {
             ManyueReaderWorkGate.release(owner)
         }
@@ -100,8 +98,8 @@ class ManyueLitePolicyTest {
                 )
             }
 
-            assertTrue(ManyueReaderWorkGate.isAiWorkBlocked(ManyueAiModel.MOBILE_LITE, priority = 100))
-            assertTrue(ManyueReaderWorkGate.isDisplayBlocked(continuousScale = true))
+            assertTrue(ManyueReaderWorkGate.isAiWorkBlocked(priority = 100))
+            assertTrue(ManyueReaderWorkGate.isDisplayBlocked())
 
             repeat(2) {
                 ManyueReaderWorkGate.reportFrame(
@@ -110,8 +108,8 @@ class ManyueLitePolicyTest {
                     expectedIntervalNanos = 16_666_667L,
                 )
             }
-            assertFalse(ManyueReaderWorkGate.isAiWorkBlocked(ManyueAiModel.MOBILE_LITE, priority = 100))
-            assertFalse(ManyueReaderWorkGate.isDisplayBlocked(continuousScale = true))
+            assertFalse(ManyueReaderWorkGate.isAiWorkBlocked(priority = 100))
+            assertFalse(ManyueReaderWorkGate.isDisplayBlocked())
         } finally {
             ManyueReaderWorkGate.release(owner)
         }
@@ -124,7 +122,7 @@ class ManyueLitePolicyTest {
             ManyueReaderWorkGate.update(owner, active = false)
             ManyueReaderWorkGate.reportThermalStatus(owner, ManyueReaderWorkGate.THERMAL_STATUS_SEVERE)
 
-            assertTrue(ManyueReaderWorkGate.isAiWorkBlocked(ManyueAiModel.MOBILE_LITE, priority = 100))
+            assertTrue(ManyueReaderWorkGate.isAiWorkBlocked(priority = 100))
         } finally {
             ManyueReaderWorkGate.release(owner)
         }

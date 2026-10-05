@@ -140,7 +140,7 @@ object ManyueAiUpscaler {
                         cancel(req.token)
                         continue
                     }
-                    if (ManyueReaderWorkGate.isAiWorkBlocked(req.model, req.priority) || workPacer.isBlocked()) {
+                    if (ManyueReaderWorkGate.isAiWorkBlocked(req.priority) || workPacer.isBlocked()) {
                         synchronized(this@ManyueAiUpscaler) {
                             if (!req.cancelled && !req.completed) queue.offer(req)
                         }
@@ -264,10 +264,21 @@ object ManyueAiUpscaler {
         }
     }
 
-    internal fun shouldYieldToVisible(active: Request, visible: Request): Boolean =
-        active.model.continuousScale && visible.model.continuousScale &&
-            active.token != visible.token && active.priority < 100 && visible.priority >= 100 &&
-            !active.cancelled && !active.completed && !visible.cancelled && !visible.completed
+    internal fun shouldYieldToVisible(active: Request, visible: Request): Boolean {
+        if (active.token == visible.token || active.priority >= 100 || visible.priority < 100 ||
+            active.cancelled || active.completed || visible.cancelled || visible.completed
+        ) {
+            return false
+        }
+        // Lite cancels at tile boundaries and retains its loaded engine. Killing a nearby
+        // legacy process recreates Vulkan pipelines on the next page and can repeatedly
+        // discard all inference during fast reading. Finish that bounded nearby job once;
+        // the queue still picks the most recent visible page next. Distant work yields.
+        val sameChapter = active.mangaId == visible.mangaId && active.chapterId == visible.chapterId
+        val nearby = kotlin.math.abs(active.pageIndex.toLong() - visible.pageIndex.toLong()) <=
+            ManyueAiSafetyPolicy.ACTIVE_COMPLETION_LOOK_BACK_PAGES
+        return active.model.continuousScale || !active.processing || !sameChapter || !nearby
+    }
 
     /** Cancel queued or running native work. Completion still has a second stale-result guard. */
     fun cancel(token: String) {
@@ -435,6 +446,7 @@ object ManyueAiUpscaler {
         }
     }
 
+    @Synchronized
     private fun cleanupFinished() {
         if (requests.size <= MAX_REQUESTS) return
         val sorted = requests.values.filter { it.completed || it.cancelled }.sortedBy { it.enqueuedAt }
@@ -445,6 +457,10 @@ object ManyueAiUpscaler {
         }
     }
 
+    /** Snapshot the cache identity while the request is still registered; holders retain the key. */
+    @Synchronized
+    internal fun cacheKeyForToken(token: String): String? = requests[token]?.let(::cacheKeyFor)
+
     fun state(context: Context, token: String): Int {
         val req = requests[token] ?: return STATE_FAILED
         val key = cacheKeyFor(req)
@@ -454,13 +470,13 @@ object ManyueAiUpscaler {
     }
 
     fun cachedBundle(context: Context, token: String): File? {
-        val req = requests[token] ?: return null
-        return ManyueEnhancementCache.getBundle(context, cacheKeyFor(req))
+        val key = cacheKeyForToken(token) ?: return null
+        return ManyueEnhancementCache.getBundle(context, key)
     }
 
     fun cachedImage(context: Context, token: String): ManyueEnhancementCache.CachedImage? {
-        val req = requests[token] ?: return null
-        return ManyueEnhancementCache.getImage(context, cacheKeyFor(req))
+        val key = cacheKeyForToken(token) ?: return null
+        return ManyueEnhancementCache.getImage(context, key)
     }
 
     fun pinnedCachedImage(
@@ -468,17 +484,24 @@ object ManyueAiUpscaler {
         token: String,
         strength: Int? = null,
     ): ManyueEnhancementCache.PinnedCachedImage? {
-        val req = requests[token] ?: return null
-        return ManyueEnhancementCache.pinCachedImage(context, cacheKeyFor(req), strength)
+        val key = cacheKeyForToken(token) ?: return null
+        return pinnedCachedImageForKey(context, key, strength)
     }
+
+    internal fun pinnedCachedImageForKey(
+        context: Context,
+        cacheKey: String,
+        strength: Int? = null,
+    ): ManyueEnhancementCache.PinnedCachedImage? =
+        ManyueEnhancementCache.pinCachedImage(context, cacheKey, strength)
 
     fun cachedClassicImage(
         context: Context,
         token: String,
         strength: Int,
     ): ManyueEnhancementCache.CachedImage? {
-        val req = requests[token] ?: return null
-        return ManyueEnhancementCache.getClassicImage(context, cacheKeyFor(req), strength)
+        val key = cacheKeyForToken(token) ?: return null
+        return ManyueEnhancementCache.getClassicImage(context, key, strength)
     }
 
     fun cacheClassicImage(
@@ -487,19 +510,41 @@ object ManyueAiUpscaler {
         strength: Int,
         bitmap: Bitmap,
     ): ManyueEnhancementCache.CachedImage? {
-        val req = requests[token] ?: return null
-        return ManyueEnhancementCache.putClassicImage(context, cacheKeyFor(req), strength, bitmap)
+        val key = cacheKeyForToken(token) ?: return null
+        return cacheClassicImageForKey(context, key, strength, bitmap)
     }
 
+    internal fun cacheClassicImageForKey(
+        context: Context,
+        cacheKey: String,
+        strength: Int,
+        bitmap: Bitmap,
+    ): ManyueEnhancementCache.CachedImage? =
+        ManyueEnhancementCache.putClassicImage(context, cacheKey, strength, bitmap)
+
     fun removeClassicImage(context: Context, token: String, strength: Int) {
-        val req = requests[token] ?: return
-        ManyueEnhancementCache.removeClassicImage(context, cacheKeyFor(req), strength)
+        val key = cacheKeyForToken(token) ?: return
+        ManyueEnhancementCache.removeClassicImage(context, key, strength)
+    }
+
+    fun invalidateClassicImage(context: Context, token: String, strength: Int) {
+        val key = cacheKeyForToken(token) ?: return
+        invalidateClassicImageForKey(context, key, strength)
+    }
+
+    internal fun invalidateClassicImageForKey(context: Context, cacheKey: String, strength: Int) {
+        ManyueEnhancementCache.invalidateClassicImage(context, cacheKey, strength)
     }
 
     /** Decode the cached full image for the optional classic pass. Call only off the main thread. */
     fun loadCachedBitmap(context: Context, token: String): Bitmap? {
+        val key = cacheKeyForToken(token) ?: return null
+        return loadCachedBitmapForKey(context, key)
+    }
+
+    internal fun loadCachedBitmapForKey(context: Context, cacheKey: String): Bitmap? {
         return try {
-            val pinned = pinnedCachedImage(context, token) ?: return null
+            val pinned = pinnedCachedImageForKey(context, cacheKey) ?: return null
             pinned.lease.use { BitmapFactory.decodeFile(pinned.image.file.absolutePath) }
         } catch (t: Throwable) {
             null
@@ -582,9 +627,13 @@ object ManyueAiUpscaler {
             }
 
             outDir = File(context.cacheDir, "manyue_work_${req.token}").apply { mkdirs() }
-            // Anime4KCPP's stb-based CLI reads PNG/JPEG but not WebP, so emit PNG when that
-            // optional post-filter is enabled. The default fast path stays WebP.
-            val outFile = File(outDir, if (req.anime4kOverlay) "upscaled.png" else "upscaled.webp")
+            // Anime4KCPP reads PNG/JPEG, and WebP cannot encode either axis above 16383.
+            val outputFormat = ManyueAiSafetyPolicy.nativeOutputFormat(
+                resolved,
+                resolvedHeight,
+                req.anime4kOverlay,
+            )
+            val outFile = File(outDir, "upscaled.$outputFormat")
             val logFile = File(outDir, "native.log")
             if (!awaitReaderIdle(req)) return
             val nativeStartedAt = SystemClock.elapsedRealtime()
@@ -619,7 +668,7 @@ object ManyueAiUpscaler {
                     modelDir = modelDir,
                     logFile = logFile,
                     model = req.model,
-                    outputFormat = if (req.anime4kOverlay) "png" else "webp",
+                    outputFormat = outputFormat,
                     targetWidth = resolved,
                     isCancelled = { req.cancelled || !requestIsCurrent(req) },
                     onProcessStarted = {
@@ -765,7 +814,7 @@ object ManyueAiUpscaler {
             ManyueDiagnostics.record("${req.failureDetail}；已保留原图")
         } finally {
             expensiveWorkStartedAt?.let {
-                workPacer.afterWork(it, pressureActive = ManyueReaderWorkGate.isAiWorkBlocked(req.model, req.priority))
+                workPacer.afterWork(it, pressureActive = ManyueReaderWorkGate.isAiWorkBlocked(req.priority))
             }
             req.runningProcess = null
             req.nativeCancellation = null
@@ -784,7 +833,7 @@ object ManyueAiUpscaler {
     private fun awaitReaderIdle(req: Request): Boolean {
         val previousState = req.progressState
         var waited = false
-        while (ManyueReaderWorkGate.isAiWorkBlocked(req.model, req.priority)) {
+        while (ManyueReaderWorkGate.isAiWorkBlocked(req.priority)) {
             if (!requestIsCurrent(req)) return false
             if (!waited) notifyProgress(req, STATE_WAITING_RESOURCES)
             waited = true

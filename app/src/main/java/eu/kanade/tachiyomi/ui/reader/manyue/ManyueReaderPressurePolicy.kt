@@ -163,19 +163,16 @@ internal class ManyueReaderPressurePolicy(
         return thermalPressure || isBefore(now, fastScrollUntilNanos) || isBefore(now, badFrameUntilNanos)
     }
 
-    /** Visible Lite jobs continue through fast motion, while measured jank/heat still pause work. */
+    /** Visible AI jobs continue through fast motion, while measured jank/heat still pause work. */
     @Synchronized
-    fun isLiteVisibleWorkBlocked(): Boolean =
+    fun isVisibleWorkBlocked(): Boolean =
         thermalPressure || isBefore(nanoTime(), badFrameUntilNanos)
 
-    @Synchronized
-    fun isLiteDisplayBlocked(): Boolean = isBefore(nanoTime(), badFrameUntilNanos)
-
-    /** Display commits wait for measured motion/frame pressure, but not thermal status alone. */
+    /** A decoded result commits through motion; measured frame pressure still defers it. */
     @Synchronized
     fun isDisplayBlocked(): Boolean {
         val now = nanoTime()
-        return isBefore(now, fastScrollUntilNanos) || isBefore(now, badFrameUntilNanos)
+        return isBefore(now, badFrameUntilNanos)
     }
 
     private fun resetScrollSampling() {

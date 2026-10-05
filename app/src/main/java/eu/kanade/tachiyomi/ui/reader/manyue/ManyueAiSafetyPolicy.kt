@@ -5,6 +5,7 @@ object ManyueAiSafetyPolicy {
 
     const val MAX_DISPLAY_PIXELS = 12_000_000
     const val MAX_CLASSIC_PIXELS = 6_000_000
+    const val MAX_WEBP_DIMENSION = 16_383
 
     const val PREFETCH_LOOK_BACK_PAGES = 2
     const val ACTIVE_COMPLETION_LOOK_BACK_PAGES = 5
@@ -36,6 +37,10 @@ object ManyueAiSafetyPolicy {
         if (width <= 0 || height <= 0 || maxPixels <= 0) return false
         return width.toLong() * height.toLong() <= maxPixels.toLong()
     }
+
+    /** WebP encoders have an independent per-axis limit even when the image fits the pixel budget. */
+    fun nativeOutputFormat(width: Int, height: Int, anime4kOverlay: Boolean): String =
+        if (anime4kOverlay || width > MAX_WEBP_DIMENSION || height > MAX_WEBP_DIMENSION) "png" else "webp"
 
     fun isNativeWorkSafe(model: ManyueAiModel, sourceWidth: Int, sourceHeight: Int, targetWidth: Int): Boolean {
         if (!isPixelBudgetSafe(sourceWidth, sourceHeight, MAX_DISPLAY_PIXELS)) return false

@@ -2,6 +2,8 @@
 
 This directory contains the phase-one native output-size change for the RealSR and Real-CUGAN command-line workers. The AI networks still infer at fixed `-s 2`; `-w <targetWidth>` changes only the image dimensions saved afterward. The requested height is `(sourceHeight * targetWidth + sourceWidth / 2) / sourceWidth`, using checked 64-bit arithmetic. Widths outside the inclusive range `[sourceWidth, 2 * sourceWidth]` are rejected.
 
+The bundled quality model is `models-Real-ESRGANv3-anime/x2.param`. Its graph uses PixelShuffle4 on the learned branch, adds a 4x resized input branch, then applies a final 0.5x resize. The final tensor is 2x; `-s 2` is correct even though an intermediate layer is 4x. The host test checks both scale-defining operators in the packaged graph. The fast Real-CUGAN worker selects `up2x-no-denoise` with `-n 0`, as expected by the installed model assets.
+
 For 1× through less than 2× outputs, the worker area-resamples the model's packed 8-bit RGB/RGBA output directly into a smaller packed buffer immediately before encoding. This replaces the former Android-side Skia bilinear resize, so pixel values may differ slightly. RGBA uses alpha-weighted color averaging. At exactly 2×, it skips the resize and allocation entirely. The worker prints source, model, and final dimensions with `resize=area` or `resize=skipped` for each processed image.
 
 The native workers now fail fast if `Net::load_param`, `Net::load_model`, Real-CUGAN's auxiliary bicubic layer `load_param`/`create_pipeline`, `Extractor::input`, `Extractor::extract`, Vulkan `submit_and_wait`, or a top-level model `load`/`process` call reports an error. A failed inference terminates the worker before encoding, instead of returning a success-shaped output buffer. This makes the process result a stronger check that every requested page passed through the model, though dimensions alone still do not prove image quality.
@@ -36,7 +38,9 @@ The upstream Android build used NDK `25.2.9519653`, while the supplied ncnn 2024
 
 ## Encoding and scope
 
-OpenCV is removed from these new workers because it was used only in the output encoder and its Android SDK is a large additional dependency. PNG output uses the existing stb PNG encoder. Resized WebP output (below 2×) uses pinned libwebp 1.5.0 at quality 95, matching the old Android-side resized-WebP quality. Exact 2× output skips resizing and uses the upstream lossless WebP writer. JPEG continues through stb at quality 100 for CLI compatibility. The normal Mihon AI image path uses PNG/WebP; encoder byte output may differ from the earlier OpenCV path, so compare decoded pixels and file sizes if the format behavior changes in the app.
+OpenCV is removed from these workers because it was used only in the output encoder. PNG output uses the existing stb PNG encoder. All Android WebP outputs now use pinned libwebp 1.5.0 with `lossless=1`, compression effort `quality=0`, `method=0`, `exact=1`, and one thread. Compression effort does not reduce image quality in lossless mode. This replaces the expensive convenience lossless encoder at 2× and the former quality-95 lossy encoder below 2×. JPEG continues through stb at quality 100 for CLI compatibility. The app cache version is advanced so earlier lossy resized images are not reused. Files can be larger at lower compression effort; the cache retains its byte budget.
+
+On Magic V2 / Adreno 740, the same 690×985 legal colored comic crop, 2× output, old/new/old/new cold process runs: Real-CUGAN total mean 6.204→4.455 seconds, Real-ESRGAN 4.173→2.849 seconds. Every new 2× decoded RGBA pixel equals the previous output; new 1.5× and 2× WebP equal each corresponding PNG. Isolated stage timers measured lossless encoding at roughly 0.16–0.25 seconds instead of 1.8–1.9 seconds. These short trials do not establish sustained reader FPS or an image-quality ranking. Weights, automatic tiles and original GPU arithmetic are retained; a half-arithmetic trial was rejected after local color deviations.
 
 This phase preserves the original comic file and the existing 2× model weights/inference. It removes Android's full-resolution bitmap resize/re-encode round trip and avoids a float-planar resize buffer. It does not reduce neural inference work and does not establish an FPS improvement. The upstream MIT notice is already retained at `app/src/main/assets/licenses/RealSR-NCNN-Android-LICENSE.txt`.
 
@@ -49,6 +53,8 @@ This phase preserves the original comic file and the existing 2× model weights/
 ```
 
 The status test mocks ncnn return values; it does not run ncnn or Vulkan inference. A Zig host benchmark can measure the representative RGB area resize separately:
+
+`fast_webp_test.cpp` links to pinned libwebp through the Manyue Lite host-test CMake build. It round-trips RGB and RGBA (including RGB behind zero alpha) exactly and rejects invalid input/unwritable paths. Run `manyue_fast_webp_test <output-prefix>` after configuring `MANYUE_LITE_BUILD_HOST_TESTS=ON`.
 
 ```powershell
 & .\work\toolchains\native-build-tools\ziglang\zig.exe c++ `

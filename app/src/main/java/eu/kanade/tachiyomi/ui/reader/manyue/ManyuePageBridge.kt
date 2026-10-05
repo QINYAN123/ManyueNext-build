@@ -111,15 +111,18 @@ class ManyuePageBridge(
                     }
                     onState(ManyueEnhancementState.AI_QUEUED, null)
                 }
-                val t = withContext(Dispatchers.IO) {
-                    ManyueAiRequestFactory.enqueue(
+                val request = withContext(Dispatchers.IO) {
+                    val requestToken = ManyueAiRequestFactory.enqueue(
                         context = context,
                         identity = identity,
                         originalBytes = originalBytes,
                         priority = 100,
                         expectedMode = mode,
                         generation = expectedGeneration,
-                    )
+                    ) ?: return@withContext null
+                    val requestCacheKey = ManyueAiUpscaler.cacheKeyForToken(requestToken)
+                        ?: return@withContext null
+                    requestToken to requestCacheKey
                 } ?: run {
                     val capability = withContext(Dispatchers.IO) { ManyueAiRuntime.probe(context) }
                     val detail = if (capability == ManyueAiRuntime.Capability.READY) {
@@ -132,6 +135,7 @@ class ManyuePageBridge(
                     }
                     return@launch
                 }
+                val (t, requestCacheKey) = request
                 if (!isCurrentBeforeToken(identity, mode, expectedGeneration)) {
                     // The request may be shared with prefetch; this view only drops its listener.
                     return@launch
@@ -210,29 +214,17 @@ class ManyuePageBridge(
                         var baseCacheLease: ManyueEnhancementCache.CacheLease? = null
                         var imageCacheLease: ManyueEnhancementCache.CacheLease? = null
                         try {
-                            // Invisible attached holders must not occupy the serial classic worker
-                            // while a visible page waits. AI itself still prefetches to disk normally.
-                            if (wantClassic && !awaitPageVisibility(
-                                    isCurrent = { isCurrent(t, identity, mode, expectedGeneration) },
-                                    isVisible = ::isPageVisible,
-                                )
-                            ) {
-                                return@launch
-                            }
-                            // Prepare/cache/decode while scrolling or while this bound page is offscreen.
-                            // Never hold the global decode lock while waiting for visibility:
-                            // an attached offscreen Pager page may remain hidden indefinitely.
-                            val display = renderMutex.withLock {
-                                if (!isCurrent(t, identity, mode, expectedGeneration)) return@withLock null
+                            suspend fun prepareDisplay(): DisplayResult? {
+                                if (!isCurrent(t, identity, mode, expectedGeneration)) return null
                                 val baseImage = withContext(Dispatchers.IO) {
-                                    val pinned = ManyueAiUpscaler.pinnedCachedImage(context, tok)
+                                    val pinned = ManyueAiUpscaler.pinnedCachedImageForKey(context, requestCacheKey)
                                     if (pinned != null) baseCacheLease = pinned.lease
                                     pinned?.image
                                 } ?: run {
                                     if (isCurrent(t, identity, mode, expectedGeneration)) {
                                         onState(ManyueEnhancementState.FAILED, "AI 结果读取失败")
                                     }
-                                    return@withLock null
+                                    return null
                                 }
                                 var image = baseImage
                                 var state = ManyueRuntimeState.aiModel.displayedState(
@@ -255,20 +247,34 @@ class ManyuePageBridge(
                                 val classicStartedAt = SystemClock.elapsedRealtime()
                                 if (wantClassic && strength > 0 && classicSafe) {
                                     var classic = withContext(Dispatchers.IO) {
-                                        val pinned = ManyueAiUpscaler.pinnedCachedImage(context, tok, strength)
+                                        val pinned = ManyueAiUpscaler.pinnedCachedImageForKey(
+                                            context,
+                                            requestCacheKey,
+                                            strength,
+                                        )
                                         if (pinned != null) imageCacheLease = pinned.lease
                                         pinned?.image
                                     }
                                     if (classic == null) {
                                         val created = withContext(classicDispatcher) {
                                             val job = kotlinx.coroutines.currentCoroutineContext()[Job]
-                                            buildClassicVariant(context, tok, strength, identity.pageIndex) {
+                                            buildClassicVariant(
+                                                context,
+                                                tok,
+                                                requestCacheKey,
+                                                strength,
+                                                identity.pageIndex,
+                                            ) {
                                                 job?.isActive == false
                                             }
                                         }
                                         if (created != null) {
                                             classic = withContext(Dispatchers.IO) {
-                                                val pinned = ManyueAiUpscaler.pinnedCachedImage(context, tok, strength)
+                                                val pinned = ManyueAiUpscaler.pinnedCachedImageForKey(
+                                                    context,
+                                                    requestCacheKey,
+                                                    strength,
+                                                )
                                                 if (pinned != null) imageCacheLease = pinned.lease
                                                 pinned?.image
                                             }
@@ -295,7 +301,25 @@ class ManyuePageBridge(
                                     Metric.DISPLAY_PREP_MS to (SystemClock.elapsedRealtime() - displayStartedAt),
                                     Metric.CLASSIC_PREP_MS to (SystemClock.elapsedRealtime() - classicStartedAt),
                                 )
-                                DisplayResult(image, baseImage, state, displayDetail)
+                                return DisplayResult(image, baseImage, state, displayDetail)
+                            }
+
+                            // A page can become offscreen while queued for the shared classic lock.
+                            // Recheck after acquiring it, release immediately if visibility changed,
+                            // and wait outside the lock so the visible page can take its turn.
+                            val display = if (wantClassic) {
+                                when (
+                                    val result = withVisibleRenderMutex(
+                                        mutex = renderMutex,
+                                        isCurrent = { isCurrent(t, identity, mode, expectedGeneration) },
+                                        isVisible = ::isPageVisible,
+                                    ) { prepareDisplay() }
+                                ) {
+                                    is VisibleRenderResult.Prepared -> result.value
+                                    VisibleRenderResult.Stale -> null
+                                }
+                            } else {
+                                renderMutex.withLock { prepareDisplay() }
                             } ?: return@launch
                             if (!isCurrent(t, identity, mode, expectedGeneration)) return@launch
                             // Native/cache work is already done, but the first source decode owns
@@ -333,6 +357,7 @@ class ManyuePageBridge(
                                 state = display.state,
                                 detail = display.detail,
                                 token = t,
+                                cacheKey = requestCacheKey,
                                 expectedIdentity = identity,
                                 expectedMode = mode,
                                 expectedGeneration = expectedGeneration,
@@ -474,6 +499,7 @@ class ManyuePageBridge(
     private fun buildClassicVariant(
         context: Context,
         token: String,
+        cacheKey: String,
         strength: Int,
         pageIndex: Int,
         isCancelled: () -> Boolean,
@@ -482,7 +508,7 @@ class ManyuePageBridge(
         var enhanced: Bitmap? = null
         try {
             val decodeStartedAt = SystemClock.elapsedRealtime()
-            val source = ManyueAiUpscaler.loadCachedBitmap(context, token) ?: return null
+            val source = ManyueAiUpscaler.loadCachedBitmapForKey(context, cacheKey) ?: return null
             val decodeMs = SystemClock.elapsedRealtime() - decodeStartedAt
             input = source
             val filterStartedAt = SystemClock.elapsedRealtime()
@@ -492,7 +518,7 @@ class ManyuePageBridge(
             if (output === input) return null
             if (isCancelled()) throw CancellationException()
             val encodeStartedAt = SystemClock.elapsedRealtime()
-            val cached = ManyueAiUpscaler.cacheClassicImage(context, token, strength, output)
+            val cached = ManyueAiUpscaler.cacheClassicImageForKey(context, cacheKey, strength, output)
             ManyuePerformanceDiagnostics.event(
                 Stage.CLASSIC_DETAIL,
                 pageIndex,
@@ -521,6 +547,7 @@ class ManyuePageBridge(
         state: ManyueEnhancementState,
         detail: String?,
         token: String,
+        cacheKey: String,
         expectedIdentity: Identity,
         expectedMode: Int,
         expectedGeneration: Long,
@@ -547,7 +574,7 @@ class ManyuePageBridge(
                 maySwap = {
                     if (recycler is WebtoonRecyclerView) {
                         view.isAttachedToWindow && view.isShown && view.getGlobalVisibleRect(Rect()) &&
-                            recycler.canSwapManyueImage(ManyueRuntimeState.aiModel.continuousScale)
+                            recycler.canSwapManyueImage()
                     } else if (view.isManyueInteractionActive()) {
                         quietSince = 0L
                         false
@@ -586,7 +613,7 @@ class ManyuePageBridge(
                         Stage.BASE_READY,
                         expectedIdentity.pageIndex,
                         token,
-                        Metric.BASE_DECODE_MS to (SystemClock.elapsedRealtime() - stageStartedAt),
+                        Metric.BASE_READY_MS to (SystemClock.elapsedRealtime() - stageStartedAt),
                     )
                 },
                 onSwapMeasured = { cpuNs, waitNs, attempts ->
@@ -616,7 +643,7 @@ class ManyuePageBridge(
                             "经典增强结果读取失败，已保留 AI 超分",
                         )
                         kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch {
-                            ManyueAiUpscaler.removeClassicImage(context, token, strength)
+                            ManyueAiUpscaler.invalidateClassicImageForKey(context, cacheKey, strength)
                         }
                         beginStage(baseImage, false)
                     } else if (isCurrent(token, expectedIdentity, expectedMode, expectedGeneration)) {
@@ -695,4 +722,41 @@ internal suspend fun awaitPageVisibility(
         delay(64L)
     }
     return false
+}
+
+internal sealed class VisibleRenderResult<out T> {
+    data object Stale : VisibleRenderResult<Nothing>()
+    data class Prepared<T>(val value: T) : VisibleRenderResult<T>()
+}
+
+private sealed class VisibleRenderAttempt<out T> {
+    data object Stale : VisibleRenderAttempt<Nothing>()
+    data object Hidden : VisibleRenderAttempt<Nothing>()
+    data class Prepared<T>(val value: T) : VisibleRenderAttempt<T>()
+}
+
+/** Waits outside [mutex], then checks visibility again after acquiring it before running [prepare]. */
+internal suspend fun <T> withVisibleRenderMutex(
+    mutex: Mutex,
+    isCurrent: () -> Boolean,
+    isVisible: () -> Boolean,
+    prepare: suspend () -> T,
+): VisibleRenderResult<T> {
+    while (isCurrent()) {
+        if (!awaitPageVisibility(isCurrent, isVisible)) return VisibleRenderResult.Stale
+        when (
+            val attempt = mutex.withLock {
+                when {
+                    !isCurrent() -> VisibleRenderAttempt.Stale
+                    !isVisible() -> VisibleRenderAttempt.Hidden
+                    else -> VisibleRenderAttempt.Prepared(prepare())
+                }
+            }
+        ) {
+            VisibleRenderAttempt.Stale -> return VisibleRenderResult.Stale
+            VisibleRenderAttempt.Hidden -> continue
+            is VisibleRenderAttempt.Prepared -> return VisibleRenderResult.Prepared(attempt.value)
+        }
+    }
+    return VisibleRenderResult.Stale
 }

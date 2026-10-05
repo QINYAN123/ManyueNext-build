@@ -14,6 +14,9 @@ import kotlin.math.ceil
 
 /** No network/logcat output. Export is explicit and overwrites a single bounded report. */
 object ManyuePerformanceDiagnostics {
+    private const val MAX_OUTPUT_TILE = 4096
+    private const val MAX_GPU_READBACK_BYTES = 192_000_000L
+
     internal val recorder = ManyuePerformanceRecorder()
     val enabled get() = recorder.enabled
 
@@ -42,6 +45,12 @@ object ManyuePerformanceDiagnostics {
             ).forEach { (key, metric) ->
                 if (native.has(key)) metrics[metric] = native.getDouble(key).toLong()
             }
+            native.optLong("outputTile", -1L)
+                .takeIf { it in 1L..MAX_OUTPUT_TILE.toLong() }
+                ?.let { metrics[Metric.OUTPUT_TILE] = it }
+            native.optLong("gpuReadbackBytes", -1L)
+                .takeIf { it in 0L..MAX_GPU_READBACK_BYTES }
+                ?.let { metrics[Metric.GPU_READBACK_BYTES] = it }
             metrics[Metric.BACKEND] = if (native.optString("backend") == "vulkan") 1 else 2
             metrics[Metric.GPU_FALLBACK] = if (native.has("gpuFallbackReason")) 1 else 0
             recorder.event(Stage.NATIVE_DETAIL, page, token.hashCode(), metrics)
@@ -72,6 +81,7 @@ object ManyuePerformanceDiagnostics {
                         "Page indices are zero-based; job is a hash of an ephemeral task ID.",
                         "CACHE_HIT is distinct from new inference. Events can begin/end outside the capture window.",
                         "INFER_MS includes native tile preparation, dispatch and stitching, not only GPU execution.",
+                        "OUTPUT_TILE and GPU_READBACK_BYTES are bounded numeric native telemetry; GPU device names are not exported.",
                         "SWAP_WAIT_NS includes scheduling and safety gates after base tiles are ready.",
                         "SWAP_CPU_NS measures the view commit; later GPU drawing is in frame samples.",
                         "Frame summaries exclude first draws and menus/dialogs. Deadline/GPU may be unavailable (-1).",

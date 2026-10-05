@@ -1,5 +1,6 @@
 package eu.kanade.tachiyomi.ui.reader.manyue
 
+import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -16,6 +17,19 @@ class ManyueAiSafetyPolicyTest {
     @Test fun `predicted native 2x output is checked before launch`() {
         assertTrue(ManyueAiSafetyPolicy.isPredictedNativeOutputSafe(2000, 3000, 48_000_000))
         assertFalse(ManyueAiSafetyPolicy.isPredictedNativeOutputSafe(2000, 7000, 48_000_000))
+    }
+
+    @Test fun `PNG avoids WebP axis limit while respecting ordinary and overlay formats`() {
+        val axisLimit = ManyueAiSafetyPolicy.MAX_WEBP_DIMENSION
+        assertEquals("webp", ManyueAiSafetyPolicy.nativeOutputFormat(axisLimit, 1, anime4kOverlay = false))
+        assertEquals("png", ManyueAiSafetyPolicy.nativeOutputFormat(axisLimit + 1, 1, anime4kOverlay = false))
+        assertEquals("png", ManyueAiSafetyPolicy.nativeOutputFormat(1, axisLimit + 1, anime4kOverlay = false))
+        assertTrue(
+            ManyueAiSafetyPolicy.isPixelBudgetSafe(axisLimit + 1, 1, ManyueAiSafetyPolicy.MAX_DISPLAY_PIXELS),
+            "the long, narrow image remains within the independent pixel budget",
+        )
+        assertEquals("webp", ManyueAiSafetyPolicy.nativeOutputFormat(2_000, 3_000, anime4kOverlay = false))
+        assertEquals("png", ManyueAiSafetyPolicy.nativeOutputFormat(2_000, 3_000, anime4kOverlay = true))
     }
 
     @Test fun `completion requires token identity AI mode and generation to match`() {

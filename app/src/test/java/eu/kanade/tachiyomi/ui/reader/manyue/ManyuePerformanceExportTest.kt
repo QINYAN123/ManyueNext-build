@@ -25,20 +25,40 @@ class ManyuePerformanceExportTest {
                 "ephemeral-task",
                 """{
                 "backend":"vulkan","decodeMs":3.4,"inferMs":7.2,"encodeMs":5,
+                "outputTile":384,"gpuReadbackBytes":2000000,"gpuName":"Adreno 740",
                 "gpuFallbackReason":"https://private.example/token?secret=abc",
                 "file":"/private/account/image.jpg","unexpected":"private title"
             }""",
+            )
+            ManyuePerformanceDiagnostics.nativeDetail(
+                1,
+                "out-of-range-task",
+                """{"backend":"cpu","outputTile":99999999,"gpuReadbackBytes":9999999999}""",
+            )
+            ManyuePerformanceDiagnostics.event(
+                Stage.BASE_READY,
+                0,
+                null,
+                Metric.BASE_READY_MS to 225L,
             )
             val file = ManyuePerformanceDiagnostics.export(RuntimeEnvironment.getApplication())
             val text = file.readText()
             assertFalse(text.contains("private.example"))
             assertFalse(text.contains("private title"))
             assertFalse(text.contains("/private/account"))
+            assertFalse(text.contains("Adreno 740"))
             assertFalse(text.contains("ephemeral-task"))
             val report = JSONObject(text)
             val metrics = report.getJSONArray("events").getJSONObject(1).getJSONObject("metrics")
             assertEquals(1, metrics.getInt("BACKEND"))
             assertEquals(7, metrics.getInt("INFER_MS"))
+            assertEquals(384, metrics.getInt("OUTPUT_TILE"))
+            assertEquals(2_000_000, metrics.getInt("GPU_READBACK_BYTES"))
+            val outOfRange = report.getJSONArray("events").getJSONObject(2).getJSONObject("metrics")
+            assertFalse(outOfRange.has("OUTPUT_TILE"))
+            assertFalse(outOfRange.has("GPU_READBACK_BYTES"))
+            val baseReady = report.getJSONArray("events").getJSONObject(3).getJSONObject("metrics")
+            assertEquals(225, baseReady.getInt("BASE_READY_MS"))
             assertEquals(Build.VERSION.SDK_INT, report.getInt("androidApi"))
             assertEquals(0, report.getJSONObject("frameSummary").getInt("samples"))
             assertTrue(file.length() < 1_000_000)

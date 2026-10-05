@@ -37,6 +37,17 @@ if ($resizeExit -ne 0 -or ($resizeOutput -join "`n") -notmatch "output resize te
 }
 Write-Output ($resizeOutput -join "`n")
 
+$qualityModelParam = Join-Path $repoRoot "app\src\main\assets\ai\models-Real-ESRGANv3-anime\x2.param"
+if (-not (Test-Path -LiteralPath $qualityModelParam)) {
+    throw "Bundled Real-ESRGAN anime model graph is missing: $qualityModelParam"
+}
+$qualityGraph = Get-Content -LiteralPath $qualityModelParam -Raw
+if ($qualityGraph -notmatch '(?m)^PixelShuffle\s+\S+\s+1\s+1\s+\S+\s+\S+\s+0=4\s*$' -or
+    $qualityGraph -notmatch '(?m)^Interp\s+\S+\s+1\s+1\s+\S+\s+\S+\s+0=3\s+1=5\.000000e-01\s+2=5\.000000e-01\s*$') {
+    throw "Bundled Real-ESRGAN anime graph no longer has its verified PixelShuffle4 then 0.5x output path"
+}
+Write-Output "Real-ESRGAN anime graph check passed (PixelShuffle4 followed by 0.5x resize; net output is 2x)"
+
 $successOutput = & $statusExe 2>&1
 $successExit = $LASTEXITCODE
 if ($successExit -ne 0 -or ($successOutput -join "`n") -notmatch "ENCODE_REACHED") {

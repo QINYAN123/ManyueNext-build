@@ -33,11 +33,11 @@ class ManyueReaderPressurePolicyTest {
             policy.reportScroll(reader, dx = 10, dy = 0, viewportHeightPx = 400)
         }
         assertTrue(policy.isBlocked(), "fast samples should accumulate across sub-8ms frame intervals")
-        assertTrue(policy.isDisplayBlocked(), "fast movement must still defer ready-image commits")
+        assertFalse(policy.isDisplayBlocked(), "fast movement alone must not hide a decoded result")
 
         clock.advance(FAST_SCROLL_HOLD_NANOS - 1L)
         assertTrue(policy.isBlocked())
-        assertTrue(policy.isDisplayBlocked())
+        assertFalse(policy.isDisplayBlocked())
         clock.advance(1L)
         assertFalse(policy.isBlocked(), "negative monotonic clock origins must not look like an active deadline")
         assertFalse(policy.isDisplayBlocked())
@@ -82,8 +82,8 @@ class ManyueReaderPressurePolicyTest {
             policy.reportFrame(reader, actual60FpsNanos, expected120HzNanos)
         }
 
-        assertFalse(policy.isLiteDisplayBlocked(), "stable 2x-vsync app cadence must not strand ready Lite results")
-        assertFalse(policy.isLiteVisibleWorkBlocked())
+        assertFalse(policy.isDisplayBlocked(), "stable 2x-vsync app cadence must not strand ready Lite results")
+        assertFalse(policy.isVisibleWorkBlocked())
     }
 
     @Test
@@ -108,13 +108,13 @@ class ManyueReaderPressurePolicyTest {
             clock.advance(interval)
             policy.reportFrame(reader, interval, expected120HzNanos)
         }
-        assertFalse(policy.isLiteDisplayBlocked(), "nonuniform multiples must not be mistaken for an app frame cap")
+        assertFalse(policy.isDisplayBlocked(), "nonuniform multiples must not be mistaken for an app frame cap")
 
         repeat(3) {
             clock.advance(25_000_000L)
             policy.reportFrame(reader, 25_000_000L, expected120HzNanos)
         }
-        assertTrue(policy.isLiteDisplayBlocked(), "three consecutive unlearned misses must retain backpressure")
+        assertTrue(policy.isDisplayBlocked(), "three consecutive unlearned misses must retain backpressure")
     }
 
     @Test
@@ -130,13 +130,13 @@ class ManyueReaderPressurePolicyTest {
             clock.advance(stable60FpsNanos)
             policy.reportFrame(reader, stable60FpsNanos, expected120HzNanos)
         }
-        assertFalse(policy.isLiteDisplayBlocked())
+        assertFalse(policy.isDisplayBlocked())
 
         repeat(3) {
             clock.advance(40_000_000L)
             policy.reportFrame(reader, 40_000_000L, expected120HzNanos)
         }
-        assertTrue(policy.isLiteDisplayBlocked(), "a sustained 40ms stall exceeds the learned 16.7ms cadence")
+        assertTrue(policy.isDisplayBlocked(), "a sustained 40ms stall exceeds the learned 16.7ms cadence")
     }
 
     @Test
@@ -154,13 +154,13 @@ class ManyueReaderPressurePolicyTest {
             clock.advance(actual60FpsNanos)
             policy.reportFrame(reader, actual60FpsNanos, expected120HzNanos)
         }
-        assertFalse(policy.isLiteDisplayBlocked())
+        assertFalse(policy.isDisplayBlocked())
 
         repeat(8) {
             clock.advance(actual30FpsNanos)
             policy.reportFrame(reader, actual30FpsNanos, expected60HzNanos)
         }
-        assertFalse(policy.isLiteDisplayBlocked(), "the 120-to-60Hz switch must reset and relearn the 2x cadence")
+        assertFalse(policy.isDisplayBlocked(), "the 120-to-60Hz switch must reset and relearn the 2x cadence")
     }
 
     @Test

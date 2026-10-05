@@ -1,14 +1,16 @@
 package eu.kanade.tachiyomi.ui.reader.manyue
 
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.async
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.yield
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
-import kotlinx.coroutines.async
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withTimeout
-import kotlinx.coroutines.yield
 
 class ManyuePageBridgeLogicTest {
 
@@ -41,7 +43,9 @@ class ManyuePageBridgeLogicTest {
 
     @Test fun `segment heights manifest build helper`() {
         val m = ManyueEnhancementCache.buildJsonObject(
-            "parts" to 3, "w" to 2344, "h" to 5000,
+            "parts" to 3,
+            "w" to 2344,
+            "h" to 5000,
         )
         assertTrue(m.contains("\"parts\":3"))
         assertTrue(m.contains("\"w\":2344"))
@@ -86,5 +90,40 @@ class ManyuePageBridgeLogicTest {
         yield()
         current = false
         assertFalse(withTimeout(1_000L) { staleWaiter.await() }, "a rebound holder must abandon its old result")
+    }
+
+    @Test fun `classic render rechecks visibility after waiting for the shared lock`() = runBlocking {
+        val mutex = Mutex(locked = true)
+        var offscreenPageVisible = true
+        var offscreenPrepared = false
+        val offscreenPreparation = async(start = CoroutineStart.UNDISPATCHED) {
+            withVisibleRenderMutex(
+                mutex = mutex,
+                isCurrent = { true },
+                isVisible = { offscreenPageVisible },
+            ) {
+                offscreenPrepared = true
+                "offscreen"
+            }
+        }
+
+        // The page was visible when it queued, but scrolled away before the lock became free.
+        offscreenPageVisible = false
+        mutex.unlock()
+        val visibleResult = withTimeout(1_000L) {
+            withVisibleRenderMutex(
+                mutex = mutex,
+                isCurrent = { true },
+                isVisible = { true },
+            ) { "visible" }
+        }
+
+        assertEquals("visible", (visibleResult as VisibleRenderResult.Prepared).value)
+        assertFalse(offscreenPrepared, "an offscreen page must release the lock without classic work")
+
+        offscreenPageVisible = true
+        val offscreenResult = withTimeout(1_000L) { offscreenPreparation.await() }
+        assertEquals("offscreen", (offscreenResult as VisibleRenderResult.Prepared).value)
+        assertTrue(offscreenPrepared)
     }
 }

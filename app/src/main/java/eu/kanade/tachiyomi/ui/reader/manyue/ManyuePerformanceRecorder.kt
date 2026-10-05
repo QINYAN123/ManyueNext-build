@@ -55,6 +55,7 @@ internal class ManyuePerformanceRecorder(
         DISPLAY_PREP_MS,
         SOURCE_WAIT_MS,
         VISIBILITY_WAIT_MS,
+        BASE_READY_MS,
         BASE_DECODE_MS,
         SWAP_WAIT_NS,
         SWAP_CPU_NS,
@@ -67,6 +68,8 @@ internal class ManyuePerformanceRecorder(
         WORKING_BYTES,
         BACKEND,
         GPU_FALLBACK,
+        OUTPUT_TILE,
+        GPU_READBACK_BYTES,
         STATUS,
     }
 

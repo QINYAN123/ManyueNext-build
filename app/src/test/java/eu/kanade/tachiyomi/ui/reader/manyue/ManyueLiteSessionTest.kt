@@ -142,7 +142,7 @@ class ManyueLiteSessionTest {
         assertEquals(listOf("current", "first", "second"), generateSequence { queue.poll() }.map { it.token }.toList())
     }
 
-    @Test fun `visible work can preempt lite prefetch without cancelling another visible page or legacy work`() {
+    @Test fun `visible work preempts queued or Lite work but lets nearby running legacy work finish`() {
         fun request(
             token: String,
             priority: Int,
@@ -156,9 +156,15 @@ class ManyueLiteSessionTest {
         assertFalse(ManyueAiUpscaler.shouldYieldToVisible(prefetch, prefetch))
         assertFalse(ManyueAiUpscaler.shouldYieldToVisible(request("other-visible", 100), visible))
         assertFalse(ManyueAiUpscaler.shouldYieldToVisible(prefetch, request("next", 50)))
-        assertFalse(
-            ManyueAiUpscaler.shouldYieldToVisible(request("legacy", 40, ManyueAiModel.FAST_REAL_CUGAN), visible),
-        )
+        for (model in ManyueAiModel.entries) {
+            val legacy = request("legacy", 40, model)
+            assertTrue(ManyueAiUpscaler.shouldYieldToVisible(legacy, visible))
+            legacy.processing = true
+            assertEquals(model.continuousScale, ManyueAiUpscaler.shouldYieldToVisible(legacy, visible))
+            assertTrue(ManyueAiUpscaler.shouldYieldToVisible(legacy.copy(pageIndex = 6), visible))
+            assertTrue(ManyueAiUpscaler.shouldYieldToVisible(legacy.copy(chapterId = 3), visible))
+            assertTrue(ManyueAiUpscaler.shouldYieldToVisible(legacy.copy(mangaId = 2), visible))
+        }
         prefetch.completed = true
         assertFalse(ManyueAiUpscaler.shouldYieldToVisible(prefetch, visible))
     }

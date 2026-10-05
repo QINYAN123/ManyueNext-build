@@ -53,7 +53,7 @@ Java_eu_kanade_tachiyomi_ui_reader_manyue_ManyueLiteNative_nativeCreate(
     try {
         UtfChars directory(env, model_directory);
         if (!directory.valid()) throw std::runtime_error("模型目录为空");
-        auto engine = std::make_shared<manyue_lite::Engine>(128);
+        auto engine = std::make_shared<manyue_lite::Engine>(prefer_gpu == JNI_TRUE ? 384 : 128);
         std::string error;
         if (!engine->initialize(directory.str(), prefer_gpu == JNI_TRUE, error)) {
             throw std::runtime_error(error.empty() ? "轻量模型初始化失败" : error);

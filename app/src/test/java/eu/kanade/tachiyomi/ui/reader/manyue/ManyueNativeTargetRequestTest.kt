@@ -47,7 +47,14 @@ class ManyueNativeTargetRequestTest {
             // Exercise request construction without starting an Android native executable.
             ReflectionHelpers.setStaticField(Build::class.java, "SUPPORTED_64_BIT_ABIS", arrayOf("arm64-v8a"))
             context.applicationInfo.nativeLibraryDir = context.cacheDir.resolve("test-native").path
-            probeField.set(null, context.applicationInfo.nativeLibraryDir to ManyueAiRuntime.Capability.READY)
+            probeField.set(
+                null,
+                Triple(
+                    context.applicationInfo.nativeLibraryDir,
+                    ManyueAiModel.FAST_REAL_CUGAN.id,
+                    ManyueAiRuntime.Capability.READY,
+                ),
+            )
             startedField.setBoolean(null, true)
             ManyueRuntimeState.updateAiModel(ManyueAiModel.FAST_REAL_CUGAN)
             ManyueRuntimeState.updateMode(mode)

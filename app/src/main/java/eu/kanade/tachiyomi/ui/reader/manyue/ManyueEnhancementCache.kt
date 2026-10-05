@@ -24,7 +24,7 @@ import kotlin.coroutines.resume
 object ManyueEnhancementCache {
 
     // Native target resizing and the optional overlay order change invalidate older results.
-    const val MODEL_VERSION = "anime_native_target_v8"
+    const val MODEL_VERSION = "anime_native_target_v9"
 
     // Retain the directory so existing bundles still count toward the budget and can be evicted.
     private const val CACHE_DIR_NAME = "manyue_ai_anime_fixed2_v7"
@@ -38,7 +38,11 @@ object ManyueEnhancementCache {
     private val diskLock = Any()
     private val waitersLock = Any()
     private val leasesByBundle = mutableMapOf<String, Int>()
+    private val leasesByFile = mutableMapOf<CacheFileKey, Int>()
     private val deletingBundles = mutableSetOf<String>()
+    private val deletingFiles = mutableSetOf<CacheFileKey>()
+    private val invalidClassicVariants = mutableMapOf<CacheFileKey, Long>()
+    private val pendingClassicInvalidations = mutableMapOf<CacheFileKey, ClassicInvalidation>()
     private val reservations = linkedMapOf<Long, ReservationRecord>()
     private val budgetWaiters = mutableListOf<CancellableContinuation<Unit>>()
     private var nextReservationId = 1L
@@ -46,12 +50,17 @@ object ManyueEnhancementCache {
     private var readingPosition: ReadingPosition? = null
     private var protectedPageSnapshot: Set<Pair<Long, Int>> = emptySet()
     private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var nextInvalidationId = 1L
 
     data class ReadingIdentity(val mangaId: Long, val chapterId: Long, val pageIndex: Int)
 
     private data class ReadingPosition(val mangaId: Long, val chapterId: Long, val pageIndex: Int)
 
     private data class ReservationRecord(val identity: ReadingIdentity, val bytes: Long)
+
+    private data class CacheFileKey(val bundleKey: String, val relativePath: String)
+
+    private data class ClassicInvalidation(val file: File, val id: Long)
 
     /** A reservation prevents other prefetches from spending this page's cache budget. */
     class PrefetchReservation internal constructor(
@@ -67,11 +76,14 @@ object ManyueEnhancementCache {
     /** Pins a cache bundle while an image view or decoder may still read it. */
     class CacheLease internal constructor(
         private val bundleKey: String?,
+        private val relativePath: String? = null,
     ) : AutoCloseable {
         private val closed = AtomicBoolean(false)
 
         override fun close() {
-            if (closed.compareAndSet(false, true)) bundleKey?.let(::releaseBundleLease)
+            if (closed.compareAndSet(false, true)) {
+                bundleKey?.let { releaseBundleLease(it, relativePath) }
+            }
         }
     }
 
@@ -146,12 +158,17 @@ object ManyueEnhancementCache {
      * AI cache receive a no-op lease; a bundle currently being deleted returns null.
      */
     fun pinFile(context: Context, file: File): CacheLease? {
-        val key = managedBundleKey(context, file) ?: return CacheLease(null)
+        val fileKey = managedCacheFileKey(context, file) ?: return CacheLease(null)
         synchronized(cacheLock) {
-            if (key in deletingBundles) return null
-            leasesByBundle[key] = (leasesByBundle[key] ?: 0) + 1
+            if (fileKey.bundleKey in deletingBundles || fileKey in deletingFiles ||
+                fileKey in invalidClassicVariants
+            ) {
+                return null
+            }
+            leasesByBundle[fileKey.bundleKey] = (leasesByBundle[fileKey.bundleKey] ?: 0) + 1
+            leasesByFile[fileKey] = (leasesByFile[fileKey] ?: 0) + 1
         }
-        val lease = CacheLease(key)
+        val lease = CacheLease(fileKey.bundleKey, fileKey.relativePath)
         if (!file.isFile) {
             lease.close()
             return null
@@ -162,10 +179,17 @@ object ManyueEnhancementCache {
     /** Atomically pins a cache bundle before reading its manifest/image paths. */
     fun pinCachedImage(context: Context, key: String, classicStrength: Int? = null): PinnedCachedImage? {
         if (!key.matches(Regex("[0-9a-f]{32}"))) return null
+        val relativePath = classicStrength?.let(::classicVariantName)
+        val fileKey = relativePath?.let { CacheFileKey(key, it) }
         val lease = synchronized(cacheLock) {
-            if (key in deletingBundles) return null
+            if (key in deletingBundles ||
+                fileKey?.let { it in deletingFiles || it in invalidClassicVariants } == true
+            ) {
+                return null
+            }
             leasesByBundle[key] = (leasesByBundle[key] ?: 0) + 1
-            CacheLease(key)
+            if (fileKey != null) leasesByFile[fileKey] = (leasesByFile[fileKey] ?: 0) + 1
+            CacheLease(key, relativePath)
         }
         val image = runCatching { cachedImage(File(cacheDir(context), key), classicStrength) }.getOrNull()
         if (image == null || !image.file.isFile) {
@@ -177,9 +201,9 @@ object ManyueEnhancementCache {
     }
 
     internal fun isManagedCacheFile(context: Context, file: File): Boolean =
-        managedBundleKey(context, file) != null
+        managedCacheFileKey(context, file) != null
 
-    private fun managedBundleKey(context: Context, file: File): String? {
+    private fun managedCacheFileKey(context: Context, file: File): CacheFileKey? {
         val rootPath = File(context.cacheDir, CACHE_DIR_NAME).absoluteFile.path.trimEnd(File.separatorChar)
         val filePath = file.absoluteFile.path
         val prefix = rootPath + File.separator
@@ -187,14 +211,27 @@ object ManyueEnhancementCache {
         val parts = filePath.removePrefix(prefix).split(File.separatorChar)
         val key = parts.firstOrNull() ?: return null
         if (parts.size < 2 || parts.any { it.isEmpty() || it == "." || it == ".." }) return null
-        return key.takeIf { it.matches(Regex("[0-9a-f]{32}")) }
+        if (!key.matches(Regex("[0-9a-f]{32}"))) return null
+        return CacheFileKey(key, parts.drop(1).joinToString(File.separator))
     }
 
-    private fun releaseBundleLease(key: String) {
+    private fun releaseBundleLease(key: String, relativePath: String?) {
+        val fileKey = relativePath?.let { CacheFileKey(key, it) }
+        var invalidation: ClassicInvalidation? = null
         synchronized(cacheLock) {
             val count = leasesByBundle[key] ?: return
             if (count <= 1) leasesByBundle.remove(key) else leasesByBundle[key] = count - 1
+            if (fileKey != null) {
+                val fileCount = leasesByFile[fileKey] ?: 0
+                if (fileCount <= 1) {
+                    leasesByFile.remove(fileKey)
+                    invalidation = pendingClassicInvalidations.remove(fileKey)
+                } else {
+                    leasesByFile[fileKey] = fileCount - 1
+                }
+            }
         }
+        invalidation?.let { pending -> ioScope.launch { deleteInvalidClassicVariant(fileKey!!, pending) } }
         signalBudgetWaiters()
     }
 
@@ -290,6 +327,9 @@ object ManyueEnhancementCache {
         getBundle(context, key)?.let { cachedImage(it) }
 
     fun getClassicImage(context: Context, key: String, strength: Int): CachedImage? {
+        val name = classicVariantName(strength) ?: return null
+        val fileKey = CacheFileKey(key, name)
+        if (synchronized(cacheLock) { fileKey in deletingFiles || fileKey in invalidClassicVariants }) return null
         val bundle = getBundle(context, key) ?: return null
         return cachedImage(bundle, strength)
     }
@@ -328,9 +368,11 @@ object ManyueEnhancementCache {
     internal fun imageFile(bundle: File): File? = cachedImage(bundle)?.file
 
     private fun classicVariantFile(bundle: File, strength: Int): File? {
-        if (strength !in 1..100) return null
-        return File(bundle, "classic_luma_v3_$strength.img")
+        return classicVariantName(strength)?.let { File(bundle, it) }
     }
+
+    private fun classicVariantName(strength: Int): String? =
+        if (strength in 1..100) "classic_luma_v3_$strength.img" else null
 
     /** Atomically copy one complete encoded image into the cache bundle. */
     fun putImage(
@@ -418,6 +460,11 @@ object ManyueEnhancementCache {
     /** Atomically cache a classic-enhanced AI variant beside its base output. */
     fun putClassicImage(context: Context, key: String, strength: Int, bitmap: Bitmap): CachedImage? {
         if (strength !in 1..100) return null
+        val existing = pinCachedImage(context, key, strength)
+        if (existing != null) {
+            existing.lease.close()
+            return existing.image
+        }
         val pinnedBase = pinCachedImage(context, key) ?: return null
         var temporary: File? = null
         return try {
@@ -425,7 +472,6 @@ object ManyueEnhancementCache {
             val base = pinnedBase.image
             if (bitmap.width != base.width || bitmap.height != base.height) return null
             val image = classicVariantFile(bundle, strength) ?: return null
-            if (image.isFile && image.length() > 0L) return cachedImage(bundle, strength)
             temporary = File.createTempFile("manyue-ai-classic-", ".tmp", context.cacheDir)
             val encoded = FileOutputStream(temporary).use {
                 // Avoid slow lossy re-encoding after AI. WEBP_LOSSLESS 0 is fast compression
@@ -434,18 +480,35 @@ object ManyueEnhancementCache {
             }
             check(encoded && temporary.length() > 0L) { "classic AI cache encoding failed" }
             synchronized(diskLock) {
-                if (!ensureCapacity(context, temporary.length(), base.readingIdentity)) return null
-                if (image.exists() && isBundleLeased(key)) return null
-                val pending = File(bundle, "${image.name}.pending")
-                if (pending.exists()) pending.delete()
-                if (image.exists() && !image.delete()) return null
-                if (!temporary.renameTo(pending)) {
-                    FileOutputStream(pending).use { out -> FileInputStream(temporary).use { it.copyTo(out) } }
+                val fileKey = CacheFileKey(key, image.name)
+                val marked = synchronized(cacheLock) {
+                    if (key in deletingBundles || fileKey in deletingFiles || (leasesByFile[fileKey] ?: 0) > 0) {
+                        false
+                    } else {
+                        deletingFiles += fileKey
+                        true
+                    }
                 }
-                check(pending.length() > 0L && pending.renameTo(image)) { "failed to commit classic AI image" }
-                bundle.setLastModified(System.currentTimeMillis())
-                signalBudgetWaiters()
-                cachedImage(bundle, strength)
+                if (!marked) return null
+                try {
+                    if (!ensureCapacity(context, temporary.length(), base.readingIdentity)) return null
+                    val pending = File(bundle, "${image.name}.pending")
+                    if (pending.exists()) pending.delete()
+                    if (image.exists() && !image.delete()) return null
+                    if (!temporary.renameTo(pending)) {
+                        FileOutputStream(pending).use { out -> FileInputStream(temporary).use { it.copyTo(out) } }
+                    }
+                    check(pending.length() > 0L && pending.renameTo(image)) { "failed to commit classic AI image" }
+                    bundle.setLastModified(System.currentTimeMillis())
+                    synchronized(cacheLock) {
+                        invalidClassicVariants.remove(fileKey)
+                        pendingClassicInvalidations.remove(fileKey)
+                    }
+                    signalBudgetWaiters()
+                    cachedImage(bundle, strength)
+                } finally {
+                    synchronized(cacheLock) { deletingFiles.remove(fileKey) }
+                }
             }
         } catch (t: Throwable) {
             null
@@ -456,25 +519,105 @@ object ManyueEnhancementCache {
     }
 
     fun removeClassicImage(context: Context, key: String, strength: Int) {
+        if (!key.matches(Regex("[0-9a-f]{32}"))) return
         synchronized(diskLock) {
-            val bundle = getBundle(context, key) ?: return
+            val bundle = File(cacheDir(context), key)
+            if (!bundle.isDirectory) return
+            val image = classicVariantFile(bundle, strength) ?: return
+            val fileKey = CacheFileKey(key, image.name)
             val marked = synchronized(cacheLock) {
-                if (key in deletingBundles || (leasesByBundle[key] ?: 0) > 0) {
+                if (key in deletingBundles || fileKey in deletingFiles || (leasesByFile[fileKey] ?: 0) > 0) {
                     false
                 } else {
-                    deletingBundles += key
+                    deletingFiles += fileKey
                     true
                 }
             }
             if (!marked) return
             val deleted = try {
-                classicVariantFile(bundle, strength)?.delete() == true
+                !image.exists() || image.delete()
             } finally {
-                synchronized(cacheLock) { deletingBundles.remove(key) }
+                synchronized(cacheLock) { deletingFiles.remove(fileKey) }
             }
-            if (deleted) signalBudgetWaiters()
+            if (deleted) {
+                synchronized(cacheLock) {
+                    invalidClassicVariants.remove(fileKey)
+                    pendingClassicInvalidations.remove(fileKey)
+                }
+                signalBudgetWaiters()
+            }
         }
     }
+
+    /** Mark only the failed classic variant unavailable, then delete it after its readers close. */
+    fun invalidateClassicImage(context: Context, key: String, strength: Int) {
+        if (!key.matches(Regex("[0-9a-f]{32}"))) return
+        synchronized(diskLock) {
+            val bundle = File(cacheDir(context), key)
+            if (!bundle.isDirectory) return
+            val image = classicVariantFile(bundle, strength) ?: return
+            val fileKey = CacheFileKey(key, image.name)
+            val invalidation = synchronized(cacheLock) {
+                if (key in deletingBundles) return
+                val next = ClassicInvalidation(image, nextInvalidationId++)
+                invalidClassicVariants[fileKey] = next.id
+                if ((leasesByFile[fileKey] ?: 0) > 0 || fileKey in deletingFiles) {
+                    pendingClassicInvalidations[fileKey] = next
+                    null
+                } else {
+                    deletingFiles += fileKey
+                    next
+                }
+            } ?: return
+            deleteInvalidClassicVariantLocked(fileKey, invalidation)
+        }
+    }
+
+    private fun deleteInvalidClassicVariant(fileKey: CacheFileKey, invalidation: ClassicInvalidation) {
+        synchronized(diskLock) {
+            val marked = synchronized(cacheLock) {
+                when {
+                    fileKey.bundleKey in deletingBundles -> {
+                        pendingClassicInvalidations.remove(fileKey, invalidation)
+                        invalidClassicVariants.remove(fileKey, invalidation.id)
+                        false
+                    }
+                    invalidClassicVariants[fileKey] != invalidation.id -> {
+                        pendingClassicInvalidations.remove(fileKey, invalidation)
+                        false
+                    }
+                    (leasesByFile[fileKey] ?: 0) > 0 || fileKey in deletingFiles -> {
+                        pendingClassicInvalidations[fileKey] = invalidation
+                        false
+                    }
+                    else -> {
+                        deletingFiles += fileKey
+                        true
+                    }
+                }
+            }
+            if (!marked) return
+            deleteInvalidClassicVariantLocked(fileKey, invalidation)
+        }
+    }
+
+    /** Caller holds diskLock and owns the deletingFiles marker for this variant. */
+    private fun deleteInvalidClassicVariantLocked(fileKey: CacheFileKey, invalidation: ClassicInvalidation) {
+        val deleted = try {
+            !invalidation.file.exists() || invalidation.file.delete()
+        } finally {
+            synchronized(cacheLock) {
+                deletingFiles.remove(fileKey)
+                if (deletedOrMissing(invalidation.file) && invalidClassicVariants[fileKey] == invalidation.id) {
+                    invalidClassicVariants.remove(fileKey)
+                    pendingClassicInvalidations.remove(fileKey, invalidation)
+                }
+            }
+        }
+        if (deleted) signalBudgetWaiters()
+    }
+
+    private fun deletedOrMissing(file: File): Boolean = !file.exists()
 
     internal fun buildJsonObject(vararg pairs: Pair<String, Any>): String =
         pairs.joinToString(prefix = "{", postfix = "}", separator = ",") { (key, value) ->
@@ -712,7 +855,13 @@ object ManyueEnhancementCache {
         } finally {
             synchronized(cacheLock) { deletingBundles.remove(key) }
         }
-        if (deleted) signalBudgetWaiters()
+        if (deleted) {
+            synchronized(cacheLock) {
+                invalidClassicVariants.keys.removeAll { it.bundleKey == key }
+                pendingClassicInvalidations.keys.removeAll { it.bundleKey == key }
+            }
+            signalBudgetWaiters()
+        }
         return deleted
     }
 
@@ -729,8 +878,6 @@ object ManyueEnhancementCache {
     }
 
     private fun isBundleDeleting(key: String): Boolean = synchronized(cacheLock) { key in deletingBundles }
-
-    private fun isBundleLeased(key: String): Boolean = synchronized(cacheLock) { (leasesByBundle[key] ?: 0) > 0 }
 
     private fun readingSnapshot(): Pair<ReadingPosition?, Set<Pair<Long, Int>>> = synchronized(cacheLock) {
         readingPosition to protectedPageSnapshot

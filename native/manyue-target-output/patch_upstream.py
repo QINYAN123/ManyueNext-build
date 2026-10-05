@@ -191,6 +191,7 @@ def patch_source(source_root: Path, destination: Path, variant: str,
     shutil.copy2(helper_header, destination / "manyue_output_resize.h")
     shutil.copy2(status_header, destination / "manyue_ncnn_status.h")
     shutil.copy2(file_output_header, destination / "manyue_file_output.h")
+    shutil.copy2(file_output_header.parent / "manyue_fast_webp.h", destination / "manyue_fast_webp.h")
 
     main_file = destination / "main.cpp"
     text = main_file.read_text(encoding="utf-8")
@@ -198,7 +199,7 @@ def patch_source(source_root: Path, destination: Path, variant: str,
         text,
         '#include "filesystem_utils.h"\n#include <opencv2/opencv.hpp>\n'
         '#include <opencv2/core/hal/interface.h>\nusing namespace cv;',
-        '#include "filesystem_utils.h"\n#include "manyue_output_resize.h"',
+        '#include "filesystem_utils.h"\n#include "manyue_output_resize.h"\n#include "manyue_fast_webp.h"',
         "remove OpenCV and include output resize helper",
     )
     if variant == "realesr":
@@ -237,7 +238,7 @@ def patch_source(source_root: Path, destination: Path, variant: str,
         text = replace_once(text, "int webp;\n//    bool check;", "int webp;\n    int target_width;\n    int target_height;\n    bool resize_failed;\n    bool resize_applied;\n//    bool check;", "add RealSR task target size")
         text = replace_once(text, "case L's':\n            scale = _wtoi(optarg);\n            break;", "case L's':\n            scale = _wtoi(optarg);\n            break;\n        case L'w':\n            target_width = _wtoi(optarg);\n            break;", "parse wide RealSR target width")
         text = replace_once(text, "case 's':\n                scale = atoi(optarg);\n                break;", "case 's':\n                scale = atoi(optarg);\n                break;\n            case 'w':\n                target_width = atoi(optarg);\n                break;", "parse RealSR target width")
-        text = replace_once(text, "        if (pixeldata) {\n            Task v;", "        if (pixeldata) {\n            manyue_output::Size target_size;\n            if (!manyue_output::compute_target_size(w, h, ltp->target_width, &target_size)) {\n                fprintf(stderr, \"invalid target width %d for source %dx%d\\n\", ltp->target_width, w, h);\n                free(pixeldata);\n                exit(EXIT_FAILURE);\n            }\n            Task v;", "validate RealSR per-image target width")
+        text = replace_once(text, "        if (pixeldata) {\n            Task v;", "        if (pixeldata) {\n            manyue_output::Size target_size;\n            if (!manyue_output::compute_target_size(w, h, ltp->target_width, &target_size)) {\n                fprintf(stderr, \"invalid target width %d for source %dx%d\\n\", ltp->target_width, w, h);\n                free(pixeldata);\n                exit(EXIT_FAILURE);\n            }\n            const path_t output_ext = get_file_extension(ltp->output_files[i]);\n            if ((output_ext == PATHSTR(\"webp\") || output_ext == PATHSTR(\"WEBP\")) &&\n                (target_size.width > WEBP_MAX_DIMENSION || target_size.height > WEBP_MAX_DIMENSION)) {\n                fprintf(stderr, \"WebP target %dx%d exceeds maximum dimension %d\\n\",\n                        target_size.width, target_size.height, WEBP_MAX_DIMENSION);\n                free(pixeldata);\n                exit(EXIT_FAILURE);\n            }\n            Task v;", "validate RealSR per-image target size and WebP dimensions")
         text = replace_once(text, "            v.id = i;\n            v.inpath = imagepath;", "            v.id = i;\n            v.webp = 0;\n            v.target_width = target_size.width;\n            v.target_height = target_size.height;\n            v.resize_failed = false;\n            v.resize_applied = false;\n            v.inpath = imagepath;", "initialize RealSR task target size")
     else:
         text = replace_once(text, "    int scale = 2;", "    int scale = 2;\n    int target_width = 0;", "declare RealCUGAN target width")
@@ -245,7 +246,7 @@ def patch_source(source_root: Path, destination: Path, variant: str,
         text = replace_once(text, "    int scale;\n\n    path_t inpath;", "    int scale;\n    int target_width;\n    int target_height;\n    bool resize_failed;\n    bool resize_applied;\n\n    path_t inpath;", "add RealCUGAN task target size")
         text = replace_once(text, "case L's':\n            scale = _wtoi(optarg);\n            break;", "case L's':\n            scale = _wtoi(optarg);\n            break;\n        case L'w':\n            target_width = _wtoi(optarg);\n            break;", "parse wide RealCUGAN target width")
         text = replace_once(text, "case 's':\n            scale = atoi(optarg);\n            break;", "case 's':\n            scale = atoi(optarg);\n            break;\n        case 'w':\n            target_width = atoi(optarg);\n            break;", "parse RealCUGAN target width")
-        text = replace_once(text, "        if (pixeldata)\n        {\n            Task v;", "        if (pixeldata)\n        {\n            manyue_output::Size target_size;\n            if (!manyue_output::compute_target_size(w, h, ltp->target_width, &target_size))\n            {\n                fprintf(stderr, \"invalid target width %d for source %dx%d\\n\", ltp->target_width, w, h);\n                free(pixeldata);\n                exit(EXIT_FAILURE);\n            }\n            Task v;", "validate RealCUGAN per-image target width")
+        text = replace_once(text, "        if (pixeldata)\n        {\n            Task v;", "        if (pixeldata)\n        {\n            manyue_output::Size target_size;\n            if (!manyue_output::compute_target_size(w, h, ltp->target_width, &target_size))\n            {\n                fprintf(stderr, \"invalid target width %d for source %dx%d\\n\", ltp->target_width, w, h);\n                free(pixeldata);\n                exit(EXIT_FAILURE);\n            }\n            const path_t output_ext = get_file_extension(ltp->output_files[i]);\n            if ((output_ext == PATHSTR(\"webp\") || output_ext == PATHSTR(\"WEBP\")) &&\n                (target_size.width > WEBP_MAX_DIMENSION || target_size.height > WEBP_MAX_DIMENSION))\n            {\n                fprintf(stderr, \"WebP target %dx%d exceeds maximum dimension %d\\n\",\n                        target_size.width, target_size.height, WEBP_MAX_DIMENSION);\n                free(pixeldata);\n                exit(EXIT_FAILURE);\n            }\n            Task v;", "validate RealCUGAN per-image target size and WebP dimensions")
         text = replace_once(text, "            v.id = i;\n            v.webp = webp;\n            v.scale = scale;", "            v.id = i;\n            v.webp = webp;\n            v.scale = scale;\n            v.target_width = target_size.width;\n            v.target_height = target_size.height;\n            v.resize_failed = false;\n            v.resize_applied = false;", "initialize RealCUGAN task target size")
 
     text = replace_once(
@@ -351,10 +352,6 @@ def patch_source(source_root: Path, destination: Path, variant: str,
                              "    int flush_ok = 0;\n"
                              "    int close_ok = 0;\n",
                              "declare WebP output status before goto paths")
-    if "#include <limits.h>" not in webp_text:
-        webp_text = replace_once(webp_text, "#include <stdlib.h>\n",
-                                 "#include <stdlib.h>\n#include <limits.h>\n",
-                                 "include bounds for WebP quality encoder")
     webp_text = replace_once(
         webp_text,
         "    fwrite(output, 1, length, fp);\n\n    ret = 1;",
@@ -380,46 +377,6 @@ def patch_source(source_root: Path, destination: Path, variant: str,
         "    return ret;",
         "remove failed lossless WebP output",
     )
-    quality95_writer = r'''#ifndef _WIN32
-int webp_save_quality95(const char* filepath, int w, int h, int c,
-                        const unsigned char* pixeldata)
-{
-    if (!filepath || !pixeldata || w <= 0 || h <= 0 ||
-        (c != 3 && c != 4) || w > INT_MAX / c)
-    {
-        if (filepath) remove(filepath);
-        return 0;
-    }
-
-    unsigned char* output = 0;
-    const int stride = w * c;
-    const size_t length = c == 3
-        ? WebPEncodeRGB(pixeldata, w, h, stride, 95.0f, &output)
-        : WebPEncodeRGBA(pixeldata, w, h, stride, 95.0f, &output);
-    if (length == 0 || !output)
-    {
-        if (output) WebPFree(output);
-        remove(filepath);
-        return 0;
-    }
-
-    manyue_output::CFileOutputContext file_context = {0};
-    manyue_output::CheckedFileOutput file_output;
-    if (!manyue_output::open_file_output(filepath, &file_context, &file_output))
-    {
-        WebPFree(output);
-        return 0;
-    }
-    const bool write_ok = file_output.write_bytes(output, length);
-    WebPFree(output);
-    return file_output.finish(write_ok) ? 1 : 0;
-}
-#endif
-
-'''
-    webp_text = replace_once(webp_text, "#endif // WEBP_IMAGE_H",
-                             quality95_writer + "#endif // WEBP_IMAGE_H",
-                             "add resized WebP quality-95 writer")
     webp_file.write_text(webp_text, encoding="utf-8", newline="\n")
 
     # A failed final resize must never be encoded as the full 2x fallback.
@@ -439,14 +396,9 @@ int webp_save_quality95(const char* filepath, int w, int h, int c,
                                 v.outimage.elempack,
                                 static_cast<const unsigned char*>(v.outimage.data));
             #else
-            if (v.resize_applied)
-                success = webp_save_quality95(v.outpath.c_str(), v.outimage.w, v.outimage.h,
-                                              v.outimage.elempack,
-                                              static_cast<const unsigned char*>(v.outimage.data));
-            else
-                success = webp_save(v.outpath.c_str(), v.outimage.w, v.outimage.h,
-                                    v.outimage.elempack,
-                                    static_cast<const unsigned char*>(v.outimage.data));
+            success = manyue_output::save_fast_lossless_webp(
+                v.outpath.c_str(), v.outimage.w, v.outimage.h, v.outimage.elempack,
+                static_cast<const unsigned char*>(v.outimage.data));
             #endif
         }
         else if (ext == PATHSTR("png") || ext == PATHSTR("PNG"))
@@ -523,6 +475,19 @@ int webp_save_quality95(const char* filepath, int w, int h, int c,
                               '    MANYUE_NCNN_CHECK(net.load_model(modelpath.c_str()), "Net::load_model");',
                               "check Android model weight load")
     if variant == "realcugan":
+        model_text = replace_once(
+            model_text,
+            "    bool syncgap_needed = tilesize < std::max(inimage.w, inimage.h);",
+            "    bool syncgap_needed = tilesize < std::max(inimage.w, inimage.h);\n"
+            "    // The very-rough SE path samples complete 3x3 groups of 32px tiles.\n"
+            "    // A short axis <=64 has no such group; use the exact SE path instead.\n"
+            "    if (syncgap_needed && syncgap == 3 && std::min(inimage.w, inimage.h) <= 64)\n"
+            "    {\n"
+            "        fprintf(stderr, \"small-axis SE fallback source=%dx%d\\n\", inimage.w, inimage.h);\n"
+            "        return vkdev ? process_se(inimage, outimage) : process_cpu_se(inimage, outimage);\n"
+            "    }",
+            "avoid empty very-rough SE groups on narrow images",
+        )
         old_layer_load = "        bicubic_2x->load_param(pd);"
         new_layer_load = '        MANYUE_NCNN_CHECK(bicubic_2x->load_param(pd), "Layer::load_param");'
         if model_text.count(old_layer_load) != 1:

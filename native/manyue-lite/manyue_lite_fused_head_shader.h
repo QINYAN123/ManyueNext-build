@@ -11,7 +11,7 @@ layout(binding = 0) readonly buffer FeatureBuffer { float value[]; } feature_buf
 layout(binding = 1) readonly buffer SourceBuffer { float value[]; } source_buffer;
 layout(binding = 2) readonly buffer WeightBuffer { float value[]; } weight_buffer;
 layout(binding = 3) readonly buffer ParameterBuffer { float value[]; } parameter_buffer;
-layout(binding = 4) writeonly buffer OutputBuffer { float value[]; } output_buffer;
+layout(binding = 4) writeonly buffer OutputBuffer { uint value[]; } output_buffer;
 
 float parameter(int index) { return parameter_buffer.value[index]; }
 int integer_parameter(int index) { return int(parameter_buffer.value[index] + 0.5); }
@@ -100,7 +100,6 @@ void main() {
     int output_height = integer_parameter(3);
     int tile_x = integer_parameter(4);
     int tile_y = integer_parameter(5);
-    int output_stride = integer_parameter(14);
 
     int output_x = tile_x + local_x;
     int output_y = tile_y + local_y;
@@ -139,6 +138,7 @@ void main() {
 
     int output_index = local_y * tile_width + local_x;
     float strength = parameter(15);
+    uint rgba = 0xff000000u;
     for (int out_channel = 0; out_channel < 3; ++out_channel) {
         float value = weight_buffer.value[864 + out_channel];
         int row = 768 + out_channel * 32;
@@ -147,8 +147,11 @@ void main() {
         }
         float limit = 0.02 + 0.02 * (parameter(18) - 1.0);
         float bounded_residual = clamp(value, -limit, limit);
-        output_buffer.value[out_channel * output_stride + output_index] = clamp(base[out_channel] + bounded_residual * strength, 0.0, 1.0);
+        float value_rgb = clamp(base[out_channel] + bounded_residual * strength, 0.0, 1.0);
+        uint byte_rgb = uint(floor(value_rgb * 255.0 + 0.5));
+        rgba |= byte_rgb << (8 * out_channel);
     }
+    output_buffer.value[output_index] = rgba;
 }
 )glsl";
 

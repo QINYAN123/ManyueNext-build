@@ -1,5 +1,6 @@
 #include "../manyue_lite_engine.h"
 #include "../third_party/stb_image.h"
+#include "../third_party/stb_image_write.h"
 
 #include <webp/decode.h>
 #include <webp/encode.h>
@@ -369,6 +370,63 @@ struct ProfileRun {
     std::string telemetry;
 };
 
+void fixture_png_writer(void* opaque, void* data, int size) {
+    auto* file = static_cast<std::ofstream*>(opaque);
+    file->write(static_cast<const char*>(data), size);
+}
+
+void verify_long_png(const fs::path& model_directory, const fs::path& output_directory) {
+    const int width = 8, height = 8240;
+    std::vector<std::uint8_t> input(static_cast<std::size_t>(width) * height * 4u);
+    for (std::size_t i = 0; i < input.size(); ++i) input[i] = static_cast<std::uint8_t>((i * 47u + i / 53u) % 256u);
+    const fs::path source = output_directory / "long-source.png";
+    {
+        std::ofstream file(source, std::ios::binary);
+        if (!file || !stbi_write_png_to_func(&fixture_png_writer, &file, width, height, 4, input.data(), width * 4) || !file) {
+            throw std::runtime_error("long PNG fixture write failed");
+        }
+    }
+    manyue_lite::Engine engine(128);
+    std::string error;
+    if (!engine.initialize(model_directory.string(), false, error)) throw std::runtime_error(error);
+    const fs::path same = output_directory / "long-1x.png";
+    const std::string same_telemetry = engine.upscale(101, source.string(), same.string(), width, 0);
+    int decoded_width = 0, decoded_height = 0;
+    const auto same_pixels = decode_rgba(same, decoded_width, decoded_height);
+    if (decoded_width != width || decoded_height != height || input != same_pixels ||
+        same_telemetry.find("\"outputFormat\":\"png\"") == std::string::npos) {
+        throw std::runtime_error("PNG 1x RGBA including transparent RGB changed");
+    }
+    const fs::path enlarged = output_directory / "long-2x.png";
+    (void)engine.upscale(102, source.string(), enlarged.string(), width * 2, 60);
+    (void)decode_rgba(enlarged, decoded_width, decoded_height);
+    if (decoded_width != width * 2 || decoded_height != height * 2) throw std::runtime_error("long PNG output dimensions wrong");
+
+    bool tile_started = false, rejected = false;
+    engine.set_test_tile_hook([&] { tile_started = true; });
+    const fs::path illegal_webp = output_directory / "long-illegal.webp";
+    try { (void)engine.upscale(103, source.string(), illegal_webp.string(), width * 2, 60); }
+    catch (const std::exception& failure) { rejected = std::string(failure.what()).find("WebP") != std::string::npos; }
+    engine.set_test_tile_hook({});
+    if (!rejected || tile_started) throw std::runtime_error("WebP oversized output did not reject before inference");
+    assert_no_output_or_pending(illegal_webp, 103);
+
+    const fs::path cancelled = output_directory / "long-cancel.png";
+    bool callback_reached = false;
+    engine.set_test_encode_progress_hook([&](int) { callback_reached = true; engine.cancel(104); });
+    expect_cancelled([&] { (void)engine.upscale(104, source.string(), cancelled.string(), width, 60); }, "PNG callback");
+    engine.set_test_encode_progress_hook({});
+    if (!callback_reached) throw std::runtime_error("PNG cancellation callback not reached");
+    assert_no_output_or_pending(cancelled, 104);
+
+    const fs::path unwritable = output_directory / "missing-directory" / "long.png";
+    bool write_failed = false;
+    try { (void)engine.upscale(105, source.string(), unwritable.string(), width, 0); }
+    catch (const std::exception&) { write_failed = true; }
+    if (!write_failed) throw std::runtime_error("unwritable PNG returned success");
+    assert_no_output_or_pending(unwritable, 105);
+}
+
 std::string profile_run_json(const ProfileRun& run) {
     std::ostringstream out;
     out << "{\"wallMs\":" << run.wall_ms
@@ -630,11 +688,13 @@ int main(int argc, char** argv) {
         manyue_lite::Engine cpu192(192);
         manyue_lite::Engine gpu128(128);
         manyue_lite::Engine gpu192(192);
+        manyue_lite::Engine gpu384(384);
         std::string error;
         if (!cpu128.initialize(model_directory.string(), false, error) ||
             !cpu192.initialize(model_directory.string(), false, error) ||
             !gpu128.initialize(model_directory.string(), true, error) ||
-            !gpu192.initialize(model_directory.string(), true, error)) {
+            !gpu192.initialize(model_directory.string(), true, error) ||
+            !gpu384.initialize(model_directory.string(), true, error)) {
             throw std::runtime_error("model init failed: " + error);
         }
 
@@ -652,6 +712,7 @@ int main(int argc, char** argv) {
         int max_backend_delta = 0;
         int max_cpu_tile_delta = 0;
         int max_gpu_tile_delta = 0;
+        int max_gpu384_tile_delta = 0;
         int actual_vulkan_executions = 0;
         int cpu_model_loads_after_first_page = -1;
         int gpu_model_loads_after_first_page = -1;
@@ -736,6 +797,19 @@ int main(int argc, char** argv) {
                     std::to_string(result.cpu.max_x) + "," + std::to_string(result.cpu.max_y) + " actual=" +
                     std::to_string(result.cpu.max_actual) + " expected=" + std::to_string(result.cpu.max_expected) + ")");
             }
+            const Run gpu384_pixels = run_page(gpu384, source_png, output_directory,
+                std::string("gpu384-") + scale.first, job++, width, height);
+            if (!telemetry_backend_is(gpu384_pixels.telemetry, "vulkan")) {
+                throw std::runtime_error("host tile-384 backend selection failed");
+            }
+            ++actual_vulkan_executions;
+            const CompareResult gpu384_error = compare_to_golden(gpu384_pixels.pixels, expected, width, height, 384);
+            max_gpu384_tile_delta = std::max(max_gpu384_tile_delta,
+                compare_images(result.gpu_pixels.pixels, gpu384_pixels.pixels));
+            if (gpu384_error.max_byte_error > 2 || max_gpu384_tile_delta > 1) {
+                throw std::runtime_error("tile-384 golden or tile boundary error exceeded tolerance");
+            }
+            if (std::string(scale.first) == "1.00x") verify_alpha_pass_through(source_png, gpu384_pixels.pixels);
             if (std::string(scale.first) == "1.37x") {
                 Run cpu192_pixels = run_page(cpu192, source_png, output_directory, "cpu192-1.37x", job++, width, height);
                 Run gpu192_pixels = run_page(gpu192, source_png, output_directory, "gpu192-1.37x", job++, width, height);
@@ -772,6 +846,7 @@ int main(int argc, char** argv) {
         verify_codec_input(codec_cpu, source_jpeg, output_directory, "jpeg", source_jpeg, job++);
         verify_codec_input(codec_cpu, webp_source, output_directory, "webp", source_png, job++);
         const CancelResults cancellation = verify_cancellation(model_directory, source_png, output_directory);
+        verify_long_png(model_directory, output_directory);
 
         if (!model_load_counts_stable) throw std::runtime_error("warm model reuse assertion failed");
         const std::string warm_cpu_telemetry = results.back().cpu_pixels.telemetry;
@@ -791,9 +866,10 @@ int main(int argc, char** argv) {
         }
         std::cout << "},\"maxCpu128vs192ByteDelta\":" << max_cpu_tile_delta
                   << ",\"maxGpu128vs192ByteDelta\":" << max_gpu_tile_delta
+                  << ",\"maxGpu128vs384ByteDelta\":" << max_gpu384_tile_delta
                   << ",\"maxCpuGpuByteDelta\":" << max_backend_delta
                   << ",\"actualVulkanExecutions\":" << actual_vulkan_executions
-                  << ",\"codecs\":{\"png\":\"PASS\",\"jpeg\":\"PASS\",\"webp\":\"PASS\",\"alpha\":\"PASS\"}"
+                  << ",\"codecs\":{\"png\":\"PASS\",\"jpeg\":\"PASS\",\"webp\":\"PASS\",\"alpha\":\"PASS\",\"longPng\":\"PASS\",\"pngCancelAndWriteFailure\":\"PASS\"}"
                   << ",\"cancel\":{\"early\":" << (cancellation.early ? "\"PASS\"" : "\"FAIL\"")
                   << ",\"tile\":" << (cancellation.tile ? "\"PASS\"" : "\"FAIL\"")
                   << ",\"webpProgress\":" << (cancellation.encode_progress ? "\"PASS\"" : "\"FAIL\"") << '}'

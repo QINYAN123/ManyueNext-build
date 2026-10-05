@@ -21,7 +21,7 @@ APK under `assets/licenses/`.
   are not packaged in the APK. The dataset license and project model license are separate.
 - Model card, dataset provenance, quality measurements and exact weight digests:
   `assets/ai/models-Manyue-Lite/` and `native/manyue-lite/training/` in the source archive.
-- Runtime: NCNN 20241226 Vulkan (BSD-3-Clause), stb_image (MIT/public-domain dual license),
+- Runtime: NCNN 20241226 Vulkan (BSD-3-Clause), stb_image and stb_image_write (MIT/public-domain dual license),
   libwebp 1.5.0 (BSD-style license and patent grant). Preserved texts appear in
   `assets/licenses/`; the new `libmanyue_lite.so` uses these codecs and resident NCNN inference.
 
@@ -42,7 +42,7 @@ The illustrations' creators do not endorse or participate in this application.
 - Upstream inference project: https://github.com/xinntao/Real-ESRGAN-ncnn-vulkan
 - Source used: tag `1.11.1`, commit `5eb6e3d`, with the local target-output and error-propagation patches
 - License: MIT; refer to the upstream project and release asset for the complete text
-- Bundled executable SHA-256: `ce28f19e41175ed0062bd4fbf21b1ee06d98b901036627048cf37f929b784ae8`
+- Bundled executable SHA-256: `b8d3746847e6f0e3e5e3f8bf60aa3c594489535ab74534b5ae77f5adaf0640d7`
 
 The executable is named `libmanyue_realesr.so` so Android installs it inside the
 app's executable native-library directory. It is rebuilt from the pinned source;
@@ -56,7 +56,7 @@ remain unchanged.
 - Upstream inference project: https://github.com/bilibili/ailab/tree/main/Real-CUGAN
 - Source used: tag `1.11.1`, commit `5eb6e3d`, with the local target-output and error-propagation patches
 - License: MIT; refer to the upstream project and release asset for the complete text
-- Bundled executable SHA-256: `9f5b7d43c3074d9ef3d4d1a0c1ed69a7819789ce5dcb52699f4e22298ab873ff`
+- Bundled executable SHA-256: `d4ab907cb698b621f429b09ec5757318b23a1e05f8a7f77575c9af8ff24cb464`
 - Bundled model: `models-se/up2x-no-denoise`, selected for the fixed native 2× fast path.
 
 The executable is named `libmanyue_realcugan.so` so Android installs it inside the
@@ -86,16 +86,18 @@ GPU shader and may increase result latency. A failed overlay keeps the valid AI 
 ## Image codecs and supporting components
 
 The rebuilt RealSR and Real-CUGAN executables use stb and statically linked
-libwebp 1.5.0 for image codecs. WebP output is lossless at the native 2× size and
-uses quality 95 when resized to a smaller target; PNG output is lossless.
+libwebp 1.5.0 for image codecs. All WebP target sizes use fast lossless compression (quality=0 is compression effort,
+method=0, exact=1); PNG output is also lossless.
 OpenCV is no longer linked into these two executables. The distribution retains
 the earlier codec notices for compatibility, together with the libwebp COPYING
 and PATENTS texts and stb license. See `assets/licenses/` for copyright,
 redistribution conditions and warranty disclaimers.
 
 The Lite JNI runtime also uses stb and statically linked libwebp 1.5.0. Its
-direct target-size output is lossless WebP, independent of the legacy CLI
-resizing policy above.
+direct target-size output uses lossless WebP, or stb_image_write PNG when either
+output axis exceeds WebP's 16,383-pixel maximum. The PNG writer checks cancellation
+before compression, on the writer callback and before atomic publication; it cannot
+interrupt stb compression internally.
 
 No upstream project or contributor endorses this application. All third-party
 software is provided under its respective license and without warranty.

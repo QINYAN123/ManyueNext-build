@@ -5,7 +5,10 @@ import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
 import java.nio.file.Files
+import java.util.concurrent.TimeUnit
 
 class ManyueAiRuntimeTest {
 
@@ -153,5 +156,117 @@ class ManyueAiRuntimeTest {
         )
 
         assertFalse(command.contains("-n"))
+    }
+
+    @Test fun `legacy capability probe checks the selected worker and shared libraries only`() {
+        val cugan = ManyueAiRuntime.requiredLegacyRuntimeHashes(ManyueAiModel.FAST_REAL_CUGAN)
+        assertEquals(
+            setOf("libmanyue_realcugan.so", "libncnn.so", "libomp.so"),
+            cugan.keys,
+        )
+        assertFalse(cugan.containsKey(ManyueAiModel.QUALITY_REAL_ESRGAN.runnerName))
+
+        val realesr = ManyueAiRuntime.requiredLegacyRuntimeHashes(ManyueAiModel.QUALITY_REAL_ESRGAN)
+        assertEquals(
+            setOf("libmanyue_realesr.so", "libncnn.so", "libomp.so"),
+            realesr.keys,
+        )
+        assertFalse(realesr.containsKey(ManyueAiModel.FAST_REAL_CUGAN.runnerName))
+        assertThrows(IllegalArgumentException::class.java) {
+            ManyueAiRuntime.requiredLegacyRuntimeHashes(ManyueAiModel.MOBILE_LITE)
+        }
+    }
+
+    @Test fun `legacy process callback failure stops child and removes partial output`() {
+        val output = Files.createTempFile("manyue-native-output", ".webp").toFile()
+        val process = TestNativeProcess()
+        var actionReached = false
+        try {
+            assertThrows(IllegalStateException::class.java) {
+                ManyueAiRuntime.runTrackedProcess(
+                    process = process,
+                    outputFile = output,
+                    onProcessStarted = { throw IllegalStateException("tracking failed") },
+                ) {
+                    actionReached = true
+                }
+            }
+
+            assertFalse(actionReached)
+            assertTrue(process.destroyed)
+            assertFalse(output.exists())
+        } finally {
+            output.delete()
+        }
+    }
+
+    @Test fun `interrupted graceful stop force kills child before deleting partial output`() {
+        val output = Files.createTempFile("manyue-native-interrupted", ".webp").toFile()
+        val process = InterruptedWaitNativeProcess { assertTrue(output.exists()) }
+        val thread = Thread.currentThread()
+        val wasInterrupted = Thread.interrupted()
+        try {
+            assertThrows(ManyueAiRuntime.CancelledException::class.java) {
+                ManyueAiRuntime.runTrackedProcess(
+                    process = process,
+                    outputFile = output,
+                    onProcessStarted = {},
+                ) {
+                    throw InterruptedException("cancel while waiting for child")
+                }
+            }
+
+            assertTrue(process.forceKilled)
+            assertFalse(process.isAlive)
+            assertTrue(output.exists().not(), "partial output must be removed after the child exits")
+            assertTrue(thread.isInterrupted, "interruption must be restored after process cleanup")
+        } finally {
+            Thread.interrupted()
+            if (wasInterrupted) thread.interrupt()
+            output.delete()
+        }
+    }
+
+    private class TestNativeProcess : Process() {
+        var destroyed = false
+            private set
+
+        override fun getOutputStream() = ByteArrayOutputStream()
+        override fun getInputStream() = ByteArrayInputStream(byteArrayOf())
+        override fun getErrorStream() = ByteArrayInputStream(byteArrayOf())
+        override fun waitFor(): Int = 0
+        override fun waitFor(timeout: Long, unit: TimeUnit): Boolean = destroyed
+        override fun exitValue(): Int = if (destroyed) 143 else 0
+        override fun destroy() {
+            destroyed = true
+        }
+        override fun destroyForcibly(): Process {
+            destroy()
+            return this
+        }
+        override fun isAlive(): Boolean = !destroyed
+    }
+
+    private class InterruptedWaitNativeProcess(private val onWait: () -> Unit) : Process() {
+        var forceKilled = false
+            private set
+
+        override fun getOutputStream() = ByteArrayOutputStream()
+        override fun getInputStream() = ByteArrayInputStream(byteArrayOf())
+        override fun getErrorStream() = ByteArrayInputStream(byteArrayOf())
+        override fun waitFor(): Int {
+            onWait()
+            return 137
+        }
+        override fun waitFor(timeout: Long, unit: TimeUnit): Boolean {
+            throw InterruptedException("simulated interrupt during graceful stop")
+        }
+        override fun exitValue(): Int = if (forceKilled) 137 else throw IllegalThreadStateException()
+        override fun destroy() = Unit
+        override fun destroyForcibly(): Process {
+            forceKilled = true
+            return this
+        }
+        override fun isAlive(): Boolean = !forceKilled
     }
 }

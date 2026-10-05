@@ -3,9 +3,7 @@ package eu.kanade.tachiyomi.ui.reader.manyue
 import android.app.Application
 import android.content.Context
 import android.content.ContextWrapper
-import java.io.File
-import java.io.RandomAccessFile
-import java.nio.file.Files
+import android.graphics.Bitmap
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
@@ -18,9 +16,12 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
-import org.robolectric.RuntimeEnvironment
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
+import java.io.File
+import java.io.RandomAccessFile
+import java.nio.file.Files
 
 @RunWith(RobolectricTestRunner::class)
 @Config(application = Application::class, sdk = [34], manifest = Config.NONE)
@@ -193,6 +194,185 @@ class ManyueEnhancementCacheBehaviorTest {
             ManyueEnhancementCache.clearReadingPosition(identity.mangaId, identity.chapterId)
             root.deleteRecursively()
         }
+    }
+
+    @Test fun `invalid classic variant waits for its readers but not the displayed base image`() = runBlocking<Unit> {
+        val root = Files.createTempDirectory("manyue-cache-classic-invalidate-test").toFile()
+        val context = IsolatedCacheContext(RuntimeEnvironment.getApplication(), root)
+        val identity = ManyueEnhancementCache.ReadingIdentity(706L, 806L, 4)
+        val key = putImage(context, identity, "classic-base")
+        val variant = File(ManyueEnhancementCache.cacheDir(context), "$key/classic_luma_v3_25.img")
+            .apply { writeBytes(byteArrayOf(9, 8, 7)) }
+        val basePin = ManyueEnhancementCache.pinCachedImage(context, key)
+        val variantPin = ManyueEnhancementCache.pinCachedImage(context, key, 25)
+        val viewPin = ManyueEnhancementCache.pinFile(context, variant)
+        try {
+            assertNotNull(basePin)
+            assertNotNull(variantPin)
+            assertNotNull(viewPin)
+            ManyueEnhancementCache.invalidateClassicImage(context, key, 25)
+
+            assertNull(
+                "new readers must stop taking a variant already marked corrupt",
+                ManyueEnhancementCache.pinCachedImage(context, key, 25),
+            )
+            assertTrue("an existing decoder lease keeps its file until it closes", variant.isFile)
+            assertNotNull("the valid base result stays usable", ManyueEnhancementCache.getImage(context, key))
+
+            variantPin?.lease?.close()
+            assertTrue("a staged view's file lease also delays deletion", variant.exists())
+            viewPin?.close()
+            awaitCondition { !variant.exists() }
+            val baseStillAvailable = ManyueEnhancementCache.pinCachedImage(context, key)
+            assertNotNull(
+                "the displayed base-image lease must not block corrupt-variant cleanup",
+                baseStillAvailable,
+            )
+            baseStillAvailable?.lease?.close()
+        } finally {
+            variantPin?.lease?.close()
+            viewPin?.close()
+            basePin?.lease?.close()
+            root.deleteRecursively()
+        }
+    }
+
+    @Test fun `ordinary classic removal does not leave a corrupt marker behind`() {
+        val root = Files.createTempDirectory("manyue-cache-classic-remove-test").toFile()
+        val context = IsolatedCacheContext(RuntimeEnvironment.getApplication(), root)
+        val identity = ManyueEnhancementCache.ReadingIdentity(707L, 807L, 4)
+        try {
+            val key = putImage(context, identity, "classic-remove")
+            val variant = File(ManyueEnhancementCache.cacheDir(context), "$key/classic_luma_v3_25.img")
+                .apply { writeBytes(byteArrayOf(1, 2, 3)) }
+
+            ManyueEnhancementCache.removeClassicImage(context, key, 25)
+            assertFalse(variant.exists())
+
+            variant.writeBytes(byteArrayOf(4, 5, 6))
+            val lease = ManyueEnhancementCache.pinFile(context, variant)
+            assertNotNull("generic removal must not mark a future replacement as corrupt", lease)
+            lease?.close()
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test fun `stale deferred invalidation cannot delete a rebuilt classic variant`() = runBlocking<Unit> {
+        val root = Files.createTempDirectory("manyue-cache-classic-rebuild-race-test").toFile()
+        val context = IsolatedCacheContext(RuntimeEnvironment.getApplication(), root)
+        val identity = ManyueEnhancementCache.ReadingIdentity(708L, 808L, 4)
+        val key = putImage(context, identity, "classic-rebuild-race")
+        val variant = File(ManyueEnhancementCache.cacheDir(context), "$key/classic_luma_v3_25.img")
+            .apply { writeBytes(byteArrayOf(7, 7, 7)) }
+        val variantPin = ManyueEnhancementCache.pinCachedImage(context, key, 25)
+            ?: error("classic variant was not pinnable")
+        val diskLock = ManyueEnhancementCache::class.java.getDeclaredField("diskLock")
+            .apply { isAccessible = true }
+            .get(ManyueEnhancementCache)
+        val bitmap = Bitmap.createBitmap(2, 2, Bitmap.Config.ARGB_8888)
+
+        try {
+            ManyueEnhancementCache.invalidateClassicImage(context, key, 25)
+            synchronized(diskLock) {
+                // Closing the final file lease queues deletion on Dispatchers.IO. Keep that worker
+                // at the disk lock while rebuilding so its stale invalidation id runs afterward.
+                variantPin.lease.close()
+                awaitDeferredInvalidationWorker(waiting = true)
+                assertNotNull(
+                    "rebuild should replace the invalid variant while old cleanup is queued",
+                    ManyueEnhancementCache.putClassicImage(context, key, 25, bitmap),
+                )
+            }
+            awaitDeferredInvalidationWorker(waiting = false)
+
+            assertTrue("stale cleanup must preserve the replacement", variant.isFile)
+            val rebuiltPin = ManyueEnhancementCache.pinCachedImage(context, key, 25)
+            assertNotNull("the rebuilt variant must be available to a fresh reader", rebuiltPin)
+            rebuiltPin?.lease?.close()
+        } finally {
+            bitmap.recycle()
+            variantPin.lease.close()
+            root.deleteRecursively()
+        }
+    }
+
+    @Test fun `captured cache key still pins and invalidates after request pruning`() = runBlocking<Unit> {
+        val root = Files.createTempDirectory("manyue-cache-pruned-request-test").toFile()
+        val context = IsolatedCacheContext(RuntimeEnvironment.getApplication(), root)
+        val identity = ManyueEnhancementCache.ReadingIdentity(709L, 809L, 4)
+        val requestsField = ManyueAiUpscaler::class.java.getDeclaredField("requests").apply { isAccessible = true }
+
+        @Suppress("UNCHECKED_CAST")
+        val requests = requestsField.get(ManyueAiUpscaler) as MutableMap<String, ManyueAiUpscaler.Request>
+        val requestKeysField = ManyueAiUpscaler::class.java.getDeclaredField("tokensByRequestKey")
+            .apply { isAccessible = true }
+
+        @Suppress("UNCHECKED_CAST")
+        val tokensByRequestKey = requestKeysField.get(ManyueAiUpscaler) as MutableMap<String, String>
+        val token = ManyueAiUpscaler.register(
+            mangaId = identity.mangaId,
+            chapterId = identity.chapterId,
+            pageIndex = identity.pageIndex,
+            inputFile = File(root, "request.input"),
+            sourceWidth = 2,
+            sourceHeight = 2,
+            targetMode = ManyueAiModel.MOBILE_LITE.scale,
+            targetWidth = 2,
+            priority = 100,
+            expectedMode = ManyueEnhancementMode.AI_2X.value,
+            generation = 809L,
+            sourceFingerprint = "pruned-token-cache-key-test",
+            model = ManyueAiModel.MOBILE_LITE,
+        )
+        var requestKey: String? = null
+
+        try {
+            requestKey = requests[token]?.requestKey ?: error("request was not registered")
+            val capturedKey = ManyueAiUpscaler.cacheKeyForToken(token)
+                ?: error("request cache key was not available to the holder")
+            requests.remove(token)
+            tokensByRequestKey.remove(requestKey, token)
+            val source = File(root, "pruned-request.webp").apply { writeBytes(byteArrayOf(1, 2, 3)) }
+            val variant = File(ManyueEnhancementCache.cacheDir(context), "$capturedKey/classic_luma_v3_25.img")
+
+            assertNull(
+                "token lookup is unavailable after request pruning",
+                ManyueAiUpscaler.pinnedCachedImage(context, token),
+            )
+            assertTrue(ManyueEnhancementCache.putImage(context, capturedKey, source, 2, 2))
+            variant.writeBytes(byteArrayOf(5, 4, 3))
+
+            val basePin = ManyueAiUpscaler.pinnedCachedImageForKey(context, capturedKey)
+            assertNotNull("the holder's captured key keeps base cache access independent of token retention", basePin)
+            basePin?.lease?.close()
+
+            ManyueAiUpscaler.invalidateClassicImageForKey(context, capturedKey, 25)
+            awaitCondition { !variant.exists() }
+            assertNull(ManyueAiUpscaler.pinnedCachedImageForKey(context, capturedKey, 25))
+            val baseStillAvailable = ManyueAiUpscaler.pinnedCachedImageForKey(context, capturedKey)
+            assertNotNull("invalidating a variant leaves the base cache entry usable", baseStillAvailable)
+            baseStillAvailable?.lease?.close()
+        } finally {
+            requests.remove(token)
+            requestKey?.let { tokensByRequestKey.remove(it, token) }
+            root.deleteRecursively()
+        }
+    }
+
+    private fun awaitDeferredInvalidationWorker(waiting: Boolean) {
+        val deadline = System.nanoTime() + 5_000_000_000L
+        while (System.nanoTime() < deadline) {
+            val active = Thread.getAllStackTraces().any { (thread, trace) ->
+                thread !== Thread.currentThread() && trace.any {
+                    it.className.contains("ManyueEnhancementCache") &&
+                        it.methodName == "deleteInvalidClassicVariant"
+                }
+            }
+            if (active == waiting) return
+            Thread.sleep(5L)
+        }
+        assertTrue("deferred invalidation worker did not reach expected state: waiting=$waiting", false)
     }
 
     private suspend fun awaitCondition(condition: () -> Boolean) {

@@ -42,6 +42,27 @@ static void test_rgb_area_average() {
     CHECK(destination[2] == 150);
 }
 
+static void test_fractional_legacy_target_geometry() {
+    // The source page is 2x1, the model buffer is 4x2, and a 150% target
+    // rounds to 3x2. This exercises the fractional model-to-output ratio.
+    Size target = {0, 0};
+    CHECK(manyue_output::compute_target_size(2, 1, 3, &target));
+    CHECK(target.width == 3 && target.height == 2);
+
+    const uint8_t source[] = {
+          0,   0,   0,   93,  93,  93, 177, 177, 177, 249, 249, 249,
+          0,   0,   0,   93,  93,  93, 177, 177, 177, 249, 249, 249,
+    };
+    uint8_t destination[3 * 2 * 3] = {};
+    CHECK(manyue_output::resize_area_u8(source, 4, 2, 3, 12,
+                                         destination, target.width, target.height, 9));
+    const uint8_t expected_row[] = {23, 23, 23, 135, 135, 135, 231, 231, 231};
+    for (int i = 0; i < 9; ++i) {
+        CHECK(destination[i] == expected_row[i]);
+        CHECK(destination[9 + i] == expected_row[i]);
+    }
+}
+
 static void test_rgba_alpha_weighting() {
     const uint8_t source[] = {
         255, 0, 0, 255,
@@ -76,6 +97,7 @@ static void test_identity_and_validation() {
 int main() {
     test_target_dimensions();
     test_rgb_area_average();
+    test_fractional_legacy_target_geometry();
     test_rgba_alpha_weighting();
     test_identity_and_validation();
     std::puts("output resize tests passed");

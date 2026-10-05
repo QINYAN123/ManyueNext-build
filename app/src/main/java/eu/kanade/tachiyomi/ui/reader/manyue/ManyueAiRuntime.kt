@@ -45,12 +45,12 @@ object ManyueAiRuntime {
 
     class CancelledException : CancellationException("Manyue AI request cancelled")
 
-    private const val EXPECTED_REAL_ESRGAN_SHA256 = "ce28f19e41175ed0062bd4fbf21b1ee06d98b901036627048cf37f929b784ae8"
-    private const val EXPECTED_REAL_CUGAN_SHA256 = "9f5b7d43c3074d9ef3d4d1a0c1ed69a7819789ce5dcb52699f4e22298ab873ff"
+    private const val EXPECTED_REAL_ESRGAN_SHA256 = "b8d3746847e6f0e3e5e3f8bf60aa3c594489535ab74534b5ae77f5adaf0640d7"
+    private const val EXPECTED_REAL_CUGAN_SHA256 = "d4ab907cb698b621f429b09ec5757318b23a1e05f8a7f77575c9af8ff24cb464"
     private const val EXPECTED_NCNN_SHA256 = "87d150e735157b09aa20f26f5e57f72468c548e7ce98ce407ec50ee7e14a52dd"
     private const val EXPECTED_LIBOMP_SHA256 = "da75dcbe6026a3e08d01bfe86860159432051b329a84deb5ee042ce9b8e1a302"
 
-    @Volatile private var cachedProbe: Pair<String, Capability>? = null
+    @Volatile private var cachedProbe: Triple<String, String, Capability>? = null
 
     fun isSupported(): Boolean = Build.SUPPORTED_64_BIT_ABIS.contains("arm64-v8a")
 
@@ -61,21 +61,18 @@ object ManyueAiRuntime {
         if (model.continuousScale) return probeLite(context)
         if (!isSupported()) return Capability.UNSUPPORTED_ABI
         val nativeDir = context.applicationInfo.nativeLibraryDir
-        cachedProbe?.takeIf { it.first == nativeDir }?.let { return it.second }
-        val runners = ManyueAiModel.entries.filterNot { it.continuousScale }.map { File(nativeDir, it.runnerName) }
-        val ncnn = File(nativeDir, "libncnn.so")
-        val libomp = File(nativeDir, "libomp.so")
+        cachedProbe?.takeIf { it.first == nativeDir && it.second == model.id }?.let { return it.third }
+        val expected = requiredLegacyRuntimeHashes(model)
         val result = runCatching {
             when {
-                runners.any { !it.isFile || it.length() == 0L } ||
-                    !ncnn.isFile || ncnn.length() == 0L ||
-                    !libomp.isFile || libomp.length() == 0L -> Capability.MISSING_BINARY
-                sha256(File(nativeDir, ManyueAiModel.QUALITY_REAL_ESRGAN.runnerName)) != EXPECTED_REAL_ESRGAN_SHA256 ||
-                    sha256(File(nativeDir, ManyueAiModel.FAST_REAL_CUGAN.runnerName)) != EXPECTED_REAL_CUGAN_SHA256 ||
-                    sha256(ncnn) != EXPECTED_NCNN_SHA256 ||
-                    sha256(libomp) != EXPECTED_LIBOMP_SHA256 -> Capability.CORRUPT_BINARY
-                runners.any {
-                    !it.canExecute() && (!it.setExecutable(true, false) || !it.canExecute())
+                expected.keys.any { name ->
+                    val file = File(nativeDir, name)
+                    !file.isFile || file.length() == 0L
+                } -> Capability.MISSING_BINARY
+                expected.any { (name, hash) -> sha256(File(nativeDir, name)) != hash } -> Capability.CORRUPT_BINARY
+                run {
+                    val runner = File(nativeDir, model.runnerName)
+                    !runner.canExecute() && (!runner.setExecutable(true, false) || !runner.canExecute())
                 } -> Capability.NOT_EXECUTABLE
                 else -> Capability.READY
             }
@@ -83,9 +80,24 @@ object ManyueAiRuntime {
             logcat { "Manyue capability probe failed: ${it.javaClass.simpleName}" }
             Capability.CORRUPT_BINARY
         }
-        cachedProbe = nativeDir to result
+        cachedProbe = Triple(nativeDir, model.id, result)
         logcat { "Manyue capability=$result nativeDir=$nativeDir" }
         return result
+    }
+
+    /** Verify only the selected legacy worker and its shared runtime dependencies. */
+    internal fun requiredLegacyRuntimeHashes(model: ManyueAiModel): Map<String, String> {
+        require(!model.continuousScale) { "Lite has a separate resident runtime" }
+        val runnerHash = when (model) {
+            ManyueAiModel.FAST_REAL_CUGAN -> EXPECTED_REAL_CUGAN_SHA256
+            ManyueAiModel.QUALITY_REAL_ESRGAN -> EXPECTED_REAL_ESRGAN_SHA256
+            else -> error("Unknown legacy model: ${model.id}")
+        }
+        return mapOf(
+            model.runnerName to runnerHash,
+            "libncnn.so" to EXPECTED_NCNN_SHA256,
+            "libomp.so" to EXPECTED_LIBOMP_SHA256,
+        )
     }
 
     @Volatile private var cachedLiteProbe: Pair<String, Capability>? = null
@@ -183,40 +195,54 @@ object ManyueAiRuntime {
                 "targetWidth=$targetWidth tile=$TILE_SIZE jobs=$JOBS omp=1 passive=true LD_LIBRARY_PATH=$nativeDir"
         }
         val process = pb.start()
-        logcat { "Manyue native process started" }
-        onProcessStarted(process)
-        val deadline = SystemClock.elapsedRealtime() + TimeUnit.SECONDS.toMillis(TIMEOUT_SECONDS)
-        try {
+        runTrackedProcess(process, outputFile, onProcessStarted) {
+            logcat { "Manyue native process started" }
+            val deadline = SystemClock.elapsedRealtime() + TimeUnit.SECONDS.toMillis(TIMEOUT_SECONDS)
             while (!process.waitFor(WAIT_SLICE_MS, TimeUnit.MILLISECONDS)) {
                 if (isCancelled()) {
-                    stop(process)
                     throw CancelledException()
                 }
                 if (SystemClock.elapsedRealtime() >= deadline) {
-                    stop(process)
                     throw RuntimeException(
                         "AI upscaler timeout after ${TIMEOUT_SECONDS}s; ${logTail(logFile)}",
                     )
                 }
             }
-        } catch (t: InterruptedException) {
+            if (isCancelled()) throw CancelledException()
+            val code = process.exitValue()
+            if (code != 0) {
+                throw RuntimeException("AI upscaler exit code=$code; ${logTail(logFile)}")
+            }
+            if (!outputFile.exists() || outputFile.length() == 0L) {
+                throw RuntimeException("AI upscaler produced no output; ${logTail(logFile)}")
+            }
+            val elapsedMs = SystemClock.elapsedRealtime() - startedAt
+            val telemetry = runtimeTelemetry(logFile)
+            logcat {
+                "Manyue native exit code=0 model=${model.id} outputBytes=${outputFile.length()} " +
+                    "durationMs=$elapsedMs $telemetry"
+            }
+        }
+    }
+
+    /** Owns the child from publication through validation and removes any incomplete output. */
+    internal fun runTrackedProcess(
+        process: Process,
+        outputFile: File,
+        onProcessStarted: (Process) -> Unit,
+        action: () -> Unit,
+    ) {
+        try {
+            onProcessStarted(process)
+            action()
+        } catch (t: Throwable) {
             stop(process)
-            Thread.currentThread().interrupt()
-            throw CancelledException()
-        }
-        if (isCancelled()) throw CancelledException()
-        val code = process.exitValue()
-        if (code != 0) {
-            throw RuntimeException("AI upscaler exit code=$code; ${logTail(logFile)}")
-        }
-        if (!outputFile.exists() || outputFile.length() == 0L) {
-            throw RuntimeException("AI upscaler produced no output; ${logTail(logFile)}")
-        }
-        val elapsedMs = SystemClock.elapsedRealtime() - startedAt
-        val telemetry = runtimeTelemetry(logFile)
-        logcat {
-            "Manyue native exit code=0 model=${model.id} outputBytes=${outputFile.length()} durationMs=$elapsedMs " +
-                telemetry
+            outputFile.delete()
+            if (t is InterruptedException) {
+                Thread.currentThread().interrupt()
+                throw CancelledException()
+            }
+            throw t
         }
     }
 
@@ -320,10 +346,31 @@ object ManyueAiRuntime {
 
     private fun stop(process: Process) {
         runCatching { process.destroy() }
-        runCatching {
-            if (!process.waitFor(2, TimeUnit.SECONDS)) process.destroyForcibly()
+        var interrupted = false
+        try {
+            val exitedGracefully = try {
+                process.waitFor(2, TimeUnit.SECONDS)
+            } catch (_: InterruptedException) {
+                interrupted = true
+                false
+            }
+            if (!exitedGracefully) {
+                process.destroyForcibly()
+                // Do not let callers delete a partial output while the child can still
+                // write it. waitFor() is retried uninterruptibly after the force-kill.
+                while (true) {
+                    try {
+                        process.waitFor()
+                        break
+                    } catch (_: InterruptedException) {
+                        interrupted = true
+                        process.destroyForcibly()
+                    }
+                }
+            }
+        } finally {
+            if (interrupted) Thread.currentThread().interrupt()
         }
-        runCatching { process.waitFor(2, TimeUnit.SECONDS) }
     }
 
     fun readLogTail(file: File): String {

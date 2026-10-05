@@ -55,13 +55,12 @@ object ManyueReaderWorkGate {
     @Synchronized
     fun isBlocked(): Boolean = policy.isBlocked()
 
-    fun isAiWorkBlocked(model: ManyueAiModel, priority: Int): Boolean =
-        if (model.continuousScale && priority >= 100) policy.isLiteVisibleWorkBlocked() else policy.isBlocked()
+    fun isAiWorkBlocked(priority: Int): Boolean =
+        if (priority >= 100) policy.isVisibleWorkBlocked() else policy.isBlocked()
 
     /** Keeps thermal protection for expensive work without indefinitely hiding a ready image. */
     @Synchronized
-    fun isDisplayBlocked(continuousScale: Boolean = false): Boolean =
-        if (continuousScale) policy.isLiteDisplayBlocked() else policy.isDisplayBlocked()
+    fun isDisplayBlocked(): Boolean = policy.isDisplayBlocked()
 }
 
 /** Spaces native jobs only when the caller reports active reader pressure. */

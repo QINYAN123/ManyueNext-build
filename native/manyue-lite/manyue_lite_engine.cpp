@@ -40,6 +40,18 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include "third_party/stb_image.h"
 
+#define STBI_WRITE_NO_STDIO
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#if defined(__clang__) || defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-field-initializers"
+#pragma GCC diagnostic ignored "-Wsign-compare"
+#endif
+#include "third_party/stb_image_write.h"
+#if defined(__clang__) || defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
+
 namespace manyue_lite {
 namespace {
 
@@ -61,6 +73,7 @@ struct Image {
     int height = 0;
     std::uint8_t* rgba = nullptr;
     void (*release)(void*) = nullptr;
+    bool opaque = true;
 
     Image() = default;
     Image(const Image&) = delete;
@@ -73,6 +86,7 @@ struct Image {
         height = other.height;
         rgba = other.rgba;
         release = other.release;
+        opaque = other.opaque;
         other.width = other.height = 0;
         other.rgba = nullptr;
         other.release = nullptr;
@@ -86,6 +100,14 @@ struct Image {
         release = nullptr;
     }
 };
+
+bool image_is_opaque(const Image& image) {
+    const std::size_t pixels = static_cast<std::size_t>(image.width) * image.height;
+    for (std::size_t pixel = 0; pixel < pixels; ++pixel) {
+        if (image.rgba[pixel * 4u + 3u] != 255) return false;
+    }
+    return true;
+}
 
 bool read_prefix(const std::string& path, std::array<unsigned char, 12>& bytes) {
     std::ifstream file(path, std::ios::binary);
@@ -134,6 +156,7 @@ Image decode_image(const std::string& path, std::uint64_t& encoded_bytes) {
         image.rgba = WebPDecodeRGBA(encoded.data(), encoded.size(), &image.width, &image.height);
         image.release = &WebPFree;
         if (!image.rgba) throw std::runtime_error("WebP解码失败");
+        image.opaque = image_is_opaque(image);
         encoded.clear();
         encoded.shrink_to_fit();
         return image;
@@ -151,6 +174,7 @@ Image decode_image(const std::string& path, std::uint64_t& encoded_bytes) {
     image.rgba = stbi_load(path.c_str(), &image.width, &image.height, &source_channels, 4);
     image.release = &stbi_image_free;
     if (!image.rgba) throw std::runtime_error(std::string("PNG/JPEG解码失败: ") + stbi_failure_reason());
+    image.opaque = image_is_opaque(image);
     return image;
 }
 
@@ -359,6 +383,28 @@ int write_webp_chunk(const std::uint8_t* data, std::size_t size, const WebPPictu
     return 1;
 }
 
+void write_png_chunk(void* opaque, void* data, int size) {
+    auto* context = static_cast<EncodeContext*>(opaque);
+    if (!context || context->failed || size < 0 ||
+        context->job_id <= context->highest_cancelled_job->load(std::memory_order_acquire)) {
+        if (context) context->failed = true;
+        return;
+    }
+#if !defined(__ANDROID__)
+    if (context->progress_test_hook && *context->progress_test_hook) {
+        try { (*context->progress_test_hook)(100); }
+        catch (...) { context->failed = true; return; }
+        if (context->job_id <= context->highest_cancelled_job->load(std::memory_order_acquire)) {
+            context->failed = true;
+            return;
+        }
+    }
+#endif
+    if (std::fwrite(data, 1, static_cast<std::size_t>(size), context->file) != static_cast<std::size_t>(size)) {
+        context->failed = true;
+    }
+}
+
 int webp_progress_hook(int percent, const WebPPicture* picture) {
     auto* context = static_cast<EncodeContext*>(picture->user_data);
     if (!context || context->failed) return 0;
@@ -390,7 +436,7 @@ void append_backend_json(std::ostringstream& out, const std::string& backend) {
 class Engine::Impl {
 public:
     explicit Impl(int tile_side) : tile_side_(tile_side) {
-        if (tile_side_ != 128 && tile_side_ != 192) tile_side_ = 128;
+        if (tile_side_ != 128 && tile_side_ != 192 && tile_side_ != 256 && tile_side_ != 384) tile_side_ = 128;
     }
 
     ~Impl() { release_gpu(); }
@@ -412,6 +458,9 @@ public:
             return false;
         }
         backend_ = "cpu";
+        // Large output tiles reduce Vulkan submissions. Keep the CPU fallback's
+        // materialized head tensor small instead of inheriting that GPU choice.
+        if (tile_side_ > 192) tile_side_ = 128;
         if (prefer_gpu) gpu_fallback_reason_ = gpu_failure.empty() ? "Vulkan初始化失败" : gpu_failure;
         return true;
     }
@@ -466,6 +515,10 @@ public:
         const std::uint64_t output_pixels = static_cast<std::uint64_t>(target_width) * output_height;
         if (output_height <= 0 || output_pixels > kMaxPixels) throw std::runtime_error("目标图片超过1200万像素限制");
         if (output_pixels > std::numeric_limits<std::size_t>::max() / 4u) throw std::runtime_error("目标图片尺寸溢出");
+        const bool png_output = output_path.size() >= 4 && output_path.compare(output_path.size() - 4, 4, ".png") == 0;
+        if (!png_output && (target_width > WEBP_MAX_DIMENSION || output_height > WEBP_MAX_DIMENSION)) {
+            throw std::runtime_error("长条图片超出WebP单边限制，请使用PNG输出");
+        }
 
         std::vector<std::uint8_t> output(static_cast<std::size_t>(output_pixels) * 4u);
         double infer_ms = 0.0;
@@ -501,7 +554,10 @@ public:
 
         const Clock::time_point encode_start = Clock::now();
         std::string encode_error;
-        if (!encode_atomic_webp(output, target_width, output_height, output_path, job_id, encode_error)) {
+        const bool encoded = png_output
+            ? encode_atomic_png(output, target_width, output_height, output_path, job_id, encode_error)
+            : encode_atomic_webp(output, target_width, output_height, output_path, job_id, encode_error);
+        if (!encoded) {
             throw std::runtime_error(encode_error);
         }
         const double encode_ms = elapsed_ms(encode_start);
@@ -509,8 +565,11 @@ public:
         std::ostringstream json;
         json << '{';
         append_backend_json(json, backend_);
-        json << ",\"modelLoads\":" << model_loads_
+        json << ",\"outputFormat\":\"" << (png_output ? "png" : "webp") << '"'
+             << ",\"modelLoads\":" << model_loads_
              << ",\"tiles\":" << tiles
+             << ",\"outputTile\":" << tile_side_
+             << ",\"gpuReadbackBytes\":" << (backend_ == "vulkan" ? output_bytes : 0)
              << ",\"decodeMs\":" << std::fixed << std::setprecision(3) << decode_ms
              << ",\"inferMs\":" << std::fixed << std::setprecision(3) << infer_ms
              << ",\"encodeMs\":" << std::fixed << std::setprecision(3) << encode_ms
@@ -674,6 +733,7 @@ private:
             throw std::runtime_error("Vulkan推理失败: " + gpu_error + "; CPU fallback失败: " + cpu_error);
         }
         backend_ = "cpu";
+        if (tile_side_ > 192) tile_side_ = 128;
         gpu_fallback_reason_ = gpu_error;
     }
 
@@ -793,7 +853,8 @@ private:
                     const float value = base + bounded_residual * strength;
                     output[output_index + channel] = float_to_byte(value);
                 }
-                output[output_index + 3u] = float_to_byte(sample_alpha_bilinear(source, coordinate.x, coordinate.y));
+                output[output_index + 3u] = source.opaque ? 255 :
+                    float_to_byte(sample_alpha_bilinear(source, coordinate.x, coordinate.y));
             }
         }
         return true;
@@ -869,7 +930,9 @@ private:
         command.record_upload(parameter_host, parameters_gpu, trunk_.opt);
 
         const int tile_pixels = tile_width * tile_height;
-        ncnn::VkMat output_gpu(tile_pixels * 3, sizeof(float), blob_vkallocator_);
+        // One packed RGBA word per pixel, rather than three planar floats. This
+        // cuts the GPU readback by 2/3 and removes CPU float-to-byte conversion.
+        ncnn::VkMat output_gpu(tile_pixels, sizeof(float), blob_vkallocator_);
         if (output_gpu.empty()) {
             last_error_ = "无法分配Vulkan RGB tile输出";
             return false;
@@ -889,25 +952,27 @@ private:
 
         ncnn::Mat output_host;
         command.record_download(output_gpu, output_host, trunk_.opt);
-        if (command.submit_and_wait() != 0 || output_host.empty() || output_host.total() != static_cast<std::size_t>(tile_pixels) * 3u) {
+        if (command.submit_and_wait() != 0 || output_host.empty() || output_host.dims != 1 ||
+            output_host.elempack != 1 || output_host.elemsize != sizeof(std::uint32_t) ||
+            output_host.total() != static_cast<std::size_t>(tile_pixels)) {
             last_error_ = "Vulkan fused-head输出下载失败";
             return false;
         }
-        const float* rgb = static_cast<const float*>(output_host.data);
+        const auto* rgba = static_cast<const std::uint8_t*>(output_host.data);
         for (int y = 0; y < tile_height; ++y) {
             if (job_id <= highest_cancelled_job_.load(std::memory_order_acquire)) {
                 last_error_ = "任务已取消";
                 return false;
             }
+            const std::size_t row_output = (static_cast<std::size_t>(output_y + y) * output_width + output_x) * 4u;
+            std::memcpy(output.data() + row_output, rgba + static_cast<std::size_t>(y) * tile_width * 4u,
+                        static_cast<std::size_t>(tile_width) * 4u);
+            if (source.opaque) continue;
             for (int x = 0; x < tile_width; ++x) {
                 const SourcePosition coordinate = source_position(output_x + x, output_y + y,
                                                                    source.width, source.height,
                                                                    output_width, output_height);
-                const std::size_t tile_index = static_cast<std::size_t>(y) * tile_width + x;
                 const std::size_t output_index = (static_cast<std::size_t>(output_y + y) * output_width + output_x + x) * 4u;
-                output[output_index] = float_to_byte(rgb[tile_index]);
-                output[output_index + 1u] = float_to_byte(rgb[static_cast<std::size_t>(tile_pixels) + tile_index]);
-                output[output_index + 2u] = float_to_byte(rgb[static_cast<std::size_t>(tile_pixels) * 2u + tile_index]);
                 output[output_index + 3u] = float_to_byte(sample_alpha_bilinear(source, coordinate.x, coordinate.y));
             }
         }
@@ -939,6 +1004,46 @@ private:
                 if (test_tile_hook_) test_tile_hook_();
 #endif
             }
+        }
+        return true;
+    }
+
+    bool encode_atomic_png(const std::vector<std::uint8_t>& rgba, int width, int height,
+                           const std::string& output_path, std::uint64_t job_id, std::string& error) {
+        if (job_id <= highest_cancelled_job_.load(std::memory_order_acquire)) {
+            error = "任务已取消";
+            return false;
+        }
+        const std::string pending_path = output_path + ".manyue-" + std::to_string(job_id) + ".pending";
+        std::FILE* file = std::fopen(pending_path.c_str(), "wb");
+        if (!file) { error = "无法创建临时PNG输出文件"; return false; }
+        EncodeContext context;
+        context.file = file;
+        context.highest_cancelled_job = &highest_cancelled_job_;
+        context.job_id = job_id;
+#if !defined(__ANDROID__)
+        context.progress_test_hook = &test_encode_progress_hook_;
+#endif
+        // stb compresses before calling the writer. Cancellation is checked at
+        // callback and publication; an in-progress PNG compression is bounded
+        // by the same pixel budget, but cannot be interrupted inside stb.
+        const int encoded = stbi_write_png_to_func(&write_png_chunk, &context, width, height, 4, rgba.data(), width * 4);
+        const bool flushed = std::fflush(file) == 0;
+        const bool closed = std::fclose(file) == 0;
+        if (!encoded || context.failed || !flushed || !closed) {
+            std::remove(pending_path.c_str());
+            error = job_id <= highest_cancelled_job_.load(std::memory_order_acquire) ? "任务已取消" : "PNG编码或写入失败";
+            return false;
+        }
+        std::lock_guard<std::mutex> publication_guard(publication_mutex_);
+        if (job_id <= highest_cancelled_job_.load(std::memory_order_acquire)) {
+            std::remove(pending_path.c_str());
+            error = "任务已取消";
+            return false;
+        }
+        if (!publish_file_atomically(pending_path, output_path, error)) {
+            std::remove(pending_path.c_str());
+            return false;
         }
         return true;
     }
