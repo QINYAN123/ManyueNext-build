@@ -1,0 +1,431 @@
+// Included after proc()/save(); generated per variant by prepare_resident_session.py.
+
+#if !defined(_WIN32)
+static void resident_report_startup_failure(int status)
+{
+    if (resident_protocol_fd < 0)
+        return;
+    manyue_resident::Response response;
+    memset(&response, 0, sizeof(response));
+    response.kind = manyue_resident::kFatal;
+    response.status = status;
+    response.init_us = resident_init_start_us
+        ? resident_now_us() - resident_init_start_us : 0;
+    response.gpu_backend = resident_gpu_backend;
+    response.tile_size = resident_tile_size;
+    manyue_resident::write_response(resident_protocol_fd, response);
+}
+
+static void resident_release_input(Task& task)
+{
+    unsigned char* pixels = static_cast<unsigned char*>(task.inimage.data);
+    if (!pixels)
+        return;
+    if (task.webp) {
+        free(pixels);
+    } else {
+        stbi_image_free(pixels);
+    }
+    task.inimage.data = 0;
+}
+
+static bool resident_supported_output(const path_t& output_path)
+{
+    const path_t ext = get_file_extension(output_path);
+    return ext == PATHSTR("png") || ext == PATHSTR("PNG") ||
+           ext == PATHSTR("webp") || ext == PATHSTR("WEBP") ||
+           ext == PATHSTR("jpg") || ext == PATHSTR("JPG") ||
+           ext == PATHSTR("jpeg") || ext == PATHSTR("JPEG");
+}
+
+static bool resident_same_file(const path_t& input_path, const path_t& output_path)
+{
+    if (input_path == output_path)
+        return true;
+    struct stat input_stat;
+    struct stat output_stat;
+    return stat(input_path.c_str(), &input_stat) == 0 &&
+           stat(output_path.c_str(), &output_stat) == 0 &&
+           input_stat.st_dev == output_stat.st_dev &&
+           input_stat.st_ino == output_stat.st_ino;
+}
+
+static bool resident_remove_output(const path_t& output_path)
+{
+    if (unlink(output_path.c_str()) == 0)
+        return true;
+    return errno == ENOENT;
+}
+
+static int resident_decode_request(const manyue_resident::Request& request,
+                                   int scale, Task* task, uint64_t* elapsed_us)
+{
+    const uint64_t start_us = resident_now_us();
+    const auto finish = [start_us, elapsed_us](int status) {
+        *elapsed_us = resident_now_us() - start_us;
+        return status;
+    };
+    const path_t input_path(request.input_path);
+    const path_t output_path(request.output_path);
+    if (!resident_supported_output(output_path))
+        return finish(manyue_resident::kBadRequest);
+
+    FILE* fp = fopen(input_path.c_str(), "rb");
+    if (!fp)
+        return finish(manyue_resident::kInputError);
+
+    if (fseek(fp, 0, SEEK_END) != 0) {
+        fclose(fp);
+        return finish(manyue_resident::kInputError);
+    }
+    const long input_length = ftell(fp);
+    if (input_length <= 0 || input_length > INT_MAX) {
+        fclose(fp);
+        return finish(manyue_resident::kInputError);
+    }
+    if (fseek(fp, 0, SEEK_SET) != 0) {
+        fclose(fp);
+        return finish(manyue_resident::kInputError);
+    }
+    unsigned char* filedata = static_cast<unsigned char*>(malloc((size_t)input_length));
+    if (!filedata) {
+        fclose(fp);
+        return finish(manyue_resident::kInputError);
+    }
+    const size_t bytes_read = fread(filedata, 1, (size_t)input_length, fp);
+    const int read_error = ferror(fp);
+    const int close_error = fclose(fp);
+    if (bytes_read != (size_t)input_length || read_error || close_error != 0) {
+        free(filedata);
+        return finish(manyue_resident::kInputError);
+    }
+
+    WebPBitstreamFeatures webp_features;
+    if (WebPGetFeatures(filedata, (int)input_length, &webp_features) == VP8_STATUS_OK) {
+        const uint64_t channels = webp_features.has_alpha ? 4u : 3u;
+        const uint64_t decoded_bytes = (uint64_t)webp_features.width *
+                                       (uint64_t)webp_features.height * channels;
+        if (webp_features.width <= 0 || webp_features.height <= 0 ||
+            decoded_bytes > (uint64_t)INT_MAX) {
+            free(filedata);
+            return finish(manyue_resident::kInputError);
+        }
+    }
+
+    int width = 0;
+    int height = 0;
+    int channels = 0;
+    int webp = 0;
+    unsigned char* pixeldata = webp_load(filedata, (int)input_length,
+                                         &width, &height, &channels);
+    if (pixeldata) {
+        webp = 1;
+    } else {
+        pixeldata = stbi_load_from_memory(filedata, (int)input_length,
+                                          &width, &height, &channels, 0);
+        if (pixeldata && channels == 1) {
+            stbi_image_free(pixeldata);
+            pixeldata = stbi_load_from_memory(filedata, (int)input_length,
+                                              &width, &height, &channels, 3);
+            channels = 3;
+        } else if (pixeldata && channels == 2) {
+            stbi_image_free(pixeldata);
+            pixeldata = stbi_load_from_memory(filedata, (int)input_length,
+                                              &width, &height, &channels, 4);
+            channels = 4;
+        }
+    }
+    free(filedata);
+    const uint64_t decoded_bytes = (uint64_t)(width > 0 ? width : 0) *
+                                  (uint64_t)(height > 0 ? height : 0) *
+                                  (uint64_t)(channels > 0 ? channels : 0);
+    if (!pixeldata || width <= 0 || height <= 0 ||
+        decoded_bytes > (uint64_t)INT_MAX ||
+        (channels != 3 && channels != 4)) {
+        if (pixeldata) {
+            if (webp) free(pixeldata);
+            else stbi_image_free(pixeldata);
+        }
+        return finish(manyue_resident::kInputError);
+    }
+
+    manyue_output::Size target_size;
+    if (!manyue_output::compute_target_size(width, height,
+                                             (int)request.target_width,
+                                             &target_size)) {
+        if (webp) free(pixeldata);
+        else stbi_image_free(pixeldata);
+        return finish(manyue_resident::kTargetSizeError);
+    }
+
+    task->id = 0;
+    task->request_id = request.id;
+    task->request_start_us = request.start_us;
+    task->decode_us = 0;
+    task->infer_us = 0;
+    task->resize_us = 0;
+    task->encode_us = 0;
+    task->webp = @WEBP_FLAG@;
+@TASK_SCALE_ASSIGNMENT@
+    task->target_width = target_size.width;
+    task->target_height = target_size.height;
+    task->resize_failed = false;
+    task->resize_applied = false;
+    task->inpath = input_path;
+    task->outpath = output_path;
+    const path_t ext = get_file_extension(task->outpath);
+    if (channels == 4 && (ext == PATHSTR("jpg") || ext == PATHSTR("JPG") ||
+                          ext == PATHSTR("jpeg") || ext == PATHSTR("JPEG"))) {
+        task->outpath += PATHSTR(".png");
+    }
+    task->inimage = ncnn::Mat(width, height, (void*)pixeldata,
+                              (size_t)channels, channels);
+    if (task->inimage.empty()) {
+        if (webp) free(pixeldata);
+        else stbi_image_free(pixeldata);
+        task->inimage = ncnn::Mat();
+        return finish(manyue_resident::kInputError);
+    }
+@OUTIMAGE_INIT@
+    *elapsed_us = resident_now_us() - start_us;
+    task->decode_us = *elapsed_us;
+    return manyue_resident::kOk;
+}
+
+static void resident_fill_response(manyue_resident::Response* response,
+                                   int status, uint64_t id,
+                                   uint64_t start_us, uint64_t decode_us,
+                                   uint64_t infer_us, uint64_t resize_us,
+                                   uint64_t encode_us, uint64_t output_bytes,
+                                   uint32_t output_width, uint32_t output_height)
+{
+    memset(response, 0, sizeof(*response));
+    response->kind = manyue_resident::kResult;
+    response->status = status;
+    response->id = id;
+    response->decode_us = decode_us;
+    response->infer_us = infer_us;
+    response->resize_us = resize_us;
+    response->encode_us = encode_us;
+    response->total_us = start_us ? resident_now_us() - start_us : 0;
+    response->output_bytes = output_bytes;
+    response->output_width = output_width;
+    response->output_height = output_height;
+    response->gpu_backend = resident_gpu_backend;
+    response->tile_size = resident_tile_size;
+    response->model_loads = 0;
+}
+
+static void resident_report_task(Task& task, int status)
+{
+    manyue_resident::Response response;
+    resident_fill_response(&response, status, task.request_id,
+                           task.request_start_us, task.decode_us,
+                           task.infer_us, task.resize_us, task.encode_us,
+                           0, 0, 0);
+    resident_responses.put(response);
+}
+
+static void resident_report_task_success(Task& task)
+{
+    struct stat output_stat;
+    if (stat(task.outpath.c_str(), &output_stat) != 0 || output_stat.st_size <= 0) {
+        remove(task.outpath.c_str());
+        resident_report_task(task, manyue_resident::kOutputInvalid);
+        return;
+    }
+    manyue_resident::Response response;
+    resident_fill_response(&response, manyue_resident::kOk, task.request_id,
+                           task.request_start_us, task.decode_us,
+                           task.infer_us, task.resize_us, task.encode_us,
+                           (uint64_t)output_stat.st_size,
+                           (uint32_t)task.outimage.w, (uint32_t)task.outimage.h);
+    resident_responses.put(response);
+}
+
+static void resident_stop_workers(std::vector<ncnn::Thread*>& proc_threads,
+                                  std::vector<ncnn::Thread*>& save_threads)
+{
+    Task end;
+    end.id = -233;
+    for (size_t i = 0; i < proc_threads.size(); ++i)
+        toproc.put(end);
+    for (size_t i = 0; i < proc_threads.size(); ++i) {
+        proc_threads[i]->join();
+        delete proc_threads[i];
+    }
+    proc_threads.clear();
+    for (size_t i = 0; i < save_threads.size(); ++i)
+        tosave.put(end);
+    for (size_t i = 0; i < save_threads.size(); ++i) {
+        save_threads[i]->join();
+        delete save_threads[i];
+    }
+    save_threads.clear();
+}
+
+static int run_resident_session(const std::vector<@MODEL_TYPE@*>& models,
+                                const std::vector<int>& gpuid,
+                                const std::vector<int>& jobs_proc,
+                                const std::vector<int>& tilesize,
+                                int total_jobs_proc, int scale, int verbose,
+                                int check_threshold)
+{
+    if (models.empty() || resident_protocol_fd < 0)
+        return -1;
+
+    if (gpuid.size() == 1) {
+        resident_gpu_backend = gpuid[0] == -1 ? 2u : 1u;
+        resident_tile_size = tilesize.empty() ? 0u : (uint32_t)tilesize[0];
+    } else {
+        resident_gpu_backend = 3u;
+        resident_tile_size = 0u;
+    }
+
+    std::vector<ProcThreadParams> proc_params(models.size());
+    for (size_t i = 0; i < models.size(); ++i)
+        proc_params[i].@MODEL_FIELD@ = models[i];
+
+    std::vector<ncnn::Thread*> proc_threads((size_t)total_jobs_proc);
+    size_t thread_index = 0;
+    for (size_t i = 0; i < models.size(); ++i) {
+        const int count = gpuid[i] == -1 ? 1 : jobs_proc[i];
+        for (int j = 0; j < count; ++j)
+            proc_threads[thread_index++] = new ncnn::Thread(proc,
+                                             (void*)&proc_params[i]);
+    }
+
+    SaveThreadParams save_params;
+    save_params.verbose = verbose;
+    save_params.check_threshold = check_threshold;
+    std::vector<ncnn::Thread*> save_threads(1);
+    save_threads[0] = new ncnn::Thread(save, (void*)&save_params);
+
+    manyue_resident::Response ready;
+    memset(&ready, 0, sizeof(ready));
+    ready.kind = manyue_resident::kReady;
+    ready.status = manyue_resident::kOk;
+    ready.init_us = resident_now_us() - resident_init_start_us;
+    ready.gpu_backend = resident_gpu_backend;
+    ready.tile_size = resident_tile_size;
+    ready.model_loads = 1;
+    if (!manyue_resident::write_response(resident_protocol_fd, ready)) {
+        resident_stop_workers(proc_threads, save_threads);
+        return -1;
+    }
+
+    int loop_status = 0;
+    for (;;) {
+        manyue_resident::Request request;
+        manyue_resident::Response framing_error;
+        const int read_status = manyue_resident::read_request(
+            STDIN_FILENO, &request, &framing_error);
+        if (read_status == 0)
+            break;
+        if (read_status == 2) {
+            framing_error.gpu_backend = resident_gpu_backend;
+            framing_error.tile_size = resident_tile_size;
+            if (!manyue_resident::write_response(resident_protocol_fd,
+                                                   framing_error)) {
+                loop_status = -1;
+                break;
+            }
+            continue;
+        }
+        if (read_status < 0) {
+            manyue_resident::Response fatal;
+            memset(&fatal, 0, sizeof(fatal));
+            fatal.kind = manyue_resident::kFatal;
+            fatal.status = manyue_resident::kProtocolError;
+            fatal.gpu_backend = resident_gpu_backend;
+            fatal.tile_size = resident_tile_size;
+            manyue_resident::write_response(resident_protocol_fd, fatal);
+            loop_status = -1;
+            break;
+        }
+
+        request.start_us = resident_now_us();
+        const path_t input_path(request.input_path);
+        const path_t output_path(request.output_path);
+        if (resident_same_file(input_path, output_path)) {
+            manyue_resident::Response response;
+            resident_fill_response(&response, manyue_resident::kBadRequest,
+                                   request.id, request.start_us, 0, 0, 0, 0, 0, 0, 0);
+            if (!manyue_resident::write_response(resident_protocol_fd, response)) {
+                loop_status = -1;
+                break;
+            }
+            continue;
+        }
+        if (!resident_supported_output(output_path) ||
+            !resident_remove_output(output_path)) {
+            manyue_resident::Response response;
+            resident_fill_response(&response,
+                resident_supported_output(output_path)
+                    ? manyue_resident::kOutputPrepareError
+                    : manyue_resident::kBadRequest,
+                request.id, request.start_us, 0, 0, 0, 0, 0, 0, 0);
+            if (!manyue_resident::write_response(resident_protocol_fd, response)) {
+                loop_status = -1;
+                break;
+            }
+            continue;
+        }
+
+        Task task;
+        uint64_t decode_us = 0;
+        const int decode_status = resident_decode_request(request, scale,
+                                                          &task, &decode_us);
+        if (decode_status != manyue_resident::kOk) {
+            if (!task.outpath.empty() && task.outpath != output_path)
+                resident_remove_output(task.outpath);
+            manyue_resident::Response response;
+            resident_fill_response(&response, decode_status, request.id,
+                                   request.start_us, decode_us, 0, 0, 0, 0, 0, 0);
+            if (!manyue_resident::write_response(resident_protocol_fd, response)) {
+                loop_status = -1;
+                break;
+            }
+            continue;
+        }
+        task.decode_us = decode_us;
+        if (task.outpath != output_path && !resident_remove_output(task.outpath)) {
+            resident_release_input(task);
+            manyue_resident::Response response;
+            resident_fill_response(&response, manyue_resident::kOutputPrepareError,
+                                   request.id, request.start_us, decode_us,
+                                   0, 0, 0, 0, 0, 0);
+            if (!manyue_resident::write_response(resident_protocol_fd, response)) {
+                loop_status = -1;
+                break;
+            }
+            continue;
+        }
+
+        toproc.put(task);
+        const manyue_resident::Response response = resident_responses.get();
+        if (!manyue_resident::write_response(resident_protocol_fd, response)) {
+            loop_status = -1;
+            break;
+        }
+    }
+
+    resident_stop_workers(proc_threads, save_threads);
+    return loop_status;
+}
+
+#else
+static void resident_report_startup_failure(int) {}
+static void resident_release_input(Task&) {}
+static void resident_report_task(Task&, int) {}
+static void resident_report_task_success(Task&) {}
+
+static int run_resident_session(const std::vector<@MODEL_TYPE@*>&,
+                                const std::vector<int>&,
+                                const std::vector<int>&,
+                                const std::vector<int>&,
+                                int, int, int, int)
+{
+    return -1;
+}
+#endif

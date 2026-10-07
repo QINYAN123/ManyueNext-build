@@ -2,9 +2,9 @@ package eu.kanade.tachiyomi.ui.reader.manyue
 
 /**
  * Lite reconstructs pixels directly at the requested size using a shared low-resolution
- * encoder. The legacy networks still infer at 2x before native target resizing.
- * Keeping the model identity in the request/cache key prevents a result rendered by
- * Real-CUGAN from being mistaken for a Real-ESRGAN result after the user switches modes.
+ * encoder. Real-ESRGAN anime reconstructs at 4x internally, then resamples to 2x before native target sizing. The old Real-CUGAN
+ * identity remains only for compatibility with in-flight requests and historical cache keys;
+ * it is not a selectable product model and old saved selections migrate to Real-ESRGAN.
  */
 enum class ManyueAiModel(
     val id: String,
@@ -46,8 +46,16 @@ enum class ManyueAiModel(
     companion object {
         val DEFAULT = MOBILE_LITE
 
-        fun fromId(id: String?): ManyueAiModel =
-            entries.firstOrNull { it.id == id } ?: DEFAULT
+        /** Models offered to readers. FAST_REAL_CUGAN remains an internal legacy identity. */
+        val selectableModels = listOf(QUALITY_REAL_ESRGAN, MOBILE_LITE)
+
+        fun canonicalPreferenceId(id: String?): String? =
+            if (id == FAST_REAL_CUGAN.id) QUALITY_REAL_ESRGAN.id else id
+
+        fun fromId(id: String?): ManyueAiModel {
+            val canonicalId = canonicalPreferenceId(id)
+            return entries.firstOrNull { it.id == canonicalId } ?: DEFAULT
+        }
     }
 
     val cacheIdentity: String

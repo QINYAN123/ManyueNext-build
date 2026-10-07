@@ -39,6 +39,9 @@ object ManyuePerformanceDiagnostics {
                 "encodeMs" to Metric.ENCODE_MS,
                 "tiles" to Metric.TILES,
                 "modelLoads" to Metric.MODEL_LOADS,
+                "modelLoadMs" to Metric.MODEL_LOAD_MS,
+                "resizeMs" to Metric.RESIZE_MS,
+                "tileSize" to Metric.TILE_SIZE,
                 "boundedWorkingBytes" to Metric.WORKING_BYTES,
                 "outputWidth" to Metric.WIDTH,
                 "outputHeight" to Metric.HEIGHT,
@@ -51,7 +54,12 @@ object ManyuePerformanceDiagnostics {
             native.optLong("gpuReadbackBytes", -1L)
                 .takeIf { it in 0L..MAX_GPU_READBACK_BYTES }
                 ?.let { metrics[Metric.GPU_READBACK_BYTES] = it }
-            metrics[Metric.BACKEND] = if (native.optString("backend") == "vulkan") 1 else 2
+            metrics[Metric.BACKEND] = when (native.optString("backend")) {
+                "vulkan" -> 1
+                "cpu" -> 2
+                "mixed" -> 3
+                else -> 0
+            }
             metrics[Metric.GPU_FALLBACK] = if (native.has("gpuFallbackReason")) 1 else 0
             recorder.event(Stage.NATIVE_DETAIL, page, token.hashCode(), metrics)
         }

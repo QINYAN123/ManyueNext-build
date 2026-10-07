@@ -349,9 +349,9 @@ internal fun ColumnScope.GeneralPage(viewModel: ReaderSettingsViewModel) {
 
     Text("AI 模型", style = MaterialTheme.typography.bodyMedium)
     androidx.compose.foundation.layout.FlowRow {
-        eu.kanade.tachiyomi.ui.reader.manyue.ManyueAiModel.entries.map { model ->
+        eu.kanade.tachiyomi.ui.reader.manyue.ManyueAiModel.selectableModels.map { model ->
             FilterChip(
-                selected = aiModelId == model.id,
+                selected = selectedAiModel == model,
                 onClick = {
                     viewModel.preferences.manyueAiModel.set(model.id)
                     readerActivity?.onManyueAiModelChanged(model.id)
@@ -364,7 +364,7 @@ internal fun ColumnScope.GeneralPage(viewModel: ReaderSettingsViewModel) {
         if (selectedAiModel.continuousScale) {
             "轻量模型同时支持原尺寸修复和连续倍率超分，直接生成所选尺寸。优先使用 GPU；实际后端记录在每页完成状态中。"
         } else {
-            "Real-CUGAN 与 Real-ESRGAN 仍运行完整 2×模型，再按所选倍率输出；降低倍率不会减少核心推理量。"
+            "质量模型先运行完整网络，再生成所选输出尺寸。降低倍率主要减少显示开销，主干推理量不会同比减少。"
         },
         style = MaterialTheme.typography.bodySmall,
     )
@@ -404,9 +404,9 @@ internal fun ColumnScope.GeneralPage(viewModel: ReaderSettingsViewModel) {
                 "1×做原尺寸 AI 修复；1.01–2×直接按目标尺寸重建。倍率越低，输出重建计算越少；原图文件保留。"
             }
         } else if (manyueMode == 4) {
-            "智能模式输出不超过阅读区宽度与所选上限。需要 AI 时仍运行 2×模型；原图文件保留。"
+            "智能模式输出不超过阅读区宽度与所选上限。需要 AI 时仍运行完整质量网络；原图文件保留。"
         } else {
-            "1×仍执行 2×模型再缩回原尺寸；1.01–2×保持比例输出。原图文件保留。"
+            "1×仍运行完整网络再生成原尺寸结果；1.01–2×保持比例输出。原图文件保留。"
         },
         style = MaterialTheme.typography.bodySmall,
     )

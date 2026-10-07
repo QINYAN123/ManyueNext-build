@@ -13,14 +13,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 NATIVE = ROOT / "app/src/main/jniLibs/arm64-v8a"
 EXPECTED = {
-    "libmanyue_realesr.so": "b8d3746847e6f0e3e5e3f8bf60aa3c594489535ab74534b5ae77f5adaf0640d7",
-    "libmanyue_realcugan.so": "d4ab907cb698b621f429b09ec5757318b23a1e05f8a7f77575c9af8ff24cb464",
+    "libmanyue_realesr.so": "e0f380b34979b1a289d30ea284edb33ee011c22537cf73dcfd7d9fb511e7baf5",
     "libomp.so": "da75dcbe6026a3e08d01bfe86860159432051b329a84deb5ee042ce9b8e1a302",
     "libncnn.so": "87d150e735157b09aa20f26f5e57f72468c548e7ce98ce407ec50ee7e14a52dd",
 }
 RUNNERS = {
     "libmanyue_realesr.so",
-    "libmanyue_realcugan.so",
 }
 MODELS = {
     "app/src/main/assets/ai/models-Real-ESRGANv3-anime/x2.bin": (
@@ -30,14 +28,6 @@ MODELS = {
     "app/src/main/assets/ai/models-Real-ESRGANv3-anime/x2.param": (
         3_173,
         "b88ff4f00ebf019a7fdac17fdd45a7fd3665d37509efc5baf2e4da2e24420a04",
-    ),
-    "app/src/main/assets/ai/models-Real-CUGAN-se/up2x-no-denoise.bin": (
-        2_573_648,
-        "7f135a712830b16678cb8247b9517308c5f3858fca9b10e1c3ad5ef6e261de0c",
-    ),
-    "app/src/main/assets/ai/models-Real-CUGAN-se/up2x-no-denoise.param": (
-        4_818,
-        "91efac7489bf249f092faa3764e3a3d1d31ef290051e39f2afd2138c98ccce30",
     ),
 }
 
@@ -49,8 +39,8 @@ def verify(name: str, expected: str) -> None:
     if actual != expected:
         raise SystemExit(f"{name}: SHA-256 mismatch: {actual}")
     verify_arm64_elf(path, data, require_executable=name in RUNNERS)
-    if name in RUNNERS and b"-w target-width" not in data:
-        raise SystemExit(f"{name}: native target-width protocol is missing")
+    if name in RUNNERS and (b"-w target-width" not in data or b"manyue_resident" not in data or b"MANYUE_GPU_CHUNK" not in data):
+        raise SystemExit(f"{name}: native target-width/resident protocol is missing")
     print(f"{name}: OK ({len(data)} bytes, {actual})")
 
 
@@ -83,7 +73,6 @@ if __name__ == "__main__":
     constants = dict(re.findall(r'const val (EXPECTED_\w+_SHA256) = "([0-9a-f]{64})"', runtime.read_text(encoding="utf-8")))
     for name, constant in {
         "libmanyue_realesr.so": "EXPECTED_REAL_ESRGAN_SHA256",
-        "libmanyue_realcugan.so": "EXPECTED_REAL_CUGAN_SHA256",
         "libncnn.so": "EXPECTED_NCNN_SHA256",
         "libomp.so": "EXPECTED_LIBOMP_SHA256",
     }.items():

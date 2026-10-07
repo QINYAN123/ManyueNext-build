@@ -92,4 +92,24 @@ class ManyuePerformanceExportTest {
             ManyuePerformanceDiagnostics.clear()
         }
     }
+
+    @Test fun mixedNativeBackendKeepsItsOwnNumericValue() {
+        try {
+            ManyuePerformanceDiagnostics.setEnabled(true)
+            ManyuePerformanceDiagnostics.nativeDetail(
+                0,
+                "mixed-backend-task",
+                """{"backend":"mixed"}""",
+            )
+
+            val report = JSONObject(ManyuePerformanceDiagnostics.export(RuntimeEnvironment.getApplication()).readText())
+            val events = report.getJSONArray("events")
+            val nativeDetail = events.getJSONObject(1).getJSONObject("metrics")
+            assertEquals(3, nativeDetail.getInt("BACKEND"))
+            assertTrue(nativeDetail.getInt("BACKEND") != 2)
+        } finally {
+            ManyuePerformanceDiagnostics.setEnabled(false)
+            ManyuePerformanceDiagnostics.clear()
+        }
+    }
 }

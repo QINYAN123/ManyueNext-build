@@ -6,6 +6,9 @@ param(
     [Parameter(Mandatory = $true)][string]$NdkRoot,
     [Parameter(Mandatory = $true)][string]$WorkRoot,
     [Parameter(Mandatory = $true)][string]$OutputDir,
+    [ValidateSet("realesr", "realcugan", "both")][string]$Engine = "realesr",
+    [switch]$ColdCli,
+    [switch]$GpuChunk,
     [string]$CMakeExe,
     [string]$NinjaExe,
     [string]$PythonLauncher = "py"
@@ -20,14 +23,52 @@ function Require-Path([string]$Path, [string]$Description) {
     return (Resolve-Path -LiteralPath $Path).Path
 }
 
+function Test-PathWithin([string]$Path, [string]$Parent) {
+    $pathFull = [System.IO.Path]::GetFullPath($Path)
+    $parentFull = [System.IO.Path]::GetFullPath($Parent).TrimEnd(
+        [char[]]@([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+    )
+    if ($pathFull.Equals($parentFull, [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $true
+    }
+    $prefix = $parentFull + [System.IO.Path]::DirectorySeparatorChar
+    return $pathFull.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+$repoRootPath = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..\..")).Path
 $upstreamZipPath = Require-Path $UpstreamZip "Pinned upstream source ZIP"
 $ncnnRootPath = Require-Path $NcnnRoot "ncnn SDK root"
 $webpRootPath = Require-Path $WebpRoot "libwebp source root"
 $ndkRootPath = Require-Path $NdkRoot "Android NDK root"
 $workRootPath = [System.IO.Path]::GetFullPath($WorkRoot)
 $outputDirPath = [System.IO.Path]::GetFullPath($OutputDir)
+
+if (Test-PathWithin $workRootPath $repoRootPath) {
+    throw "WorkRoot must be outside the Mihon repository: $workRootPath"
+}
+if (Test-PathWithin $outputDirPath $repoRootPath) {
+    throw "OutputDir must be outside the Mihon repository; this helper does not update app assets: $outputDirPath"
+}
+
 $null = New-Item -ItemType Directory -Force -Path $workRootPath
+$workRootPath = (Resolve-Path -LiteralPath $workRootPath).Path
+if (Test-PathWithin $workRootPath $repoRootPath) {
+    throw "Resolved WorkRoot must be outside the Mihon repository: $workRootPath"
+}
+$workRootItem = Get-Item -LiteralPath $workRootPath -Force
+if (($workRootItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw "WorkRoot may not be a junction or symbolic link: $workRootPath"
+}
+
 $null = New-Item -ItemType Directory -Force -Path $outputDirPath
+$outputDirPath = (Resolve-Path -LiteralPath $outputDirPath).Path
+if (Test-PathWithin $outputDirPath $repoRootPath) {
+    throw "Resolved OutputDir must be outside the Mihon repository: $outputDirPath"
+}
+$outputDirItem = Get-Item -LiteralPath $outputDirPath -Force
+if (($outputDirItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw "OutputDir may not be a junction or symbolic link: $outputDirPath"
+}
 
 $expectedUpstreamSha = "595B505EB41D84ABB80D7EAB49886F485B2FC70E218CE9632B72F9B2747ED736"
 $actualUpstreamSha = (Get-FileHash -LiteralPath $upstreamZipPath -Algorithm SHA256).Hash
@@ -56,26 +97,20 @@ if ((Get-Content -LiteralPath $webpConfig -Raw) -notmatch 'AC_INIT\(\[libwebp\],
 }
 
 if (-not $CMakeExe) {
-    $CMakeExe = (Get-Command cmake.exe -ErrorAction SilentlyContinue).Source
-}
-if (-not $CMakeExe) {
-    $workspaceWork = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $PSScriptRoot))
-    $candidate = Join-Path $workspaceWork "toolchains\native-build-tools\cmake\data\bin\cmake.exe"
-    if (Test-Path -LiteralPath $candidate) { $CMakeExe = $candidate }
+    $cmakeCommand = Get-Command cmake.exe -ErrorAction SilentlyContinue
+    if ($cmakeCommand) { $CMakeExe = $cmakeCommand.Source }
 }
 if (-not $CMakeExe -or -not (Test-Path -LiteralPath $CMakeExe)) {
-    throw "Set -CMakeExe to a CMake 3.22+ executable"
+    throw "Set -CMakeExe or put CMake 3.22+ on PATH"
 }
+$CMakeExe = (Resolve-Path -LiteralPath $CMakeExe).Path
+
 if (-not $NinjaExe) {
-    $NinjaExe = (Get-Command ninja.exe -ErrorAction SilentlyContinue).Source
-}
-if (-not $NinjaExe) {
-    $workspaceWork = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $PSScriptRoot))
-    $candidate = Join-Path $workspaceWork "toolchains\native-build-tools\bin\ninja.exe"
-    if (Test-Path -LiteralPath $candidate) { $NinjaExe = $candidate }
+    $ninjaCommand = Get-Command ninja.exe -ErrorAction SilentlyContinue
+    if ($ninjaCommand) { $NinjaExe = $ninjaCommand.Source }
 }
 if (-not $NinjaExe -or -not (Test-Path -LiteralPath $NinjaExe)) {
-    throw "Set -NinjaExe to a Ninja executable"
+    throw "Set -NinjaExe or put Ninja on PATH"
 }
 $NinjaExe = (Resolve-Path -LiteralPath $NinjaExe).Path
 
@@ -89,38 +124,89 @@ $PythonLauncher = $pythonCommand.Source
 
 $toolchain = Join-Path $ndkRootPath "build\cmake\android.toolchain.cmake"
 if (-not (Test-Path -LiteralPath $toolchain)) { throw "NDK CMake toolchain not found: $toolchain" }
+
 $helperDir = $PSScriptRoot
-$scriptPath = Join-Path $helperDir "patch_upstream.py"
+$patchScript = Join-Path $helperDir "patch_upstream.py"
+$residentScript = Join-Path $helperDir "prepare_resident_session.py"
+$gpuChunkScript = Join-Path $helperDir "patch_gpu_chunk.py"
 $templatePath = Join-Path $helperDir "CMakeLists.android.in"
 $resizeHeader = Join-Path $helperDir "manyue_output_resize.h"
 $statusHeader = Join-Path $helperDir "manyue_ncnn_status.h"
 $fileOutputHeader = Join-Path $helperDir "manyue_file_output.h"
-$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-$sourceRoot = Join-Path $workRootPath "upstream"
-
-if (-not (Test-Path -LiteralPath (Join-Path $sourceRoot "RealSR-NCNN-Android-1.11.1\RealSR-NCNN-Android-CLI"))) {
-    $null = New-Item -ItemType Directory -Force -Path $sourceRoot
-    Expand-Archive -LiteralPath $upstreamZipPath -DestinationPath $sourceRoot
+$protocolHeader = Join-Path $helperDir "manyue_resident_protocol.h"
+foreach ($requiredFile in @(
+    $patchScript, $residentScript, $gpuChunkScript, $templatePath,
+    $resizeHeader, $statusHeader, $fileOutputHeader, $protocolHeader
+)) {
+    if (-not (Test-Path -LiteralPath $requiredFile)) {
+        throw "Native source generator input is missing: $requiredFile"
+    }
 }
+
+$runId = [DateTime]::UtcNow.ToString("yyyyMMddTHHmmssfffZ") + "-" + [Guid]::NewGuid().ToString("N").Substring(0, 8)
+$runRoot = Join-Path $workRootPath ("runs\" + $runId)
+if (-not (Test-PathWithin $runRoot $workRootPath)) {
+    throw "Generated run path escaped WorkRoot: $runRoot"
+}
+$null = New-Item -ItemType Directory -Force -Path $runRoot
+$runRoot = (Resolve-Path -LiteralPath $runRoot).Path
+if (-not (Test-PathWithin $runRoot $workRootPath) -or
+    ((Get-Item -LiteralPath $runRoot -Force).Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw "Resolved generated run path is not a normal directory under WorkRoot: $runRoot"
+}
+
+$sourceRoot = Join-Path $runRoot "upstream"
+$null = New-Item -ItemType Directory -Force -Path $sourceRoot
+Expand-Archive -LiteralPath $upstreamZipPath -DestinationPath $sourceRoot
 $extractedSource = Join-Path $sourceRoot "RealSR-NCNN-Android-1.11.1"
-if (-not (Test-Path -LiteralPath $extractedSource)) { throw "The pinned source ZIP has an unexpected root directory" }
+if (-not (Test-Path -LiteralPath (Join-Path $extractedSource "RealSR-NCNN-Android-CLI\RealSR\src\main\jni\main.cpp"))) {
+    throw "The pinned source ZIP has an unexpected root directory"
+}
 
 $runnerSpecs = @(
-    @{ Variant = "realesr"; Directory = "realesr"; Target = "RealSR"; Output = "libmanyue_realesr.so" },
-    @{ Variant = "realcugan"; Directory = "realcugan"; Target = "RealCUGAN"; Output = "libmanyue_realcugan.so" }
+    @{ Variant = "realesr"; Directory = "realesr"; Target = "RealSR"; Output = "libmanyue_realesr.so"; EngineSource = "realsr.cpp" },
+    @{ Variant = "realcugan"; Directory = "realcugan"; Target = "RealCUGAN"; Output = "libmanyue_realcugan.so"; EngineSource = "realcugan.cpp" }
 )
+$selectedSpecs = @($runnerSpecs | Where-Object {
+    $Engine -eq "both" -or $_.Variant -eq $Engine
+})
+if ($selectedSpecs.Count -eq 0) { throw "No native engine selected: $Engine" }
 
-foreach ($spec in $runnerSpecs) {
-    $prepared = Join-Path $workRootPath ("patched\" + $spec.Directory)
-    & $PythonLauncher @pythonArgs $scriptPath --source-root $extractedSource --destination $prepared `
-        --variant $spec.Variant --helper-header $resizeHeader --status-header $statusHeader `
-        --file-output-header $fileOutputHeader `
-        --cmake-template $templatePath
-    if ($LASTEXITCODE -ne 0) { throw "Source patch failed for $($spec.Variant)" }
+$mode = if ($ColdCli) { "cold-cli" } else { "resident" }
+if ($GpuChunk) { $mode += "-gpu-chunk" }
+$sourceStages = Join-Path $runRoot "sources"
+$buildRoot = Join-Path $runRoot "build"
+$builtArtifacts = @()
 
-    $buildDir = Join-Path $workRootPath ("build\" + $spec.Directory)
+foreach ($spec in $selectedSpecs) {
+    $baseSource = Join-Path $sourceStages ("base\" + $spec.Directory)
+    $null = New-Item -ItemType Directory -Force -Path $baseSource
+    & $PythonLauncher @pythonArgs $patchScript --source-root $extractedSource --destination $baseSource --variant $spec.Variant --helper-header $resizeHeader --status-header $statusHeader --file-output-header $fileOutputHeader --cmake-template $templatePath
+    if ($LASTEXITCODE -ne 0) { throw "Base source patch failed for $($spec.Variant)" }
+
+    $selectedSource = $baseSource
+    if (-not $ColdCli) {
+        $residentSource = Join-Path $sourceStages ("resident\" + $spec.Directory)
+        & $PythonLauncher @pythonArgs $residentScript --source-dir $baseSource --destination $residentSource --variant $spec.Variant
+        if ($LASTEXITCODE -ne 0) { throw "Resident-session patch failed for $($spec.Variant)" }
+        $selectedSource = $residentSource
+    }
+
+    if ($GpuChunk) {
+        $gpuSource = Join-Path $sourceStages ("gpu-chunk\" + $spec.Directory)
+        $null = New-Item -ItemType Directory -Force -Path $gpuSource
+        Get-ChildItem -LiteralPath $selectedSource -Force | Copy-Item -Destination $gpuSource -Recurse -Force
+
+        $gpuOutput = Join-Path $gpuSource (".manyue_gpu_chunk." + $spec.EngineSource)
+        & $PythonLauncher @pythonArgs $gpuChunkScript --engine $spec.Variant --source (Join-Path $selectedSource $spec.EngineSource) --output $gpuOutput
+        if ($LASTEXITCODE -ne 0) { throw "GPU chunk source patch failed for $($spec.Variant)" }
+        Move-Item -LiteralPath $gpuOutput -Destination (Join-Path $gpuSource $spec.EngineSource) -Force
+        $selectedSource = $gpuSource
+    }
+
+    $buildDir = Join-Path $buildRoot ($spec.Directory + "\" + $mode)
     $configureArgs = @(
-        "-S", $prepared,
+        "-S", $selectedSource,
         "-B", $buildDir,
         "-G", "Ninja",
         "-DCMAKE_MAKE_PROGRAM=$NinjaExe",
@@ -143,15 +229,21 @@ foreach ($spec in $runnerSpecs) {
     Copy-Item -LiteralPath $built -Destination $destination -Force
     $hash = (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash
     Write-Output "$($spec.Output) $destination SHA256=$hash"
+    $builtArtifacts += [pscustomobject]@{ Name = $spec.Output; Path = $destination }
 }
+
+Write-Output "source mode=$mode engine=$Engine run=$runRoot"
+if ($GpuChunk) {
+    Write-Output "MANYUE_GPU_CHUNK support is compiled in but remains off unless the worker environment sets it to 2 or 4."
+}
+Write-Output "No app assets, hashes, packaging scripts, Gradle files, or devices were changed by this helper."
 
 $readelf = Join-Path $ndkRootPath "toolchains\llvm\prebuilt\windows-x86_64\bin\llvm-readelf.exe"
 if (Test-Path -LiteralPath $readelf) {
-    foreach ($name in @("libmanyue_realesr.so", "libmanyue_realcugan.so")) {
-        $path = Join-Path $outputDirPath $name
-        Write-Output "--- $name ELF header ---"
-        & $readelf -h $path | Select-String "Class:|Machine:"
-        Write-Output "--- $name dependencies ---"
-        & $readelf -d $path | Select-String "NEEDED"
+    foreach ($artifact in $builtArtifacts) {
+        Write-Output "--- $($artifact.Name) ELF header ---"
+        & $readelf -h $artifact.Path | Select-String "Class:|Machine:"
+        Write-Output "--- $($artifact.Name) dependencies ---"
+        & $readelf -d $artifact.Path | Select-String "NEEDED"
     }
 }

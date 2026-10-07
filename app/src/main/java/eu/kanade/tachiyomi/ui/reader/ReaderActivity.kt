@@ -747,8 +747,18 @@ class ReaderActivity : BaseActivity() {
             showReadingModeToast(viewModel.getMangaReadingMode())
         }
 
-        loadingIndicator = ReaderProgressIndicator(this)
-        binding.readerContainer.addView(loadingIndicator)
+        // Manga and chapter flows are collected independently. Cached/local chapters can arrive
+        // before this viewer exists, so bind the latest snapshot instead of waiting for a second
+        // chapter emission that may never happen.
+        binding.readerContainer.removeView(loadingIndicator)
+        loadingIndicator = null
+        val chapters = viewModel.state.value.viewerChapters
+        if (chapters == null) {
+            loadingIndicator = ReaderProgressIndicator(this)
+            binding.readerContainer.addView(loadingIndicator)
+        } else {
+            setChapters(chapters)
+        }
 
         startPostponedEnterTransition()
     }

@@ -3,7 +3,7 @@ package eu.kanade.tachiyomi.ui.reader.manyue
 /** Screen-space detail enhancement, not super-resolution or a learned model. */
 internal object ManyueGpuDisplayShader {
     // Nine samples in one pass. Work follows the viewport, never the height of a strip image.
-    // Keep alpha and RGB channel differences; only apply a bounded common luminance shift.
+    // Keep alpha and RGB ratios; map the local luminance shift to a bounded common gain.
     val SOURCE = """
         uniform shader content;
         uniform float2 viewportSize;
@@ -47,9 +47,13 @@ internal object ManyueGpuDisplayShader {
             float limit = 0.06 * strength;
             shift = clamp(shift, -limit, limit);
             float darkest = min(rgb.r, min(rgb.g, rgb.b));
-            float brightest = max(rgb.r, max(rgb.g, rgb.b));
-            shift = clamp(shift, -darkest, 1.0 - brightest);
-            return half4(half3((rgb + float3(shift)) * a), original.a);
+            float maxRgb = max(rgb.r, max(rgb.g, rgb.b));
+            shift = clamp(shift, -darkest, 1.0 - maxRgb);
+            if (center <= 0.0001 || maxRgb <= 0.0001) return original;
+            float gainDeltaLimit = limit / maxRgb;
+            float gainDelta = clamp(shift / center, -gainDeltaLimit, gainDeltaLimit);
+            float gain = clamp(1.0 + gainDelta, 0.0, 1.0 / maxRgb);
+            return half4(half3((rgb * gain) * a), original.a);
         }
     """.trimIndent()
 }

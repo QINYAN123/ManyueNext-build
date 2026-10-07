@@ -43,9 +43,11 @@ object ManyueAiRuntime {
     // up2x-conservative for -1, so the model selector must be 0.
     private const val REAL_CUGAN_NOISE_LEVEL = "0"
 
+    private val legacySession = ManyueLegacySession()
+
     class CancelledException : CancellationException("Manyue AI request cancelled")
 
-    private const val EXPECTED_REAL_ESRGAN_SHA256 = "b8d3746847e6f0e3e5e3f8bf60aa3c594489535ab74534b5ae77f5adaf0640d7"
+    private const val EXPECTED_REAL_ESRGAN_SHA256 = "e0f380b34979b1a289d30ea284edb33ee011c22537cf73dcfd7d9fb511e7baf5"
     private const val EXPECTED_REAL_CUGAN_SHA256 = "d4ab907cb698b621f429b09ec5757318b23a1e05f8a7f77575c9af8ff24cb464"
     private const val EXPECTED_NCNN_SHA256 = "87d150e735157b09aa20f26f5e57f72468c548e7ce98ce407ec50ee7e14a52dd"
     private const val EXPECTED_LIBOMP_SHA256 = "da75dcbe6026a3e08d01bfe86860159432051b329a84deb5ee042ce9b8e1a302"
@@ -225,6 +227,60 @@ object ManyueAiRuntime {
         }
     }
 
+    /** Keeps the selected model loaded; the one-file CLI remains available for A/B validation. */
+    internal fun upscaleResident(
+        context: Context,
+        inputFile: File,
+        outputFile: File,
+        modelDir: File,
+        logFile: File,
+        model: ManyueAiModel,
+        targetWidth: Int,
+        isCancelled: () -> Boolean,
+        onProcessStarted: (Process) -> Unit,
+    ): String {
+        require(!model.continuousScale && probe(context, model) == Capability.READY)
+        require(inputFile.isFile && inputFile.length() in 1..MAX_INPUT_BYTES.toLong())
+        require(targetWidth > 0 && model.modelFiles.all { File(modelDir, it).isFile })
+        val nativeDir = context.applicationInfo.nativeLibraryDir
+        val command = buildResidentCommand(File(nativeDir, model.runnerName).path, modelDir.path, model)
+        logFile.parentFile?.mkdirs()
+        return legacySession.upscale(
+            key = "$nativeDir:${model.id}:${modelDir.canonicalPath}",
+            startProcess = {
+                ProcessBuilder(command).apply {
+                    directory(File(nativeDir))
+                    environment()["LD_LIBRARY_PATH"] = nativeDir
+                    environment()["OMP_NUM_THREADS"] = "1"
+                    environment()["OMP_WAIT_POLICY"] = "PASSIVE"
+                    // Bound each quality-model GPU submission without changing its arithmetic.
+                    environment()["MANYUE_GPU_CHUNK"] = "1"
+                    redirectErrorStream(false)
+                }.start()
+            },
+            input = inputFile,
+            output = outputFile,
+            targetWidth = targetWidth,
+            logFile = logFile,
+            isCancelled = isCancelled,
+            onProcessStarted = onProcessStarted,
+        )
+    }
+
+    internal fun buildResidentCommand(binaryPath: String, modelPath: String, model: ManyueAiModel): List<String> {
+        require(!model.continuousScale)
+        return buildList {
+            add(binaryPath)
+            addAll(listOf("-S", "-s", "2", "-t", TILE_SIZE.toString(), "-m", modelPath, "-j", JOBS))
+            if (model == ManyueAiModel.FAST_REAL_CUGAN) addAll(listOf("-n", REAL_CUGAN_NOISE_LEVEL, "-c", "3"))
+        }
+    }
+
+    internal fun releaseResidentOnWorker() = legacySession.close()
+
+    internal fun releaseResidentWhenIdleOnWorker(retainForReading: Boolean) =
+        legacySession.releaseWhenIdle(retainForReading)
+
     /** Owns the child from publication through validation and removes any incomplete output. */
     internal fun runTrackedProcess(
         process: Process,
@@ -344,7 +400,7 @@ object ManyueAiRuntime {
         return true
     }
 
-    private fun stop(process: Process) {
+    internal fun stop(process: Process) {
         runCatching { process.destroy() }
         var interrupted = false
         try {

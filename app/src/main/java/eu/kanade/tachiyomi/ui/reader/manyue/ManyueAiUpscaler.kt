@@ -133,6 +133,10 @@ object ManyueAiUpscaler {
                             ManyueRuntimeState.aiModel.continuousScale &&
                                 ManyueEnhancementMode.fromInt(ManyueRuntimeState.modeInt).usesAi(),
                         )
+                        ManyueAiRuntime.releaseResidentWhenIdleOnWorker(
+                            !ManyueRuntimeState.aiModel.continuousScale &&
+                                ManyueEnhancementMode.fromInt(ManyueRuntimeState.modeInt).usesAi(),
+                        )
                         continue
                     }
                     if (req.cancelled || req.completed) continue
@@ -641,6 +645,7 @@ object ManyueAiUpscaler {
             expensiveWorkStartedAt = System.nanoTime()
             var inferenceDetail: String? = null
             if (req.model.continuousScale) {
+                ManyueAiRuntime.releaseResidentOnWorker()
                 val telemetry = ManyueLiteRuntime.upscale(
                     modelDir,
                     req.inputFile,
@@ -661,14 +666,13 @@ object ManyueAiUpscaler {
                     if (req.aiDetailStrength <= 0) "；AI 修复强度为 0，仅普通插值" else ""
             } else {
                 ManyueLiteRuntime.releaseOnWorker()
-                ManyueAiRuntime.upscale(
+                val telemetry = ManyueAiRuntime.upscaleResident(
                     context = context,
                     inputFile = req.inputFile,
                     outputFile = outFile,
                     modelDir = modelDir,
                     logFile = logFile,
                     model = req.model,
-                    outputFormat = outputFormat,
                     targetWidth = resolved,
                     isCancelled = { req.cancelled || !requestIsCurrent(req) },
                     onProcessStarted = {
@@ -676,6 +680,16 @@ object ManyueAiUpscaler {
                         notifyProgress(req, STATE_PROCESSING)
                     },
                 )
+                logFile.writeText(telemetry)
+                ManyuePerformanceDiagnostics.nativeDetail(req.pageIndex, req.token, telemetry)
+                val backend = org.json.JSONObject(telemetry).getString("backend")
+                val backendLabel = when (backend) {
+                    "vulkan" -> "GPU"
+                    "cpu" -> "CPU"
+                    "mixed" -> "GPU+CPU"
+                    else -> "未知设备"
+                }
+                inferenceDetail = "${req.model.label} · $backendLabel"
             }
             val nativeElapsedMs = SystemClock.elapsedRealtime() - nativeStartedAt
             req.nativeCancellation = null

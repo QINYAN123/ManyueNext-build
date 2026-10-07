@@ -117,16 +117,18 @@ object ManyueRuntimeState {
     /** Read current values from the injected ReaderPreferences. Cheap; call on each page load. */
     fun syncFrom(prefs: ReaderPreferences) {
         ManyuePerformanceDiagnostics.setEnabled(prefs.manyuePerformanceDiagnostics.get())
-        // One-time performance upgrade; subsequent explicit model choices are respected.
+        val savedModelId = prefs.manyueAiModel.get()
+        val canonicalModelId = ManyueAiModel.canonicalPreferenceId(savedModelId)
+        if (canonicalModelId != savedModelId && canonicalModelId != null) {
+            prefs.manyueAiModel.set(canonicalModelId)
+        }
+        // Keep this historical marker so installs that already ran the Lite migration remain compatible.
         if (!prefs.manyueLiteModelMigrationDone.get()) {
-            if (prefs.manyueAiModel.get() == ManyueAiModel.FAST_REAL_CUGAN.id) {
-                prefs.manyueAiModel.set(ManyueAiModel.MOBILE_LITE.id)
-            }
             prefs.manyueLiteModelMigrationDone.set(true)
         }
         updateMode(prefs.manyueEnhancementMode.get())
         updateClassicStrength(prefs.manyueClassicStrength.get())
-        updateAiModel(ManyueAiModel.fromId(prefs.manyueAiModel.get()))
+        updateAiModel(ManyueAiModel.fromId(canonicalModelId))
         updateAnime4kOverlay(prefs.manyueAnime4kOverlay.get())
         updateAiScale(prefs.manyueAiScalePercent.get())
         updateAiDetailStrength(prefs.manyueAiDetailStrength.get())

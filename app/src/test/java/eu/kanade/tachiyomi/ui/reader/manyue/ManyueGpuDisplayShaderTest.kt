@@ -131,8 +131,16 @@ class ManyueGpuDisplayShaderTest {
                     if (before != after) changed++
                     assertEquals(Color.alpha(before), Color.alpha(after))
                     assertTrue(abs(Color.red(before) - Color.red(after)) <= 16)
-                    assertTrue(abs((Color.green(after) - Color.red(after)) - 20) <= 1)
-                    assertTrue(abs((Color.blue(after) - Color.red(after)) - 30) <= 1)
+                    assertTrue(abs(Color.green(before) - Color.green(after)) <= 16)
+                    assertTrue(abs(Color.blue(before) - Color.blue(after)) <= 16)
+                    // A common gain preserves hue and relative saturation. Allow only the
+                    // quantization error of the actual 8-bit AGSL rendering, not an RGB offset.
+                    val beforeHsv = FloatArray(3)
+                    val afterHsv = FloatArray(3)
+                    Color.colorToHSV(before, beforeHsv)
+                    Color.colorToHSV(after, afterHsv)
+                    assertTrue("Hue changed", abs(beforeHsv[0] - afterHsv[0]) <= 2f)
+                    assertTrue("Saturation changed", abs(beforeHsv[1] - afterHsv[1]) <= 0.015f)
                 }
             }
             assertTrue("The shader must actually change detailed pixels", changed > 0)

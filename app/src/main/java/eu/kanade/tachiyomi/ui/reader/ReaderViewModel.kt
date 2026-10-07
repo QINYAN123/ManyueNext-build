@@ -327,21 +327,36 @@ class ReaderViewModel(
     private suspend fun init() {
         withIOContext {
             try {
+                traceReaderLoad("database")
                 val manga = getManga.await(mangaId) ?: error("Requested manga of id $mangaId not found")
+                traceReaderLoad("source")
                 val source = sourceManager.getOrStub(manga.source)
+                traceReaderLoad("privacy")
                 incognitoMode = getIncognitoState.await(manga.source)
+                traceReaderLoad("chapters")
                 mutableState.update { it.copy(manga = manga, source = source) }
                 if (chapterId == -1L) chapterId = initialChapterId
 
                 loader = ChapterLoader(context, downloadManager, downloadProvider, chapterCache, manga, source)
 
-                loadChapter(loader!!, chapterList.first { chapterId == it.chapter.id })
+                val chapter = chapterList.first { chapterId == it.chapter.id }
+                traceReaderLoad("pages")
+                loadChapter(loader!!, chapter)
+                traceReaderLoad("ready")
             } catch (e: Throwable) {
+                traceReaderLoad("failed:${e.javaClass.simpleName}")
                 if (e is CancellationException) {
                     throw e
                 }
                 mutableState.update { it.copy(initError = e) }
             }
+        }
+    }
+
+    /** No manga names, URLs, IDs or account data are written to diagnostic startup logs. */
+    private fun traceReaderLoad(stage: String) {
+        if (readerPreferences.manyuePerformanceDiagnostics.get()) {
+            android.util.Log.i("ManyueReaderLoad", "stage=$stage")
         }
     }
 
