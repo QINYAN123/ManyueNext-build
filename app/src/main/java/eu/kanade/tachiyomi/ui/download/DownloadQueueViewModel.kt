@@ -12,6 +12,7 @@ import eu.kanade.tachiyomi.data.download.DownloadManager
 import eu.kanade.tachiyomi.data.download.model.Download
 import eu.kanade.tachiyomi.databinding.DownloadListBinding
 import eu.kanade.tachiyomi.source.model.Page
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.SharingStarted
@@ -21,9 +22,12 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import tachiyomi.domain.storage.service.StorageManager
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
@@ -32,7 +36,14 @@ import kotlin.time.Duration.Companion.seconds
 @ContributesIntoMap(AppScope::class)
 class DownloadQueueViewModel(
     private val downloadManager: DownloadManager,
+    storageManager: StorageManager,
 ) : ViewModel() {
+
+    val storageAvailable = storageManager.changes
+        .onStart { emit(Unit) }
+        .map { runCatching { storageManager.getDownloadsDirectory()?.canWrite() == true }.getOrDefault(false) }
+        .flowOn(Dispatchers.IO)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5.seconds), true)
 
     val state: StateFlow<List<DownloadHeaderItem>> = downloadManager.queueState
         .map { downloads ->

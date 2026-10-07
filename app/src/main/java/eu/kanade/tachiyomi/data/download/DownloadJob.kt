@@ -19,12 +19,9 @@ import eu.kanade.tachiyomi.util.system.activeNetworkState
 import eu.kanade.tachiyomi.util.system.networkStateFlow
 import eu.kanade.tachiyomi.util.system.notificationBuilder
 import eu.kanade.tachiyomi.util.system.setForegroundSafely
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combineTransform
-import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.flow.onEach
 import mihon.app.di.AppGraph
 import mihon.core.metro.metroGraph
 import tachiyomi.domain.download.service.DownloadPreferences
@@ -62,31 +59,32 @@ class DownloadJob(context: Context, workerParams: WorkerParameters) : CoroutineW
     }
 
     override suspend fun doWork(): Result {
-        var networkCheck = checkNetworkState(
+        val networkCheck = checkNetworkState(
             applicationContext.activeNetworkState(),
             downloadPreferences.downloadOnlyOverWifi.get(),
         )
-        var active = networkCheck && downloadManager.downloaderStart()
-
-        if (!active) {
+        if (!networkCheck) {
             return Result.failure()
         }
 
         setForegroundSafely()
 
-        coroutineScope {
-            combineTransform(
-                applicationContext.networkStateFlow(),
-                downloadPreferences.downloadOnlyOverWifi.changes(),
-                transform = { a, b -> emit(checkNetworkState(a, b)) },
-            )
-                .onEach { networkCheck = it }
-                .launchIn(this)
+        if (!downloadManager.downloaderStart()) {
+            return Result.failure()
         }
 
-        // Keep the worker running when needed
-        while (active) {
-            active = !isStopped && downloadManager.isRunning && networkCheck
+        try {
+            awaitDownloadCompletion(
+                networkAllowed = combineTransform(
+                    applicationContext.networkStateFlow(),
+                    downloadPreferences.downloadOnlyOverWifi.changes(),
+                    transform = { a, b -> emit(checkNetworkState(a, b)) },
+                ),
+                isDownloading = { !isStopped && downloadManager.isRunning },
+            )
+        } finally {
+            // The downloader owns a separate scope, so worker cancellation must stop it too.
+            if (downloadManager.isRunning) downloadManager.downloaderStop()
         }
 
         return Result.success()

@@ -123,6 +123,11 @@ class Downloader(
             return false
         }
 
+        if (!provider.isStorageAvailable()) {
+            notifier.onError(context.stringResource(MR.strings.storage_failed_to_create_download_directory))
+            return false
+        }
+
         val pending = queueState.value.filter { it.status != Download.State.DOWNLOADED }
         pending.forEach { if (it.status != Download.State.QUEUE) it.status = Download.State.QUEUE }
 

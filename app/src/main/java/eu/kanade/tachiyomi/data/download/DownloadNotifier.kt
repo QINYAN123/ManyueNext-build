@@ -4,6 +4,7 @@ import android.app.PendingIntent
 import android.content.Context
 import android.graphics.BitmapFactory
 import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
 import dev.zacsweers.metro.Inject
 import eu.kanade.tachiyomi.R
 import eu.kanade.tachiyomi.core.security.SecurityPreferences
@@ -15,7 +16,9 @@ import eu.kanade.tachiyomi.util.lang.chop
 import eu.kanade.tachiyomi.util.system.cancelNotification
 import eu.kanade.tachiyomi.util.system.notificationBuilder
 import eu.kanade.tachiyomi.util.system.notify
+import eu.kanade.tachiyomi.util.system.toast
 import tachiyomi.core.common.i18n.stringResource
+import tachiyomi.core.common.util.lang.launchUI
 import tachiyomi.i18n.MR
 import java.util.regex.Pattern
 
@@ -171,6 +174,7 @@ class DownloadNotifier(
      * Only works on Android 8+.
      */
     fun onWarning(reason: String, timeout: Long? = null, contentIntent: PendingIntent? = null, mangaId: Long? = null) {
+        showInAppErrorIfNotificationsDisabled(reason)
         with(errorNotificationBuilder) {
             setContentTitle(context.stringResource(MR.strings.download_notifier_downloader_title))
             setStyle(NotificationCompat.BigTextStyle().bigText(reason))
@@ -205,6 +209,9 @@ class DownloadNotifier(
      * @param mangaId the id of the entry that the error occurred on
      */
     fun onError(error: String? = null, chapter: String? = null, mangaTitle: String? = null, mangaId: Long? = null) {
+        showInAppErrorIfNotificationsDisabled(
+            error ?: context.stringResource(MR.strings.download_notifier_unknown_error),
+        )
         // Create notification
         with(errorNotificationBuilder) {
             setContentTitle(
@@ -228,5 +235,11 @@ class DownloadNotifier(
 
         // Reset download information
         isDownloading = false
+    }
+
+    private fun showInAppErrorIfNotificationsDisabled(message: String) {
+        if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) {
+            launchUI { context.toast(message, android.widget.Toast.LENGTH_LONG) }
+        }
     }
 }

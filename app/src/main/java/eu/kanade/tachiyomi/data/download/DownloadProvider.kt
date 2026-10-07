@@ -36,6 +36,8 @@ class DownloadProvider(
     private val downloadsDir: UniFile?
         get() = storageManager.getDownloadsDirectory()
 
+    fun isStorageAvailable(): Boolean = runCatching { downloadsDir?.canWrite() == true }.getOrDefault(false)
+
     /**
      * Returns the download directory for a manga. For internal use only.
      *
