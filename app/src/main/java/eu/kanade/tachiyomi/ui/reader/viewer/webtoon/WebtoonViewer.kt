@@ -463,12 +463,18 @@ class WebtoonViewer(val activity: ReaderActivity, val isContinuous: Boolean = tr
      * Used when an image configuration is changed.
      */
     private fun refreshAdapter() {
-        val position = layoutManager.findLastEndVisibleItemPosition()
+        // A tall image aligned with the viewport top can have no visible end. The
+        // reading-progress helper then returns NO_POSITION; using chapter start as a
+        // fallback would leave the current image bound to the previous AI settings.
+        val firstVisible = layoutManager.findFirstVisibleItemPosition()
+        val lastVisible = layoutManager.findLastVisibleItemPosition()
         adapter.refresh()
         if (adapter.itemCount == 0) return
-        val anchor = position.takeIf { it >= 0 } ?: 0
-        val start = max(0, anchor - 3)
-        val endExclusive = min(anchor + 4, adapter.itemCount)
+        val selected = adapter.items.indexOf(currentPage).coerceAtLeast(0)
+        val first = firstVisible.takeIf { it >= 0 } ?: selected
+        val last = lastVisible.takeIf { it >= first } ?: first
+        val start = max(0, first - 3)
+        val endExclusive = min(last + 4, adapter.itemCount)
         if (endExclusive > start) adapter.notifyItemRangeChanged(start, endExclusive - start)
     }
 }
