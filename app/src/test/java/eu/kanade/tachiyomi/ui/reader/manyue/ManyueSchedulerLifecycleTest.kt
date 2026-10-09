@@ -125,7 +125,7 @@ class ManyueSchedulerLifecycleTest {
                 assertEquals(if (index == 4) 120 else 100, req.priority)
             }
             ManyuePrefetchManager.updateVisiblePages(setOf(92L to 3, 92L to 4))
-            assertFalse(request(tokens.getValue(2)).cancelled)
+            assertTrue(request(tokens.getValue(2)).cancelled)
             assertFalse(request(tokens.getValue(3)).cancelled)
             ManyuePrefetchManager.onPageChanged(92, 6, setOf(92L to 6))
             assertTrue(request(tokens.getValue(2)).cancelled)
@@ -167,14 +167,50 @@ class ManyueSchedulerLifecycleTest {
             val fifthRequest = request(fifthAhead)
             assertFalse(fifthRequest.cancelled)
 
-            // Far-behind work is cancelled, while the near previous page and completed
-            // visible-page result remain reusable.
+            // Queued work outside the direction window is cancelled; completed visible-page
+            // results remain reusable. Processing requests have a separate bounded guard.
             ManyuePrefetchManager.onPageChanged(93, 6, visible = setOf(93L to 6))
             assertTrue(retainedRequest.cancelled)
-            assertFalse(fifthRequest.cancelled)
+            assertTrue(fifthRequest.cancelled)
             ManyuePrefetchManager.onPageChanged(93, 8, visible = setOf(93L to 8))
             assertTrue(fifthRequest.cancelled)
             assertFalse(previousRequest.cancelled)
+        } finally {
+            ManyuePrefetchManager.reset()
+        }
+    }
+
+    @Test fun foreignChapterRequestInNumericalWindowSurvivesOnlyWhileActuallyVisible() {
+        ManyuePrefetchManager.reset()
+        ManyuePrefetchManager.onPageChanged(92, 2, setOf(92L to 2, 93L to 4))
+        val token = register(4, chapterId = 93)
+        val req = request(token)
+        try {
+            ManyuePrefetchManager.register(93, 4, token)
+            assertFalse(req.cancelled)
+            assertEquals(100, req.priority)
+            ManyuePrefetchManager.updateVisiblePages(setOf(92L to 2))
+            assertTrue(req.cancelled)
+        } finally {
+            ManyuePrefetchManager.reset()
+        }
+    }
+
+    @Test fun nearbyProcessingRequestFinishesOutsideDirectionWindowUntilAbsoluteDistanceExceedsFive() {
+        ManyuePrefetchManager.reset()
+        ManyuePrefetchManager.onPageChanged(92, 0)
+        val token = register(3)
+        val req = request(token)
+        req.processing = true
+        try {
+            ManyuePrefetchManager.register(92, 3, token)
+            ManyuePrefetchManager.onPageChanged(92, 6)
+            assertFalse(req.cancelled)
+            assertEquals(1, req.priority)
+            ManyuePrefetchManager.onPageChanged(92, 8)
+            assertFalse(req.cancelled)
+            ManyuePrefetchManager.onPageChanged(92, 9)
+            assertTrue(req.cancelled)
         } finally {
             ManyuePrefetchManager.reset()
         }

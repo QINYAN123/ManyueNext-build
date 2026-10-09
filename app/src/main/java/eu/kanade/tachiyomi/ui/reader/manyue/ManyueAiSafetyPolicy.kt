@@ -3,13 +3,58 @@ package eu.kanade.tachiyomi.ui.reader.manyue
 /** Pure scheduling and memory guards shared by Pager, Webtoon, and the native worker. */
 object ManyueAiSafetyPolicy {
 
+    enum class PrefetchDirection(val step: Int) {
+        FORWARD(1),
+        BACKWARD(-1),
+    }
+
     const val MAX_DISPLAY_PIXELS = 12_000_000
     const val MAX_CLASSIC_PIXELS = 6_000_000
     const val MAX_WEBP_DIMENSION = 16_383
 
-    const val PREFETCH_LOOK_BACK_PAGES = 2
     const val ACTIVE_COMPLETION_LOOK_BACK_PAGES = 5
+    const val PREFETCH_WINDOW_PAGES = 5
     const val CONTINUOUS_PREFETCH_PRIORITY = 1
+
+    fun directionAfterSelection(
+        previousPage: Int,
+        currentPage: Int,
+        currentDirection: PrefetchDirection,
+    ): PrefetchDirection = when {
+        currentPage > previousPage -> PrefetchDirection.FORWARD
+        currentPage < previousPage -> PrefetchDirection.BACKWARD
+        else -> currentDirection
+    }
+
+    fun relativeDistance(pageIndex: Int, currentIndex: Int, direction: PrefetchDirection): Int =
+        (pageIndex - currentIndex) * direction.step
+
+    /** Priority for a new request inside the bounded directional window, or null outside it. */
+    fun prefetchPriority(
+        pageIndex: Int,
+        currentIndex: Int,
+        direction: PrefetchDirection,
+    ): Int? {
+        val distance = relativeDistance(pageIndex, currentIndex, direction)
+        if (pageIndex < 0 || distance !in 1..PREFETCH_WINDOW_PAGES) return null
+        return 60 - distance * 10
+    }
+
+    fun shouldFinishActiveRequest(pageIndex: Int, currentIndex: Int, isProcessing: Boolean): Boolean =
+        isProcessing && kotlin.math.abs(pageIndex.toLong() - currentIndex.toLong()) <= ACTIVE_COMPLETION_LOOK_BACK_PAGES
+
+    fun managedRequestPriority(
+        isCurrent: Boolean,
+        isVisible: Boolean,
+        directionalPriority: Int?,
+        keepActive: Boolean,
+    ): Int? = when {
+        isCurrent -> 120
+        isVisible -> 100
+        directionalPriority != null -> directionalPriority
+        keepActive -> CONTINUOUS_PREFETCH_PRIORITY
+        else -> null
+    }
 
     fun priorityFor(pageIndex: Int, currentIndex: Int): Int? = when (pageIndex - currentIndex) {
         0 -> 100
@@ -21,16 +66,14 @@ object ManyueAiSafetyPolicy {
         else -> null
     }
 
-    /** Priority for the one cursor target, including pages more than five pages ahead. */
-    fun continuousPrefetchPriority(pageIndex: Int, currentIndex: Int): Int {
-        val distance = pageIndex - currentIndex
-        return when {
-            distance == 0 -> 100
-            distance in 1..5 -> requireNotNull(priorityFor(pageIndex, currentIndex))
-            distance > 5 -> CONTINUOUS_PREFETCH_PRIORITY
-            distance in -PREFETCH_LOOK_BACK_PAGES until 0 -> 5
-            else -> CONTINUOUS_PREFETCH_PRIORITY
-        }
+    /** Priority helper for cursor requests; invalid or out-of-window pages receive lowest priority. */
+    fun continuousPrefetchPriority(
+        pageIndex: Int,
+        currentIndex: Int,
+        direction: PrefetchDirection = PrefetchDirection.FORWARD,
+    ): Int = when {
+        pageIndex == currentIndex -> 100
+        else -> prefetchPriority(pageIndex, currentIndex, direction) ?: CONTINUOUS_PREFETCH_PRIORITY
     }
 
     fun isPixelBudgetSafe(width: Int, height: Int, maxPixels: Int): Boolean {

@@ -5,8 +5,8 @@ import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Tracks active page requests, protects visible results, and adjusts priorities as the reader
- * moves. The prefetch cursor may work through the whole chapter; completed request tokens are
- * pruned here while their disk cache entries remain reusable.
+ * moves. New prefetch requests stay inside the current directional window; completed request
+ * tokens are pruned here while their disk cache entries remain reusable.
  */
 object ManyuePrefetchManager {
 
@@ -14,6 +14,7 @@ object ManyuePrefetchManager {
     private const val MAX_REMEMBERED_CURRENT_DECISIONS = 32
 
     private data class PageKey(val chapterId: Long, val pageIndex: Int)
+    private data class DirectionKey(val chapterId: Long, val generation: Long, val mode: Int)
 
     private var visiblePages = emptySet<PageKey>()
     private val tokens = java.util.concurrent.ConcurrentHashMap<PageKey, MutableSet<String>>()
@@ -23,6 +24,15 @@ object ManyuePrefetchManager {
     @Volatile private var currentChapterId: Long = Long.MIN_VALUE
 
     @Volatile private var currentPage: Int = -1
+
+    private var directionKey: DirectionKey? = null
+
+    private var prefetchDirection = ManyueAiSafetyPolicy.PrefetchDirection.FORWARD
+
+    internal fun isVisiblePage(chapterId: Long, pageIndex: Int): Boolean = synchronized(this) {
+        PageKey(chapterId, pageIndex) in visiblePages ||
+            (chapterId == currentChapterId && pageIndex == currentPage)
+    }
 
     fun reset() {
         synchronized(this) {
@@ -34,6 +44,8 @@ object ManyuePrefetchManager {
             rememberedCurrentDecisions.clear()
             currentChapterId = Long.MIN_VALUE
             currentPage = -1
+            directionKey = null
+            prefetchDirection = ManyueAiSafetyPolicy.PrefetchDirection.FORWARD
         }
     }
 
@@ -59,6 +71,22 @@ object ManyuePrefetchManager {
 
     fun onPageChanged(chapterId: Long, current: Int, visible: Set<Pair<Long, Int>> = emptySet()) {
         synchronized(this) {
+            val nextDirectionKey = DirectionKey(
+                chapterId = chapterId,
+                generation = ManyueRuntimeState.generation,
+                mode = ManyueRuntimeState.modeInt,
+            )
+            if (directionKey == nextDirectionKey) {
+                prefetchDirection = ManyueAiSafetyPolicy.directionAfterSelection(
+                    previousPage = currentPage,
+                    currentPage = current,
+                    currentDirection = prefetchDirection,
+                )
+            } else {
+                directionKey = nextDirectionKey
+                prefetchDirection = ManyueAiSafetyPolicy.PrefetchDirection.FORWARD
+            }
+
             visiblePages = visible.mapTo(linkedSetOf()) { PageKey(it.first, it.second) }
                 .apply { add(PageKey(chapterId, current)) }
             if (currentChapterId != Long.MIN_VALUE && currentChapterId != chapterId) {
@@ -148,29 +176,23 @@ object ManyuePrefetchManager {
                 continue
             }
 
-            val distance = key.pageIndex - currentPage
+            val candidatePriority = ManyueAiSafetyPolicy.prefetchPriority(
+                pageIndex = key.pageIndex,
+                currentIndex = currentPage,
+                direction = prefetchDirection,
+            )
+            val managedPriority = ManyueAiSafetyPolicy.managedRequestPriority(
+                isCurrent = key.chapterId == currentChapterId && key.pageIndex == currentPage,
+                isVisible = key in visiblePages,
+                directionalPriority = candidatePriority.takeIf { key.chapterId == currentChapterId },
+                keepActive = key.chapterId == currentChapterId && ManyueAiSafetyPolicy.shouldFinishActiveRequest(
+                    pageIndex = key.pageIndex,
+                    currentIndex = currentPage,
+                    isProcessing = pageTokens.any(ManyueAiUpscaler::isProcessing),
+                ),
+            )
             when {
-                key.chapterId == currentChapterId && key.pageIndex == currentPage ->
-                    pageTokens.forEach { ManyueAiUpscaler.updatePriority(it, 120) }
-                key in visiblePages -> pageTokens.forEach { ManyueAiUpscaler.updatePriority(it, 100) }
-                key.chapterId != currentChapterId -> {
-                    pageTokens.forEach(ManyueAiUpscaler::cancel)
-                    tokens.remove(key, pageTokens)
-                }
-                distance >= 0 -> {
-                    val priority = ManyueAiSafetyPolicy.continuousPrefetchPriority(key.pageIndex, currentPage)
-                    pageTokens.forEach { ManyueAiUpscaler.updatePriority(it, priority) }
-                }
-                distance >= -ManyueAiSafetyPolicy.PREFETCH_LOOK_BACK_PAGES -> {
-                    val priority = ManyueAiSafetyPolicy.continuousPrefetchPriority(key.pageIndex, currentPage)
-                    pageTokens.forEach { ManyueAiUpscaler.updatePriority(it, priority) }
-                }
-                distance >= -ManyueAiSafetyPolicy.ACTIVE_COMPLETION_LOOK_BACK_PAGES &&
-                    pageTokens.any(ManyueAiUpscaler::isProcessing) -> {
-                    // Let a request that has already reached the worker finish. This preserves a
-                    // nearby result through fast scrolling without keeping queued stale work.
-                    pageTokens.forEach { ManyueAiUpscaler.updatePriority(it, 1) }
-                }
+                managedPriority != null -> pageTokens.forEach { ManyueAiUpscaler.updatePriority(it, managedPriority) }
                 else -> {
                     pageTokens.forEach(ManyueAiUpscaler::cancel)
                     tokens.remove(key, pageTokens)

@@ -31,18 +31,14 @@ class ManyuePrefetchPolicyTest {
     }
 
     @Test fun `priority window arithmetic`() {
-        // Replicates ManyuePrefetchManager.priorityFor:
-        fun p(idx: Int, cur: Int) = when (idx - cur) {
-            0 -> 100; 1 -> 50; 2 -> 40; 3 -> 30; 4 -> 20; 5 -> 10; else -> Int.MAX_VALUE
-        }
-        assertEquals(100, p(5, 5))
-        assertEquals(50, p(6, 5))
-        assertEquals(40, p(7, 5))
-        assertEquals(30, p(8, 5))
-        assertEquals(20, p(9, 5))
-        assertEquals(10, p(10, 5))
-        assertEquals(Int.MAX_VALUE, p(11, 5))
-        assertEquals(Int.MAX_VALUE, p(2, 5))
+        assertEquals(100, ManyueAiSafetyPolicy.priorityFor(5, 5))
+        assertEquals(50, ManyueAiSafetyPolicy.prefetchPriority(6, 5, ManyueAiSafetyPolicy.PrefetchDirection.FORWARD))
+        assertEquals(40, ManyueAiSafetyPolicy.prefetchPriority(7, 5, ManyueAiSafetyPolicy.PrefetchDirection.FORWARD))
+        assertEquals(30, ManyueAiSafetyPolicy.prefetchPriority(8, 5, ManyueAiSafetyPolicy.PrefetchDirection.FORWARD))
+        assertEquals(20, ManyueAiSafetyPolicy.prefetchPriority(9, 5, ManyueAiSafetyPolicy.PrefetchDirection.FORWARD))
+        assertEquals(10, ManyueAiSafetyPolicy.prefetchPriority(10, 5, ManyueAiSafetyPolicy.PrefetchDirection.FORWARD))
+        assertNull(ManyueAiSafetyPolicy.prefetchPriority(11, 5, ManyueAiSafetyPolicy.PrefetchDirection.FORWARD))
+        assertNull(ManyueAiSafetyPolicy.prefetchPriority(2, 5, ManyueAiSafetyPolicy.PrefetchDirection.FORWARD))
     }
 
     @Test fun `prefetch manager starts empty`() {
@@ -52,14 +48,31 @@ class ManyuePrefetchPolicyTest {
         ManyuePrefetchManager.reset()
     }
 
-    @Test fun `continuous prefetch keeps near priorities and assigns low priority to the whole chapter`() {
+    @Test fun `directional window and active completion are symmetric`() {
+        val forward = ManyueAiSafetyPolicy.PrefetchDirection.FORWARD
+        val backward = ManyueAiSafetyPolicy.PrefetchDirection.BACKWARD
+
         assertEquals(100, ManyueAiSafetyPolicy.continuousPrefetchPriority(4, 4))
-        assertEquals(50, ManyueAiSafetyPolicy.continuousPrefetchPriority(5, 4))
-        assertEquals(10, ManyueAiSafetyPolicy.continuousPrefetchPriority(9, 4))
-        assertEquals(1, ManyueAiSafetyPolicy.continuousPrefetchPriority(10, 4))
-        assertEquals(5, ManyueAiSafetyPolicy.continuousPrefetchPriority(3, 4))
-        assertEquals(2, ManyueAiSafetyPolicy.PREFETCH_LOOK_BACK_PAGES)
+        assertEquals(50, ManyueAiSafetyPolicy.continuousPrefetchPriority(5, 4, forward))
+        assertEquals(10, ManyueAiSafetyPolicy.continuousPrefetchPriority(9, 4, forward))
+        assertEquals(1, ManyueAiSafetyPolicy.continuousPrefetchPriority(10, 4, forward))
+        assertEquals(50, ManyueAiSafetyPolicy.prefetchPriority(9, 10, backward))
+        assertEquals(10, ManyueAiSafetyPolicy.prefetchPriority(5, 10, backward))
+        assertNull(ManyueAiSafetyPolicy.prefetchPriority(4, 10, backward))
+        assertEquals(forward, ManyueAiSafetyPolicy.directionAfterSelection(4, 5, backward))
+        assertEquals(backward, ManyueAiSafetyPolicy.directionAfterSelection(5, 4, forward))
+        assertEquals(backward, ManyueAiSafetyPolicy.directionAfterSelection(4, 4, backward))
+        assertTrue(ManyueAiSafetyPolicy.shouldFinishActiveRequest(5, 10, isProcessing = true))
+        assertTrue(ManyueAiSafetyPolicy.shouldFinishActiveRequest(15, 10, isProcessing = true))
+        assertFalse(ManyueAiSafetyPolicy.shouldFinishActiveRequest(4, 10, isProcessing = true))
+        assertFalse(ManyueAiSafetyPolicy.shouldFinishActiveRequest(5, 10, isProcessing = false))
+        assertEquals(120, ManyueAiSafetyPolicy.managedRequestPriority(true, true, 50, true))
+        assertEquals(100, ManyueAiSafetyPolicy.managedRequestPriority(false, true, 50, true))
+        assertEquals(50, ManyueAiSafetyPolicy.managedRequestPriority(false, false, 50, false))
+        assertEquals(1, ManyueAiSafetyPolicy.managedRequestPriority(false, false, null, true))
+        assertNull(ManyueAiSafetyPolicy.managedRequestPriority(false, false, null, false))
         assertEquals(5, ManyueAiSafetyPolicy.ACTIVE_COMPLETION_LOOK_BACK_PAGES)
+        assertEquals(5, ManyueAiSafetyPolicy.PREFETCH_WINDOW_PAGES)
     }
 
     @Test fun `continuous prefetch rejects invalid reader positions through caller bounds`() {

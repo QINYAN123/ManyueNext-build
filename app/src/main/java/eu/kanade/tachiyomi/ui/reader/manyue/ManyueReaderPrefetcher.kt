@@ -6,6 +6,7 @@ import eu.kanade.tachiyomi.ui.reader.model.ReaderPage
 import eu.kanade.tachiyomi.ui.reader.metadata.SourceImageBoundsDecoder
 import java.io.InputStream
 import java.util.concurrent.CancellationException
+import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
@@ -30,7 +31,7 @@ import logcat.LogPriority
 import tachiyomi.core.common.util.system.logcat
 
 /**
- * Drives one lightweight forward cursor for the active chapter. At most one page is loaded or
+ * Drives one lightweight directional cursor for the active chapter. At most one page is loaded or
  * waiting on the AI worker at a time; the cursor moves only after that request reaches a terminal
  * state. Page selection updates the cursor's reading head and priorities without restarting it.
  */
@@ -65,13 +66,30 @@ class ManyueReaderPrefetcher(context: Context) {
         val pages = current.chapter.pages ?: return
         val generation = ManyueRuntimeState.generation
         coordinator.reconcile(chapterId, current.index, generation, pages.size) { pageIndex, taskGeneration ->
-            val page = pages.getOrNull(pageIndex) ?: return@reconcile
+            val page = pages.getOrNull(pageIndex)
+                ?: return@reconcile ManyuePrefetchWorkOutcome.FAILED
             coordinator.ensureCurrent(chapterId, taskGeneration, mode)
 
             val currentMangaId = page.chapter.chapter.manga_id ?: mangaId
 
-            coordinator.awaitReaderWork(chapterId, taskGeneration, mode)
-            coordinator.awaitWhileCurrent(chapterId, taskGeneration, mode) {
+            val phaseGuard = ManyuePrefetchPreparationPhaseGuard()
+            coordinator.awaitWhileCurrent(
+                chapterId,
+                taskGeneration,
+                mode,
+                keepStageCurrent = {
+                    phaseGuard.shouldKeepStageCurrent {
+                        coordinator.isPreparationCurrent(chapterId, taskGeneration, mode, pageIndex)
+                    }
+                },
+                cancelStageIfStale = {
+                    phaseGuard.cancelPreparationIfPending()
+                },
+            ) {
+                if (!coordinator.isPreparationCurrent(chapterId, taskGeneration, mode, pageIndex)) {
+                    throw PrefetchWindowMovedCancellationException()
+                }
+                coordinator.awaitReaderWork(chapterId, taskGeneration, mode)
                 val reservation = ManyueEnhancementCache.awaitPrefetchBudget(
                     context = appContext,
                     mangaId = currentMangaId,
@@ -80,6 +98,9 @@ class ManyueReaderPrefetcher(context: Context) {
                 )
                 try {
                     coordinator.ensureCurrent(chapterId, taskGeneration, mode)
+                    if (!coordinator.isPreparationCurrent(chapterId, taskGeneration, mode, pageIndex)) {
+                        throw PrefetchWindowMovedCancellationException()
+                    }
                     coordinator.awaitReaderWork(chapterId, taskGeneration, mode)
                     val token = loadAndEnqueue(
                         page = page,
@@ -88,11 +109,19 @@ class ManyueReaderPrefetcher(context: Context) {
                         mangaId = currentMangaId,
                         generation = taskGeneration,
                         mode = mode,
+                        phaseGuard = phaseGuard,
                     )
                     if (token != null) {
                         // The returned token may be shared with a visible holder. Cancelling this
                         // waiter must leave that request intact; the next page starts only on terminal.
-                        coordinator.awaitWorkerCompletion(chapterId, taskGeneration, mode, token)
+                        when (coordinator.awaitWorkerCompletion(chapterId, taskGeneration, mode, token)) {
+                            ManyueAiUpscaler.STATE_CANCELLED -> ManyuePrefetchWorkOutcome.CANCELLED
+                            ManyueAiUpscaler.STATE_READY -> ManyuePrefetchWorkOutcome.COMPLETED
+                            else -> ManyuePrefetchWorkOutcome.FAILED
+                        }
+                    } else {
+                        // Missing/error pages are remembered as failures; cursor cancellation is distinct.
+                        ManyuePrefetchWorkOutcome.FAILED
                     }
                 } finally {
                     // Keep resource ownership inside the polled child so cancellation after budget
@@ -111,6 +140,7 @@ class ManyueReaderPrefetcher(context: Context) {
         mangaId: Long,
         generation: Long,
         mode: Int,
+        phaseGuard: ManyuePrefetchPreparationPhaseGuard,
     ): String? {
         val bytes = coordinator.awaitWhileCurrent(chapterId, generation, mode) { loadBytes(page) } ?: return null
         coordinator.ensureCurrent(chapterId, generation, mode)
@@ -127,18 +157,30 @@ class ManyueReaderPrefetcher(context: Context) {
         )
         val readingHead = coordinator.selectedPageIndex(chapterId, generation)
             ?: throw CancellationException("Stale Manyue prefetch cursor")
-        val priority = ManyueAiSafetyPolicy.continuousPrefetchPriority(pageIndex, readingHead)
+        val direction = coordinator.selectedDirection(chapterId, generation)
+            ?: throw CancellationException("Stale Manyue prefetch direction")
+        val priority = ManyueAiSafetyPolicy.continuousPrefetchPriority(pageIndex, readingHead, direction)
         logcat { "Manyue prefetch create page=$pageIndex priority=$priority" }
         return withContext(Dispatchers.IO) {
             coordinator.ensureCurrent(chapterId, generation, mode)
-            ManyueAiRequestFactory.enqueue(
-                appContext,
-                identity,
-                bytes,
-                priority,
-                mode,
-                generation,
-            )
+            if (!phaseGuard.beginEnqueue()) throw PrefetchWindowMovedCancellationException()
+            try {
+                if (!coordinator.isPreparationCurrent(chapterId, generation, mode, pageIndex)) {
+                    throw PrefetchWindowMovedCancellationException()
+                }
+                // The phase CAS excludes a concurrent stale-window cancellation across this
+                // synchronous enqueue. Once a token exists, keep the waiter through completion.
+                ManyueAiRequestFactory.enqueue(
+                    appContext,
+                    identity,
+                    bytes,
+                    priority,
+                    mode,
+                    generation,
+                )
+            } finally {
+                phaseGuard.resolveEnqueue()
+            }
         }
     }
 
@@ -173,7 +215,55 @@ class ManyueReaderPrefetcher(context: Context) {
     }
 }
 
-/** A single cancellable chapter cursor; scrolling changes its head, never its active work job. */
+internal enum class ManyuePrefetchWorkOutcome {
+    COMPLETED,
+    FAILED,
+    CANCELLED,
+}
+
+internal enum class ManyuePrefetchPreparationPhase {
+    PREPARING,
+    ENQUEUING,
+    RESULT_RESOLVED,
+    CANCELLED,
+}
+
+/** Makes stale-window cancellation and request enqueue entry mutually exclusive. */
+internal class ManyuePrefetchPreparationPhaseGuard {
+    private val phase = AtomicReference(ManyuePrefetchPreparationPhase.PREPARING)
+
+    val currentPhase: ManyuePrefetchPreparationPhase get() = phase.get()
+
+    fun shouldKeepStageCurrent(isPreparationCurrent: () -> Boolean): Boolean = when (phase.get()) {
+        ManyuePrefetchPreparationPhase.PREPARING -> isPreparationCurrent()
+        ManyuePrefetchPreparationPhase.ENQUEUING,
+        ManyuePrefetchPreparationPhase.RESULT_RESOLVED -> true
+        ManyuePrefetchPreparationPhase.CANCELLED -> false
+    }
+
+    fun cancelPreparationIfPending(): Boolean = phase.compareAndSet(
+        ManyuePrefetchPreparationPhase.PREPARING,
+        ManyuePrefetchPreparationPhase.CANCELLED,
+    )
+
+    fun beginEnqueue(): Boolean = phase.compareAndSet(
+        ManyuePrefetchPreparationPhase.PREPARING,
+        ManyuePrefetchPreparationPhase.ENQUEUING,
+    )
+
+    fun resolveEnqueue() {
+        phase.compareAndSet(
+            ManyuePrefetchPreparationPhase.ENQUEUING,
+            ManyuePrefetchPreparationPhase.RESULT_RESOLVED,
+        )
+    }
+}
+
+private class PrefetchWindowMovedCancellationException : CancellationException(
+    "Manyue prefetch page left the preparation window",
+)
+
+/** One serialized cursor over a bounded directional window. */
 internal class ManyuePrefetchJobCoordinator(private val scope: CoroutineScope) {
 
     private data class CursorKey(val chapterId: Long, val generation: Long, val mode: Int)
@@ -183,12 +273,20 @@ internal class ManyuePrefetchJobCoordinator(private val scope: CoroutineScope) {
     @Volatile private var activeJob: Job? = null
     private var pageCount: Int = 0
     private var nextPageIndex: Int = -1
+    private var direction = ManyueAiSafetyPolicy.PrefetchDirection.FORWARD
+    private val failedPages = mutableSetOf<Int>()
+    private var latestWork: (suspend (pageIndex: Int, generation: Long) -> ManyuePrefetchWorkOutcome)? = null
 
     internal val activeCursorCount: Int
-        get() = if (activeJob?.isActive == true) 1 else 0
+        get() = if (activeJob?.isCompleted == false) 1 else 0
 
     internal suspend fun awaitCursorIdle() {
-        activeJob?.join()
+        while (true) {
+            val job = synchronized(this) { activeJob } ?: return
+            job.start()
+            job.join()
+            if (synchronized(this) { activeJob == null }) return
+        }
     }
 
     fun reconcile(
@@ -197,7 +295,7 @@ internal class ManyuePrefetchJobCoordinator(private val scope: CoroutineScope) {
         generation: Long,
         pageCount: Int,
         mode: Int = ManyueRuntimeState.modeInt,
-        work: suspend (pageIndex: Int, generation: Long) -> Unit,
+        work: suspend (pageIndex: Int, generation: Long) -> ManyuePrefetchWorkOutcome,
     ) {
         if (pageCount <= 0 || currentPageIndex !in 0 until pageCount) {
             cancelAll()
@@ -213,33 +311,36 @@ internal class ManyuePrefetchJobCoordinator(private val scope: CoroutineScope) {
                 activeKey = key
                 selectedPage = currentPageIndex
                 this.pageCount = pageCount
-                nextPageIndex = currentPageIndex + 1
+                direction = ManyueAiSafetyPolicy.PrefetchDirection.FORWARD
+                nextPageIndex = currentPageIndex + direction.step
+                failedPages.clear()
             } else {
+                val nextDirection = ManyueAiSafetyPolicy.directionAfterSelection(
+                    previousPage = selectedPage,
+                    currentPage = currentPageIndex,
+                    currentDirection = direction,
+                )
+                if (nextDirection != direction) {
+                    direction = nextDirection
+                    nextPageIndex = currentPageIndex + direction.step
+                } else if (
+                    ManyueAiSafetyPolicy.relativeDistance(nextPageIndex, currentPageIndex, direction) <= 0
+                ) {
+                    // A jump has moved past the pending target. Do not replay pages behind the head.
+                    nextPageIndex = currentPageIndex + direction.step
+                }
                 selectedPage = currentPageIndex
                 this.pageCount = pageCount
             }
 
-            if (activeJob?.isActive != true && nextPageIndex < this.pageCount) {
-                val cursorJob = scope.launch(start = CoroutineStart.LAZY) {
-                    try {
-                        runCursor(key, work)
-                    } finally {
-                        val completedJob = currentCoroutineContext()[Job]
-                        synchronized(this@ManyuePrefetchJobCoordinator) {
-                            if (activeJob === completedJob) activeJob = null
-                        }
-                    }
-                }
-                activeJob = cursorJob
-                start = cursorJob
-            }
+            latestWork = work
+            start = scheduleCursorLocked(key)
         }
         start?.start()
     }
 
     private suspend fun runCursor(
         key: CursorKey,
-        work: suspend (pageIndex: Int, generation: Long) -> Unit,
     ) {
         // The holder for the page selected when this cursor starts gets one bounded opportunity
         // to create its high-priority request. Later pages do not each wait on a new 15s gate.
@@ -249,17 +350,21 @@ internal class ManyuePrefetchJobCoordinator(private val scope: CoroutineScope) {
         while (true) {
             ensureCurrent(key.chapterId, key.generation, key.mode)
             val pageIndex = claimNextPage(key) ?: return
-            var advance = false
+            val work = synchronized(this) {
+                if (activeKey == key) latestWork else null
+            } ?: throw CancellationException("Stale Manyue prefetch work")
+            var outcome = ManyuePrefetchWorkOutcome.COMPLETED
             try {
-                work(pageIndex, key.generation)
-                advance = true
+                outcome = work(pageIndex, key.generation)
             } catch (error: CancellationException) {
+                outcome = ManyuePrefetchWorkOutcome.CANCELLED
                 throw error
             } catch (error: Throwable) {
                 logcat { "Manyue prefetch failed page=$pageIndex: ${error.javaClass.simpleName}" }
-                advance = true
+                // A bad source/worker result is remembered for this key. Cancellation is not.
+                outcome = ManyuePrefetchWorkOutcome.FAILED
             } finally {
-                if (advance) completePage(key, pageIndex)
+                completePage(key, pageIndex, outcome)
             }
         }
     }
@@ -274,27 +379,91 @@ internal class ManyuePrefetchJobCoordinator(private val scope: CoroutineScope) {
     }
 
     private fun claimNextPage(key: CursorKey): Int? = synchronized(this) {
-        if (activeKey != key) throw CancellationException("Stale Manyue prefetch cursor")
-        while (nextPageIndex < pageCount) {
-            val candidate = nextPageIndex
-            val head = selectedPage
-            if (candidate == head || candidate < head - ManyueAiSafetyPolicy.PREFETCH_LOOK_BACK_PAGES) {
-                // A visible page belongs to its holder. Old pages outside the small revisit
-                // margin are already behind the reader and must not delay the forward cursor.
-                nextPageIndex++
-                continue
-            }
-            return@synchronized candidate
-        }
-        null
+        nextCandidateLocked(key)
     }
 
-    private fun completePage(key: CursorKey, pageIndex: Int) = synchronized(this) {
-        if (activeKey == key && nextPageIndex == pageIndex) nextPageIndex++
+    private fun nextCandidateLocked(key: CursorKey): Int? {
+        if (activeKey != key) throw CancellationException("Stale Manyue prefetch cursor")
+        while (nextPageIndex in 0 until pageCount) {
+            val candidate = nextPageIndex
+            val head = selectedPage
+            val distance = ManyueAiSafetyPolicy.relativeDistance(candidate, head, direction)
+            if (distance <= 0) {
+                nextPageIndex += direction.step
+                continue
+            }
+            if (distance > ManyueAiSafetyPolicy.PREFETCH_WINDOW_PAGES) return null
+            if (candidate in failedPages) {
+                nextPageIndex += direction.step
+                continue
+            }
+            return candidate
+        }
+        return null
+    }
+
+    private fun completePage(key: CursorKey, pageIndex: Int, outcome: ManyuePrefetchWorkOutcome) = synchronized(this) {
+        if (activeKey == key) {
+            if (outcome == ManyuePrefetchWorkOutcome.FAILED) failedPages += pageIndex
+            // Successes may be rechecked after a direction change, reusing a cached request when
+            // present or rebuilding it after eviction. Cancellation is never remembered as failure.
+            if (nextPageIndex == pageIndex) nextPageIndex += direction.step
+        }
+    }
+
+    private fun scheduleCursorLocked(key: CursorKey): Job? {
+        if (
+            activeKey != key || !isCurrent(key.chapterId, key.generation, key.mode) ||
+            activeJob != null || latestWork == null
+        ) {
+            return null
+        }
+        if (nextCandidateLocked(key) == null) return null
+        val cursorJob = scope.launch(start = CoroutineStart.LAZY) {
+            try {
+                runCursor(key)
+            } finally {
+                val completedJob = currentCoroutineContext()[Job]
+                val followUp = synchronized(this@ManyuePrefetchJobCoordinator) {
+                    if (activeJob === completedJob) {
+                        activeJob = null
+                        if (activeKey == key) scheduleCursorLocked(key) else null
+                    } else {
+                        null
+                    }
+                }
+                // Reconcile may have updated the head after runCursor observed an empty window.
+                // Assigning the successor under the same lock prevents that update being lost.
+                followUp?.start()
+            }
+        }
+        activeJob = cursorJob
+        return cursorJob
     }
 
     fun selectedPageIndex(chapterId: Long, generation: Long): Int? = synchronized(this) {
         activeKey?.takeIf { it.chapterId == chapterId && it.generation == generation }?.let { selectedPage }
+    }
+
+    fun selectedDirection(chapterId: Long, generation: Long): ManyueAiSafetyPolicy.PrefetchDirection? =
+        synchronized(this) {
+            activeKey?.takeIf { it.chapterId == chapterId && it.generation == generation }?.let { direction }
+        }
+
+    /** A page may keep preparing only while it remains current, visible, or inside the read-ahead window. */
+    fun isPreparationCurrent(chapterId: Long, generation: Long, mode: Int, pageIndex: Int): Boolean {
+        val key = CursorKey(chapterId, generation, mode)
+        if (!isCurrent(chapterId, generation, mode)) return false
+        val isVisible = ManyuePrefetchManager.isVisiblePage(chapterId, pageIndex)
+        return synchronized(this) {
+            if (activeKey != key || !isCurrent(chapterId, generation, mode)) {
+                false
+            } else {
+                pageIndex == selectedPage || isVisible ||
+                    ManyueAiSafetyPolicy.relativeDistance(pageIndex, selectedPage, direction) in
+                    1..ManyueAiSafetyPolicy.PREFETCH_WINDOW_PAGES
+            }
+        }
     }
 
     fun isCurrent(chapterId: Long, generation: Long, mode: Int): Boolean {
@@ -332,11 +501,20 @@ internal class ManyuePrefetchJobCoordinator(private val scope: CoroutineScope) {
         chapterId: Long,
         generation: Long,
         mode: Int,
+        keepStageCurrent: () -> Boolean = { true },
+        cancelStageIfStale: () -> Boolean = { false },
         stage: suspend () -> T,
     ): T = coroutineScope {
         val waiter = async { stage() }
         while (!waiter.isCompleted) {
             ensureCurrent(chapterId, generation, mode)
+            if (!keepStageCurrent() && cancelStageIfStale()) {
+                val moved = PrefetchWindowMovedCancellationException()
+                waiter.cancel(moved)
+                // Finish the child cleanup before runCursor advances to another page.
+                waiter.join()
+                throw moved
+            }
             delay(STATE_POLL_MS)
         }
         waiter.await()
@@ -348,6 +526,9 @@ internal class ManyuePrefetchJobCoordinator(private val scope: CoroutineScope) {
             selectedPage = -1
             pageCount = 0
             nextPageIndex = -1
+            direction = ManyueAiSafetyPolicy.PrefetchDirection.FORWARD
+            failedPages.clear()
+            latestWork = null
             activeJob?.cancel()
             activeJob = null
         }

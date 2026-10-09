@@ -31,7 +31,7 @@ object ManyueEnhancementCache {
     private const val LEGACY_CACHE_DIR_NAME = "manyue_ai_anime_fixed2_v6"
     private const val MAX_CACHE_BYTES = 805_306_368L // 768 MiB
     private const val TRIM_TO_BYTES = 671_088_640L // 640 MiB
-    private const val NEAR_PREVIOUS_PAGES = 2
+    private const val NEAR_READING_PAGES = ManyueAiSafetyPolicy.ACTIVE_COMPLETION_LOOK_BACK_PAGES
     const val DEFAULT_PREFETCH_RESERVATION_BYTES = 64_777_216L // 12 MP RGBA + 16 MiB overhead
 
     private val cacheLock = Any()
@@ -822,7 +822,7 @@ object ManyueEnhancementCache {
     ): Boolean {
         if (identity == null) return false
         if (position != null && identity.mangaId == position.mangaId && identity.chapterId == position.chapterId &&
-            identity.pageIndex >= position.pageIndex - NEAR_PREVIOUS_PAGES
+            kotlin.math.abs(identity.pageIndex.toLong() - position.pageIndex.toLong()) <= NEAR_READING_PAGES
         ) {
             return true
         }
