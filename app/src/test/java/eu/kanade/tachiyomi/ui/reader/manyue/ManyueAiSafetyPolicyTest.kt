@@ -19,49 +19,17 @@ class ManyueAiSafetyPolicyTest {
         assertFalse(ManyueAiSafetyPolicy.isPredictedNativeOutputSafe(2000, 7000, 48_000_000))
     }
 
-    @Test fun `Quality prefers PNG while Lite retains WebP axis and overlay rules`() {
+    @Test fun `PNG avoids WebP axis limit while respecting ordinary and overlay formats`() {
         val axisLimit = ManyueAiSafetyPolicy.MAX_WEBP_DIMENSION
-        val quality = ManyueAiModel.QUALITY_REAL_ESRGAN
-        val lite = ManyueAiModel.MOBILE_LITE
-        assertEquals(
-            "webp",
-            ManyueAiSafetyPolicy.nativeOutputFormat(axisLimit, 1, anime4kOverlay = false, model = lite),
-        )
-        assertEquals(
-            "png",
-            ManyueAiSafetyPolicy.nativeOutputFormat(axisLimit + 1, 1, anime4kOverlay = false, model = lite),
-        )
-        assertEquals(
-            "png",
-            ManyueAiSafetyPolicy.nativeOutputFormat(1, axisLimit + 1, anime4kOverlay = false, model = lite),
-        )
+        assertEquals("webp", ManyueAiSafetyPolicy.nativeOutputFormat(axisLimit, 1, anime4kOverlay = false))
+        assertEquals("png", ManyueAiSafetyPolicy.nativeOutputFormat(axisLimit + 1, 1, anime4kOverlay = false))
+        assertEquals("png", ManyueAiSafetyPolicy.nativeOutputFormat(1, axisLimit + 1, anime4kOverlay = false))
         assertTrue(
             ManyueAiSafetyPolicy.isPixelBudgetSafe(axisLimit + 1, 1, ManyueAiSafetyPolicy.MAX_DISPLAY_PIXELS),
             "the long, narrow image remains within the independent pixel budget",
         )
-        assertEquals(
-            "png",
-            ManyueAiSafetyPolicy.nativeOutputFormat(2_000, 3_000, anime4kOverlay = false, model = quality),
-        )
-        assertEquals(
-            "webp",
-            ManyueAiSafetyPolicy.nativeOutputFormat(2_000, 3_000, anime4kOverlay = false, model = lite),
-        )
-        assertEquals(
-            "png",
-            ManyueAiSafetyPolicy.nativeOutputFormat(2_000, 3_000, anime4kOverlay = true, model = lite),
-        )
-    }
-
-    @Test fun `Quality PNG cache identity is isolated while Lite identity stays unchanged`() {
-        val quality = ManyueAiModel.QUALITY_REAL_ESRGAN
-        val lite = ManyueAiModel.MOBILE_LITE
-
-        assertEquals(
-            "${quality.cacheIdentity}:${ManyueAiSafetyPolicy.QUALITY_FAST_PNG_CACHE_REVISION}",
-            ManyueAiSafetyPolicy.nativeOutputCacheIdentity(quality),
-        )
-        assertEquals(lite.cacheIdentity, ManyueAiSafetyPolicy.nativeOutputCacheIdentity(lite))
+        assertEquals("webp", ManyueAiSafetyPolicy.nativeOutputFormat(2_000, 3_000, anime4kOverlay = false))
+        assertEquals("png", ManyueAiSafetyPolicy.nativeOutputFormat(2_000, 3_000, anime4kOverlay = true))
     }
 
     @Test fun `completion requires token identity AI mode and generation to match`() {

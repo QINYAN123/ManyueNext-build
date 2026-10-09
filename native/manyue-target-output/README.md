@@ -48,7 +48,7 @@ The upstream Android build used NDK `25.2.9519653`, while the supplied ncnn 2024
 
 ## Encoding and scope
 
-OpenCV is removed from these workers because it was used only in the output encoder. Android PNG output uses the candidate `manyue_fast_png.h` helper: it streams filter-0 RGB/RGBA rows into system zlib with DEFLATE level 0, then writes the output as CRC-checked IDAT chunks of at most 64 KiB. It does not allocate a whole-frame filtered or compressed copy, and the encoded channel bytes are lossless, including RGB under fully transparent pixels. Stored DEFLATE blocks skip Huffman compression but make PNG files materially larger than the former stb output; the reader cache budget remains in force. Windows cold-CLI PNG encoding still uses WIC. All Android WebP outputs use pinned libwebp 1.5.0 with `lossless=1`, compression effort `quality=0`, `method=0`, `exact=1`, and one thread. Compression effort does not reduce image quality in lossless mode. This replaces the expensive convenience lossless encoder at 2× and the former quality-95 lossy encoder below 2×. JPEG continues through stb at quality 100 for CLI compatibility. The app cache version is advanced so earlier lossy resized images are not reused.
+OpenCV is removed from these workers because it was used only in the output encoder. PNG output uses the existing stb PNG encoder. All Android WebP outputs now use pinned libwebp 1.5.0 with `lossless=1`, compression effort `quality=0`, `method=0`, `exact=1`, and one thread. Compression effort does not reduce image quality in lossless mode. This replaces the expensive convenience lossless encoder at 2× and the former quality-95 lossy encoder below 2×. JPEG continues through stb at quality 100 for CLI compatibility. The app cache version is advanced so earlier lossy resized images are not reused. Files can be larger at lower compression effort; the cache retains its byte budget.
 
 An earlier Magic V2 / Adreno 740 cold-process comparison used a 690×985 comic crop and showed lower total times after changing the output path. It predates the resident-session and GPU chunk source generators described above, so those numbers do not predict their latency or sustained reader jank. The output-path comparison found identical decoded RGBA pixels at 2× and identical new 1.5×/2× WebP and PNG outputs. The GPU arithmetic and automatic tiling are retained; an FP16 arithmetic trial was rejected after local color deviations.
 
@@ -65,21 +65,6 @@ This phase preserves the original comic file and the existing 2× model weights/
 The status test mocks ncnn return values; it does not run ncnn or Vulkan inference. A Zig host benchmark can measure the representative RGB area resize separately:
 
 `fast_webp_test.cpp` links to pinned libwebp through the Manyue Lite host-test CMake build. It round-trips RGB and RGBA (including RGB behind zero alpha) exactly and rejects invalid input/unwritable paths. Run `manyue_fast_webp_test <output-prefix>` after configuring `MANYUE_LITE_BUILD_HOST_TESTS=ON`.
-
-`fast_png_test.cpp` writes RGB, RGBA with nonzero transparent RGB, and a 70,001-pixel-wide PNG fixture. It checks each chunk CRC, inflates the concatenated IDAT stream, compares every filter-0 byte and source pixel, and verifies that short writes trigger flush/close/removal. Build it with a C++11 toolchain that has zlib headers and libraries, then pass an output prefix in an existing directory; the test intentionally leaves the three PNG fixtures available for an independent Pillow decode. Android worker CMake links the NDK system zlib as `z`.
-
-Example on a host with zlib development files:
-
-```powershell
-$Compiler = "c++" # Choose a C++ compiler with system zlib headers and library.
-$OutDir = Join-Path $env:TEMP "manyue-fast-png-test"
-$null = New-Item -ItemType Directory -Force -Path $OutDir
-& $Compiler -std=c++11 -O2 -Wall -Wextra `
-  -I .\native\manyue-target-output `
-  .\native\manyue-target-output\fast_png_test.cpp `
-  -lz -o (Join-Path $OutDir "fast-png-test.exe")
-& (Join-Path $OutDir "fast-png-test.exe") (Join-Path $OutDir "fixture")
-```
 
 ```powershell
 & .\work\toolchains\native-build-tools\ziglang\zig.exe c++ `
