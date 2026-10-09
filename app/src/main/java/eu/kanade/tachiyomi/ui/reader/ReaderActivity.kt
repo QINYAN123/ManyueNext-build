@@ -366,6 +366,7 @@ class ReaderActivity : BaseActivity() {
 
     override fun onPause() {
         manyueReaderResumed = false
+        eu.kanade.tachiyomi.ui.reader.manyue.ManyueReadingCoverage.endReader()
         manyueFrameMonitor?.close()
         manyueFrameMonitor = null
         ManyuePerformanceDiagnostics.event(Stage.READER_PAUSED)
@@ -381,6 +382,9 @@ class ReaderActivity : BaseActivity() {
      */
     override fun onResume() {
         super.onResume()
+        if (eu.kanade.tachiyomi.BuildConfig.BUILD_TYPE == "benchmark") {
+            eu.kanade.tachiyomi.ui.reader.manyue.ManyueBenchmarkControl.reader = java.lang.ref.WeakReference(this)
+        }
         manyueReaderResumed = true
         updateManyueFrameMonitor()
         ManyuePerformanceDiagnostics.event(Stage.READER_RESUMED)
@@ -422,6 +426,71 @@ class ReaderActivity : BaseActivity() {
         ManyuePerformanceDiagnostics.clear()
         updateManyueFrameMonitor()
         recordManyueConfiguration()
+    }
+
+    /** Isolated cache namespaces make matched cold/warm runs possible without deleting books. */
+    fun onManyueBenchmarkCommand(operation: String, intent: Intent): Boolean {
+        if (eu.kanade.tachiyomi.BuildConfig.BUILD_TYPE != "benchmark" || !manyueReaderResumed) return false
+        val runtime = eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState
+        when (operation) {
+            "configure" -> {
+                intent.getStringExtra("model")?.let {
+                    val model = eu.kanade.tachiyomi.ui.reader.manyue.ManyueAiModel.selectableModels.find { model -> model.id == it }
+                        ?: return false
+                    readerPreferences.manyueAiModel.set(model.id)
+                    onManyueAiModelChanged(model.id)
+                }
+                if (intent.hasExtra("scale")) {
+                    val scale = intent.getIntExtra("scale", 150)
+                    if (scale !in 100..200) return false
+                    readerPreferences.manyueAiScalePercent.set(scale)
+                    onManyueAiScaleChanged(scale)
+                }
+                if (intent.hasExtra("mode")) {
+                    val mode = intent.getIntExtra("mode", 2)
+                    if (mode !in listOf(0, 2, 3, 4)) return false
+                    readerPreferences.manyueEnhancementMode.set(mode)
+                    onManyueModeChanged(mode)
+                }
+                if (intent.hasExtra("gpu")) {
+                    val strength = intent.getIntExtra("gpu", 0)
+                    if (strength !in 0..100) return false
+                    readerPreferences.manyueGpuDisplayFilter.set(strength > 0)
+                    readerPreferences.manyueGpuDisplayStrength.set(strength)
+                    onManyueGpuDisplayChanged(strength > 0, strength)
+                }
+                readerPreferences.manyueAnime4kOverlay.set(false)
+                onManyueAnime4kOverlayChanged(false)
+                readerPreferences.cropBorders.set(false)
+                readerPreferences.cropBordersWebtoon.set(false)
+                readerPreferences.dualPageSplitPaged.set(false)
+                readerPreferences.dualPageSplitWebtoon.set(false)
+                readerPreferences.dualPageRotateToFit.set(false)
+                readerPreferences.dualPageRotateToFitWebtoon.set(false)
+                viewModel.state.value.viewer?.refreshManyue()
+            }
+            "jump" -> {
+                val pages = viewModel.state.value.viewerChapters?.currChapter?.pages ?: return false
+                val page = pages.getOrNull(intent.getIntExtra("page", -1)) ?: return false
+                viewModel.state.value.viewer?.moveToPage(page) ?: return false
+            }
+            "begin" -> {
+                val namespace = intent.getIntExtra("namespace", -1)
+                if (namespace < 0) return false
+                eu.kanade.tachiyomi.ui.reader.manyue.ManyueBenchmarkControl.cacheNamespace = namespace
+                runtime.invalidateSession()
+                readerPreferences.manyuePerformanceDiagnostics.set(true)
+                onManyuePerformanceDiagnosticsChanged(true)
+                resetManyuePerformanceDiagnostics()
+                viewModel.state.value.viewer?.refreshManyue()
+            }
+            "end" -> {
+                readerPreferences.manyuePerformanceDiagnostics.set(false)
+                onManyuePerformanceDiagnosticsChanged(false)
+            }
+            else -> return false
+        }
+        return true
     }
 
     private fun updateManyueFrameMonitor() {

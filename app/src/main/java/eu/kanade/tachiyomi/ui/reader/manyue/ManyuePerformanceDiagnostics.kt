@@ -20,8 +20,17 @@ object ManyuePerformanceDiagnostics {
     internal val recorder = ManyuePerformanceRecorder()
     val enabled get() = recorder.enabled
 
-    fun setEnabled(enabled: Boolean) = recorder.setEnabled(enabled)
-    fun clear() = recorder.clear()
+    fun setEnabled(enabled: Boolean) {
+        if (recorder.enabled == enabled) return
+        if (!enabled) ManyueReadingCoverage.endReader()
+        recorder.setEnabled(enabled)
+        if (enabled) ManyueReadingCoverage.clear()
+    }
+
+    fun clear() {
+        recorder.clear()
+        ManyueReadingCoverage.clear()
+    }
 
     internal fun event(stage: Stage, page: Int = -1, token: String? = null, vararg metrics: Pair<Metric, Long>) {
         if (!enabled) return
@@ -70,7 +79,7 @@ object ManyuePerformanceDiagnostics {
     fun export(context: Context): File {
         val snapshot = recorder.snapshot()
         val report = JSONObject().apply {
-            put("schema", 1)
+            put("schema", 2)
             put("appVersion", BuildConfig.VERSION_NAME)
             put("versionCode", BuildConfig.VERSION_CODE)
             put("commit", BuildConfig.COMMIT_SHA)
@@ -99,6 +108,7 @@ object ManyuePerformanceDiagnostics {
                 ),
             )
             put("frameSummary", frameSummary(snapshot.frames.filter { it.reading && !it.firstDraw }))
+            put("coverage", ManyueReadingCoverage.snapshot())
             put(
                 "events",
                 JSONArray(
@@ -136,7 +146,7 @@ object ManyuePerformanceDiagnostics {
             put("frameColumns", JSONArray(listOf("tNs", "totalNs", "deadlineNs", "gpuNs", "firstDraw", "reading")))
         }
         val bytes = report.toString().toByteArray(Charsets.UTF_8)
-        check(bytes.size <= 1_000_000) { "诊断报告超过大小限制" }
+        check(bytes.size <= 3_000_000) { "诊断报告超过大小限制" }
         val directory = context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS) ?: context.cacheDir
         directory.mkdirs()
         val file = File(directory, "manyue-performance.json")

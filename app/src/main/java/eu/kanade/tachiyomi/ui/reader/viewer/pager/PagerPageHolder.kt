@@ -2,6 +2,7 @@ package eu.kanade.tachiyomi.ui.reader.viewer.pager
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.graphics.Rect
 import android.view.LayoutInflater
 import androidx.core.view.isVisible
 import eu.kanade.presentation.util.formattedMessage
@@ -11,8 +12,13 @@ import eu.kanade.tachiyomi.ui.reader.model.InsertPage
 import eu.kanade.tachiyomi.ui.reader.model.ReaderPage
 import eu.kanade.tachiyomi.ui.reader.metadata.SourceImageCaptureOrder
 import eu.kanade.tachiyomi.ui.reader.metadata.SourceImageInfo
+import eu.kanade.tachiyomi.ui.reader.manyue.ManyueReadingCoverage
+import eu.kanade.tachiyomi.ui.reader.viewer.ManyueCoverageBounds
 import eu.kanade.tachiyomi.ui.reader.viewer.ReaderPageImageView
 import eu.kanade.tachiyomi.ui.reader.viewer.ReaderProgressIndicator
+import eu.kanade.tachiyomi.ui.reader.viewer.manyueCoverageInputSize
+import eu.kanade.tachiyomi.ui.reader.viewer.manyueCoverageFractions
+import eu.kanade.tachiyomi.ui.reader.viewer.toManyueCoverageSource
 import eu.kanade.tachiyomi.ui.webview.WebViewActivity
 import eu.kanade.tachiyomi.widget.ViewPagerAdapter
 import kotlinx.coroutines.Job
@@ -65,6 +71,19 @@ class PagerPageHolder(
     private var loadJob: Job? = null
 
     init {
+        setReadingCoverageSource(page.toManyueCoverageSource())
+        addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> viewer.refreshReadingCoverage() }
+        addOnAttachStateChangeListener(
+            object : android.view.View.OnAttachStateChangeListener {
+                override fun onViewAttachedToWindow(view: android.view.View) {
+                    post { viewer.refreshReadingCoverage() }
+                }
+
+                override fun onViewDetachedFromWindow(view: android.view.View) {
+                    hideReadingCoverage()
+                }
+            },
+        )
         loadJob = scope.launch { loadPageAndProcessStatus() }
     }
 
@@ -73,6 +92,7 @@ class PagerPageHolder(
      */
     @SuppressLint("ClickableViewAccessibility")
     override fun onDetachedFromWindow() {
+        hideReadingCoverage()
         super.onDetachedFromWindow()
         loadJob?.cancel()
         loadJob = null
@@ -156,7 +176,7 @@ class PagerPageHolder(
         val streamFn = page.stream ?: return
 
         try {
-            val (source, isAnimated, background, originalBytes) = withIOContext {
+            val (source, isAnimated, background, originalBytes, coverageSource) = withIOContext {
                 val raw = streamFn().use { stream ->
                     SourceImageCaptureOrder.captureThenTransform(
                         raw = Buffer().readFrom(stream),
@@ -180,6 +200,22 @@ class PagerPageHolder(
                 val originalBytes = if (
                     eu.kanade.tachiyomi.ui.reader.manyue.ManyueReaderHook.needsAi(raw, mode)
                 ) raw.peek().readByteArray() else null
+                val sourceInfo = item.sourceImageInfo.value as? SourceImageInfo.Available
+                val fingerprint = if (ManyueReadingCoverage.enabled) {
+                    originalBytes?.let(eu.kanade.tachiyomi.ui.reader.manyue.ManyueAiUpscaler::fingerprint)
+                } else {
+                    null
+                }
+                val (sourceWidth, sourceHeight) = manyueCoverageInputSize(
+                    encodedBytes = originalBytes?.takeIf { ManyueReadingCoverage.enabled },
+                    fallbackWidth = sourceInfo?.width ?: 0,
+                    fallbackHeight = sourceInfo?.height ?: 0,
+                )
+                val coverageSource = page.toManyueCoverageSource(
+                    fingerprint = fingerprint,
+                    sourceWidth = sourceWidth,
+                    sourceHeight = sourceHeight,
+                )
                 var source = raw
                 // Manyue enhancement hook (no-op when OFF / animated / failure)
                 source = eu.kanade.tachiyomi.ui.reader.manyue.ManyueReaderHook
@@ -192,7 +228,7 @@ class PagerPageHolder(
                 } else {
                     null
                 }
-                ManyueImageResult(source, isAnimated, background, originalBytes)
+                ManyueImageResult(source, isAnimated, background, originalBytes, coverageSource)
             }
             val pageConfig = Config(
                 zoomDuration = viewer.config.doubleTapAnimDuration,
@@ -202,6 +238,7 @@ class PagerPageHolder(
                 landscapeZoom = viewer.config.landscapeZoom,
             )
             withUIContext {
+                setReadingCoverageSource(coverageSource)
                 setImage(
                     source,
                     isAnimated,
@@ -331,6 +368,7 @@ class PagerPageHolder(
         if (eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.updateDisplayWidth(readingWidth)) {
             viewer.pager.post { viewer.refreshManyue() }
         }
+        viewer.refreshReadingCoverage()
     }
 
     /**
@@ -347,6 +385,32 @@ class PagerPageHolder(
     override fun onScaleChanged(newScale: Float) {
         super.onScaleChanged(newScale)
         viewer.activity.hideMenu()
+    }
+
+    fun updateReadingCoverageExposure() {
+        if (!viewer.isReadingCoverageVisible || viewer.currentPageForCoverage !== page || !isAttachedToWindow) {
+            hideReadingCoverage()
+            return
+        }
+        val viewportRect = Rect()
+        val visibleRect = Rect()
+        if (!viewer.pager.getGlobalVisibleRect(viewportRect) || !getGlobalVisibleRect(visibleRect)) {
+            hideReadingCoverage()
+            return
+        }
+        val location = IntArray(2)
+        getLocationOnScreen(location)
+        val fractions = manyueCoverageFractions(
+            page = ManyueCoverageBounds(location[0], location[1], location[0] + width, location[1] + height),
+            visible = ManyueCoverageBounds(visibleRect.left, visibleRect.top, visibleRect.right, visibleRect.bottom),
+            viewport = ManyueCoverageBounds(viewportRect.left, viewportRect.top, viewportRect.right, viewportRect.bottom),
+        )
+        updateReadingCoverageExposure(
+            viewportFractionPermille = fractions.viewportFractionPermille,
+            pageFractionPermille = fractions.pageFractionPermille,
+            isShortPage = false,
+            eligible = fractions.viewportFractionPermille >= 200,
+        )
     }
 
     private fun showErrorLayout(error: Throwable?): ReaderErrorBinding {
@@ -393,4 +457,5 @@ private data class ManyueImageResult(
     val isAnimated: Boolean,
     val background: android.graphics.drawable.Drawable?,
     val originalBytes: ByteArray?,
+    val coverageSource: ManyueReadingCoverage.Source,
 )

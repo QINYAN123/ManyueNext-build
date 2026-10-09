@@ -2,8 +2,8 @@ package eu.kanade.tachiyomi.ui.reader.manyue
 
 /** Numeric-only, bounded storage. No files, image bytes, source names, URLs or exception text. */
 internal class ManyuePerformanceRecorder(
-    private val maxEvents: Int = 512,
-    private val maxFrames: Int = 1800,
+    private val maxEvents: Int = 2048,
+    private val maxFrames: Int = 12000,
     private val clock: () -> Long = System::nanoTime,
 ) {
     enum class Stage {
@@ -129,6 +129,10 @@ internal class ManyuePerformanceRecorder(
         startedAt = clock()
         stoppedAt = startedAt
     }
+
+    /** The same monotonic session origin as events and frame callbacks, including after stop. */
+    @Synchronized fun elapsedNs(): Long =
+        ((if (enabled) clock() else stoppedAt) - startedAt).coerceAtLeast(0)
 
     fun event(stage: Stage, page: Int = -1, job: Int = 0, metrics: Map<Metric, Long> = emptyMap()) {
         if (!enabled) return

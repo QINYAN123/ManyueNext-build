@@ -10,6 +10,9 @@ import androidx.core.app.ActivityCompat
 import androidx.core.view.isGone
 import androidx.core.view.isVisible
 import androidx.core.view.doOnNextLayout
+import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleOwner
 import androidx.recyclerview.widget.RecyclerView
 import androidx.recyclerview.widget.WebtoonLayoutManager
 import eu.kanade.tachiyomi.ui.reader.ReaderActivity
@@ -19,9 +22,14 @@ import eu.kanade.tachiyomi.ui.reader.model.ViewerChapters
 import eu.kanade.tachiyomi.ui.reader.viewer.Viewer
 import eu.kanade.tachiyomi.ui.reader.viewer.ViewerNavigation.NavigationRegion
 import eu.kanade.tachiyomi.ui.reader.manyue.ManyuePrefetchManager
+import eu.kanade.tachiyomi.ui.reader.manyue.ManyueReadingCoverage
 import eu.kanade.tachiyomi.ui.reader.manyue.ManyueReaderPrefetcher
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 import mihon.app.di.appGraph
 import tachiyomi.core.common.util.system.logcat
 import kotlin.math.max
@@ -78,12 +86,34 @@ class WebtoonViewer(val activity: ReaderActivity, val isContinuous: Boolean = tr
     private var manyueVisibleItems: List<Any>? = null
     private var manyueVisiblePages = emptySet<Pair<Long, Int>>()
     private var manyueScheduledVisiblePages: Set<Pair<Long, Int>>? = null
+    private var coverageBlockedByUi = activity.viewModel.state.value.menuVisible || activity.viewModel.state.value.dialog != null
+
+    private val coverageLifecycleObserver = object : DefaultLifecycleObserver {
+        override fun onPause(owner: LifecycleOwner) {
+            hideReadingCoverage()
+        }
+
+        override fun onResume(owner: LifecycleOwner) {
+            refreshReadingCoverage()
+        }
+    }
 
     private val threshold: Int by lazy { readerPreferences.readerHideThreshold.get().threshold }
 
     init {
+        activity.lifecycle.addObserver(coverageLifecycleObserver)
+        scope.launch {
+            activity.viewModel.state
+                .map { it.menuVisible || it.dialog != null }
+                .distinctUntilChanged()
+                .collect { blocked ->
+                    coverageBlockedByUi = blocked
+                    if (blocked) hideReadingCoverage() else refreshReadingCoverage()
+                }
+        }
         recycler.setItemViewCacheSize(RECYCLER_VIEW_CACHE_SIZE)
         recycler.addOnLayoutChangeListener { _, left, _, right, _, oldLeft, _, oldRight, _ ->
+            refreshReadingCoverage()
             if (right - left > 0 && right - left != oldRight - oldLeft) {
                 val width = eu.kanade.tachiyomi.ui.reader.manyue.ManyueFoldableController.readingWidthPx(right - left)
                 if (eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.updateDisplayWidth(width)) {
@@ -97,6 +127,19 @@ class WebtoonViewer(val activity: ReaderActivity, val isContinuous: Boolean = tr
         recycler.itemAnimator = null
         recycler.layoutManager = layoutManager
         recycler.adapter = adapter
+        recycler.addOnChildAttachStateChangeListener(
+            object : RecyclerView.OnChildAttachStateChangeListener {
+                override fun onChildViewAttachedToWindow(view: View) {
+                    recycler.post {
+                        (recycler.getChildViewHolder(view) as? WebtoonPageHolder)?.updateReadingCoverageExposure()
+                    }
+                }
+
+                override fun onChildViewDetachedFromWindow(view: View) {
+                    (recycler.getChildViewHolder(view) as? WebtoonPageHolder)?.hideReadingCoverage()
+                }
+            },
+        )
         recycler.addOnScrollListener(
             object : RecyclerView.OnScrollListener() {
                 override fun onScrolled(recyclerView: RecyclerView, dx: Int, dy: Int) {
@@ -208,6 +251,8 @@ class WebtoonViewer(val activity: ReaderActivity, val isContinuous: Boolean = tr
      * Destroys this viewer. Called when leaving the reader or swapping viewers.
      */
     override fun destroy() {
+        clearReadingCoverageState()
+        activity.lifecycle.removeObserver(coverageLifecycleObserver)
         super.destroy()
         manyuePrefetcher.destroy()
         eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.invalidateSession()
@@ -387,6 +432,38 @@ class WebtoonViewer(val activity: ReaderActivity, val isContinuous: Boolean = tr
                 is ReaderPage -> onPageSelected(item, allowPreload)
                 is ChapterTransition -> onTransitionSelected(item)
             }
+        }
+        refreshReadingCoverage()
+    }
+
+    /** True only while the reader is resumed and unobstructed by reader menus or dialogs. */
+    val isReadingCoverageVisible: Boolean
+        get() = ManyueReadingCoverage.enabled &&
+            !coverageBlockedByUi &&
+            activity.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
+
+    private fun refreshReadingCoverage() {
+        if (!isReadingCoverageVisible) {
+            hideReadingCoverage()
+            return
+        }
+        for (index in 0 until recycler.childCount) {
+            val child = recycler.getChildAt(index) ?: continue
+            (recycler.getChildViewHolder(child) as? WebtoonPageHolder)?.updateReadingCoverageExposure()
+        }
+    }
+
+    private fun hideReadingCoverage() {
+        for (index in 0 until recycler.childCount) {
+            val child = recycler.getChildAt(index) ?: continue
+            (recycler.getChildViewHolder(child) as? WebtoonPageHolder)?.hideReadingCoverage()
+        }
+    }
+
+    private fun clearReadingCoverageState() {
+        for (index in 0 until recycler.childCount) {
+            val child = recycler.getChildAt(index) ?: continue
+            (recycler.getChildViewHolder(child) as? WebtoonPageHolder)?.clearReadingCoverageState()
         }
     }
 

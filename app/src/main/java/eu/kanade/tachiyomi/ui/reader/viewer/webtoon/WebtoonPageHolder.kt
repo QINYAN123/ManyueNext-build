@@ -1,5 +1,6 @@
 package eu.kanade.tachiyomi.ui.reader.viewer.webtoon
 
+import android.graphics.Rect
 import android.content.res.Resources
 import android.view.LayoutInflater
 import android.view.ViewGroup
@@ -16,8 +17,14 @@ import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.ui.reader.model.ReaderPage
 import eu.kanade.tachiyomi.ui.reader.metadata.SourceImageCaptureOrder
 import eu.kanade.tachiyomi.ui.reader.metadata.SourceImageInfo
+import eu.kanade.tachiyomi.ui.reader.manyue.ManyueReadingCoverage
+import eu.kanade.tachiyomi.ui.reader.viewer.ManyueCoverageBounds
 import eu.kanade.tachiyomi.ui.reader.viewer.ReaderPageImageView
 import eu.kanade.tachiyomi.ui.reader.viewer.ReaderProgressIndicator
+import eu.kanade.tachiyomi.ui.reader.viewer.isManyueCoverageExposureEligible
+import eu.kanade.tachiyomi.ui.reader.viewer.manyueCoverageInputSize
+import eu.kanade.tachiyomi.ui.reader.viewer.manyueCoverageFractions
+import eu.kanade.tachiyomi.ui.reader.viewer.toManyueCoverageSource
 import eu.kanade.tachiyomi.ui.webview.WebViewActivity
 import eu.kanade.tachiyomi.util.system.dpToPx
 import kotlinx.coroutines.Job
@@ -88,6 +95,7 @@ class WebtoonPageHolder(
         frame.onImageLoaded = { onImageDecoded() }
         frame.onImageLoadError = { error -> setError(error) }
         frame.onScaleChanged = { viewer.activity.hideMenu() }
+        frame.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> updateReadingCoverageExposure() }
     }
 
     /**
@@ -97,9 +105,12 @@ class WebtoonPageHolder(
         manyueBridgeRef?.cancel()
         manyueBridgeRef = null
         this.page = page
+        frame.setReadingCoverageSource(page.toManyueCoverageSource())
+        frame.hideReadingCoverage()
         loadJob?.cancel()
         loadJob = scope.launch { loadPageAndProcessStatus() }
         refreshLayoutParams()
+        frame.post { updateReadingCoverageExposure() }
     }
 
     private fun refreshLayoutParams() {
@@ -118,6 +129,7 @@ class WebtoonPageHolder(
      * Called when the view is recycled and added to the view pool.
      */
     override fun recycle() {
+        frame.clearReadingCoverageState()
         loadJob?.cancel()
         loadJob = null
         manyueBridgeRef?.cancel()
@@ -198,7 +210,7 @@ class WebtoonPageHolder(
         val streamFn = currentPage.stream ?: return
 
         try {
-            val (source, isAnimated, originalBytes) = withIOContext {
+            val (source, isAnimated, originalBytes, coverageSource) = withIOContext {
                 val raw = streamFn().use { stream ->
                     SourceImageCaptureOrder.captureThenTransform(
                         raw = Buffer().readFrom(stream),
@@ -222,6 +234,22 @@ class WebtoonPageHolder(
                 val originalBytes = if (
                     eu.kanade.tachiyomi.ui.reader.manyue.ManyueReaderHook.needsAi(raw, mode)
                 ) raw.peek().readByteArray() else null
+                val sourceInfo = currentPage.sourceImageInfo.value as? SourceImageInfo.Available
+                val fingerprint = if (ManyueReadingCoverage.enabled) {
+                    originalBytes?.let(eu.kanade.tachiyomi.ui.reader.manyue.ManyueAiUpscaler::fingerprint)
+                } else {
+                    null
+                }
+                val (sourceWidth, sourceHeight) = manyueCoverageInputSize(
+                    encodedBytes = originalBytes?.takeIf { ManyueReadingCoverage.enabled },
+                    fallbackWidth = sourceInfo?.width ?: 0,
+                    fallbackHeight = sourceInfo?.height ?: 0,
+                )
+                val coverageSource = currentPage.toManyueCoverageSource(
+                    fingerprint = fingerprint,
+                    sourceWidth = sourceWidth,
+                    sourceHeight = sourceHeight,
+                )
                 var source = raw
                 // Manyue enhancement hook (no-op when OFF / animated / failure)
                 source = eu.kanade.tachiyomi.ui.reader.manyue.ManyueReaderHook
@@ -229,7 +257,7 @@ class WebtoonPageHolder(
                         eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.classicStrength,
                         currentPage::updateEnhancementState)
                 val isAnimated = ImageUtil.isAnimatedAndSupported(source)
-                ManyueWebtoonImageResult(source, isAnimated, originalBytes)
+                ManyueWebtoonImageResult(source, isAnimated, originalBytes, coverageSource)
             }
             val pageConfig = ReaderPageImageView.Config(
                 zoomDuration = viewer.config.doubleTapAnimDuration,
@@ -237,6 +265,7 @@ class WebtoonPageHolder(
                 cropBorders = viewer.config.imageCropBorders,
             )
             withUIContext {
+                frame.setReadingCoverageSource(coverageSource)
                 frame.setImage(
                     source,
                     isAnimated,
@@ -342,7 +371,47 @@ class WebtoonPageHolder(
         if (eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.updateDisplayWidth(readingWidth)) {
             viewer.recycler.post { viewer.refreshManyue() }
         }
+        updateReadingCoverageExposure()
     }
+
+    /** Refreshes actual visible-region geometry on scroll, attach and layout changes. */
+    fun updateReadingCoverageExposure() {
+        if (!viewer.isReadingCoverageVisible || page == null || !frame.isAttachedToWindow) {
+            frame.hideReadingCoverage()
+            return
+        }
+        val viewportRect = Rect()
+        val visibleRect = Rect()
+        if (!viewer.recycler.getGlobalVisibleRect(viewportRect) || !frame.getGlobalVisibleRect(visibleRect)) {
+            frame.hideReadingCoverage()
+            return
+        }
+        val location = IntArray(2)
+        frame.getLocationOnScreen(location)
+        val pageRect = ManyueCoverageBounds(
+            location[0],
+            location[1],
+            location[0] + frame.width,
+            location[1] + frame.height,
+        )
+        val fractions = manyueCoverageFractions(
+            page = pageRect,
+            visible = ManyueCoverageBounds(visibleRect.left, visibleRect.top, visibleRect.right, visibleRect.bottom),
+            viewport = ManyueCoverageBounds(viewportRect.left, viewportRect.top, viewportRect.right, viewportRect.bottom),
+        )
+        val isShortPage = frame.height <= viewportRect.height()
+        val eligible = isManyueCoverageExposureEligible(fractions, isShortPage)
+        frame.updateReadingCoverageExposure(
+            viewportFractionPermille = fractions.viewportFractionPermille,
+            pageFractionPermille = fractions.pageFractionPermille,
+            isShortPage = isShortPage,
+            eligible = eligible,
+        )
+    }
+
+    fun hideReadingCoverage() = frame.hideReadingCoverage()
+
+    fun clearReadingCoverageState() = frame.clearReadingCoverageState()
 
     /**
      * Creates a new progress bar.
@@ -406,4 +475,5 @@ private data class ManyueWebtoonImageResult(
     val source: okio.BufferedSource,
     val isAnimated: Boolean,
     val originalBytes: ByteArray?,
+    val coverageSource: ManyueReadingCoverage.Source,
 )

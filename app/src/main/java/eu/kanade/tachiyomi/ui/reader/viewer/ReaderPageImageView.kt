@@ -1,6 +1,7 @@
 package eu.kanade.tachiyomi.ui.reader.viewer
 
 import android.content.Context
+import android.graphics.Canvas
 import android.graphics.PointF
 import android.graphics.RectF
 import android.graphics.drawable.Animatable
@@ -40,6 +41,7 @@ import com.github.chrisbanes.photoview.PhotoView
 import eu.kanade.tachiyomi.data.coil.cropBorders
 import eu.kanade.tachiyomi.data.coil.customDecoder
 import eu.kanade.tachiyomi.ui.reader.manyue.ManyueEnhancementCache
+import eu.kanade.tachiyomi.ui.reader.manyue.ManyueReadingCoverage
 import eu.kanade.tachiyomi.ui.reader.manyue.ManyueViewportPolicy
 import eu.kanade.tachiyomi.ui.reader.viewer.webtoon.WebtoonRecyclerView
 import eu.kanade.tachiyomi.ui.reader.viewer.webtoon.WebtoonSubsamplingImageView
@@ -49,6 +51,67 @@ import okio.BufferedSource
 import java.io.File
 import java.util.concurrent.Executor
 import java.util.concurrent.Executors
+
+/** Draw callback shared by the normal, webtoon, and animated page renderers. */
+interface ReaderContentDrawCallback {
+    var onReaderContentDraw: ((View) -> Unit)?
+    var onReaderContentDrawFailure: ((View, Throwable) -> Unit)?
+}
+
+open class ReaderSubsamplingScaleImageView @JvmOverloads constructor(
+    context: Context,
+    attrs: AttributeSet? = null,
+) : SubsamplingScaleImageView(context, attrs), ReaderContentDrawCallback {
+    override var onReaderContentDraw: ((View) -> Unit)? = null
+    override var onReaderContentDrawFailure: ((View, Throwable) -> Unit)? = null
+
+    override fun onDraw(canvas: Canvas) {
+        drawReaderContentThenReport(
+            draw = { super.onDraw(canvas) },
+            onDraw = {
+                if (isImageLoaded && isReady && isShown && alpha > 0f) onReaderContentDraw?.invoke(this)
+            },
+            onFailure = { error ->
+                if (isImageLoaded && isReady && isShown && alpha > 0f) {
+                    onReaderContentDrawFailure?.invoke(this, error)
+                }
+            },
+        )
+    }
+}
+
+internal open class ReaderAnimatedImageView @JvmOverloads constructor(
+    context: Context,
+    attrs: AttributeSet? = null,
+) : AppCompatImageView(context, attrs), ReaderContentDrawCallback {
+    override var onReaderContentDraw: ((View) -> Unit)? = null
+    override var onReaderContentDrawFailure: ((View, Throwable) -> Unit)? = null
+
+    override fun onDraw(canvas: Canvas) {
+        drawReaderContentThenReport(
+            draw = { super.onDraw(canvas) },
+            onDraw = { if (drawable != null && isShown && alpha > 0f) onReaderContentDraw?.invoke(this) },
+            onFailure = { error ->
+                if (drawable != null && isShown && alpha > 0f) onReaderContentDrawFailure?.invoke(this, error)
+            },
+        )
+    }
+}
+
+internal class ReaderAnimatedPhotoView(context: Context) : PhotoView(context), ReaderContentDrawCallback {
+    override var onReaderContentDraw: ((View) -> Unit)? = null
+    override var onReaderContentDrawFailure: ((View, Throwable) -> Unit)? = null
+
+    override fun onDraw(canvas: Canvas) {
+        drawReaderContentThenReport(
+            draw = { super.onDraw(canvas) },
+            onDraw = { if (drawable != null && isShown && alpha > 0f) onReaderContentDraw?.invoke(this) },
+            onFailure = { error ->
+                if (drawable != null && isShown && alpha > 0f) onReaderContentDrawFailure?.invoke(this, error)
+            },
+        )
+    }
+}
 
 /**
  * A wrapper view for showing page image.
@@ -74,6 +137,11 @@ open class ReaderPageImageView @JvmOverloads constructor(
     private val mainHandler = Handler(Looper.getMainLooper())
     private var sourceGeneration = 0L
     private var activeSourceGeneration: Long? = null
+    private var coverageSource: ManyueReadingCoverage.Source? = null
+    private var activeCoverageResult: ManyueReadingCoverage.Result? = null
+    private var activeCoverageGeneration: Long? = null
+    private var activeImageIsAi = false
+    private var coverageExposureEligible = false
     private var landscapeZoomHandler: Handler? = null
     private var landscapeZoomRunnable: Runnable? = null
 
@@ -122,6 +190,7 @@ open class ReaderPageImageView @JvmOverloads constructor(
     }
 
     override fun onDetachedFromWindow() {
+        hideReadingCoverage()
         stagedCommit?.let {
             mainHandler.removeCallbacks(it)
             removeCallbacks(it)
@@ -145,6 +214,138 @@ open class ReaderPageImageView @JvmOverloads constructor(
         cancelLandscapeZoom()
         sourceGeneration++
         activeSourceGeneration = sourceGeneration
+        activeCoverageResult = null
+        activeCoverageGeneration = null
+        activeImageIsAi = false
+    }
+
+    /** Updates the per-page source stamp without reading or hashing image bytes on the UI thread. */
+    fun setReadingCoverageSource(source: ManyueReadingCoverage.Source?) {
+        val previous = coverageSource
+        if (source == null) {
+            coverageSource = null
+            activeCoverageResult = null
+            activeCoverageGeneration = null
+            activeImageIsAi = false
+            return
+        }
+        val samePage = previous?.let { it.mangaId == source.mangaId && it.chapterId == source.chapterId && it.page == source.page } == true
+        val fingerprintChanged = previous?.fingerprint != null && source.fingerprint != null &&
+            previous.fingerprint != source.fingerprint
+        if (!samePage || fingerprintChanged) {
+            activeCoverageResult = null
+            activeCoverageGeneration = null
+            // Keep an AI child classified as AI until its replacement source is installed. This
+            // prevents a stale result from being reported as an original-image draw in the gap.
+        }
+        val activeResult = activeCoverageResult
+        if (activeResult != null && activeResult.source != source) {
+            activeCoverageResult = null
+            activeCoverageGeneration = null
+        }
+        coverageSource = source
+    }
+
+    /** Called by the holder/viewer when its visible rectangle crosses the exposure threshold. */
+    fun updateReadingCoverageExposure(
+        viewportFractionPermille: Int,
+        pageFractionPermille: Int,
+        isShortPage: Boolean,
+        eligible: Boolean,
+    ) {
+        if (!ManyueReadingCoverage.enabled) {
+            coverageExposureEligible = false
+            return
+        }
+        val source = coverageSource
+        if (!eligible || source == null) {
+            if (coverageExposureEligible) ManyueReadingCoverage.hidden(this)
+            coverageExposureEligible = false
+            return
+        }
+        coverageExposureEligible = true
+        ManyueReadingCoverage.exposure(
+            owner = this,
+            source = source,
+            viewportFractionPermille = viewportFractionPermille,
+            pageFractionPermille = pageFractionPermille,
+            isShortPage = isShortPage,
+        )
+    }
+
+    fun hideReadingCoverage() {
+        if (coverageExposureEligible && ManyueReadingCoverage.enabled) ManyueReadingCoverage.hidden(this)
+        coverageExposureEligible = false
+    }
+
+    fun clearReadingCoverageState() {
+        hideReadingCoverage()
+        coverageSource = null
+        activeCoverageResult = null
+        activeCoverageGeneration = null
+        activeImageIsAi = false
+    }
+
+    private fun reportReaderContentDraw(child: View) {
+        if (!ManyueReadingCoverage.enabled || !coverageExposureEligible || pageView !== child) return
+        if (!isShown || alpha <= 0f || !child.isShown || child.alpha <= 0f) return
+        if (activeSourceGeneration == null || activeSourceGeneration != sourceGeneration) return
+        val source = coverageSource ?: return
+        val result = activeCoverageResult
+        val imageSize = (child as? SubsamplingScaleImageView)
+            ?.takeIf { it.isImageLoaded && it.isReady }
+            ?.let { it.sWidth to it.sHeight }
+        if (activeImageIsAi && result != null && imageSize != null &&
+            activeCoverageGeneration == result.generation && source == result.source &&
+            result.generation == eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.generation &&
+            result.outputWidth > 0 && result.outputHeight > 0 &&
+            (imageSize.first != result.outputWidth || imageSize.second != result.outputHeight)
+        ) {
+            ManyueReadingCoverage.rejectedDimensions(this)
+            return
+        }
+        if (!ManyueCoverageDrawPolicy.shouldReport(
+                isActiveChild = true,
+                isImageReady = true,
+                isShown = child.isShown,
+                exposureEligible = true,
+                source = source,
+                result = result,
+                imageIsAi = activeImageIsAi,
+                expectedGeneration = activeCoverageGeneration,
+                actualOutputWidth = imageSize?.first,
+                actualOutputHeight = imageSize?.second,
+            )
+        ) {
+            return
+        }
+        ManyueReadingCoverage.drawn(
+            owner = this,
+            source = result?.source ?: source,
+            result = result,
+        )
+    }
+
+    private fun reportReaderContentFailure(child: View) {
+        if (!ManyueReadingCoverage.enabled) return
+        val shown = isShown && alpha > 0f && child.isShown && child.alpha > 0f
+        if (!ManyueCoverageDrawPolicy.shouldRecordFailure(
+                isActiveChild = pageView === child,
+                isShown = shown,
+                exposureEligible = coverageExposureEligible,
+                imageIsAi = activeImageIsAi,
+            )
+        ) return
+        if (coverageSource == null || activeSourceGeneration == null || activeSourceGeneration != sourceGeneration) return
+        ManyueReadingCoverage.drawFailure(this)
+    }
+
+    private fun reportReaderContentFailure(child: View, @Suppress("UNUSED_PARAMETER") error: Throwable) {
+        reportReaderContentFailure(child)
+    }
+
+    fun reportReadingCoverageDrawFailure(error: Throwable) {
+        pageView?.let { reportReaderContentFailure(it, error) }
     }
 
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
@@ -318,6 +519,7 @@ open class ReaderPageImageView @JvmOverloads constructor(
     }
 
     fun recycle() {
+        clearReadingCoverageState()
         cancelLandscapeZoom()
         sourceGeneration++
         activeSourceGeneration = null
@@ -355,6 +557,8 @@ open class ReaderPageImageView @JvmOverloads constructor(
         onDisplayError: (Throwable) -> Unit = {},
         onPrepared: () -> Unit = {},
         onSwapMeasured: (cpuNs: Long, waitNs: Long, deferredAttempts: Int) -> Unit = { _, _, _ -> },
+        coverageResult: ManyueReadingCoverage.Result? = null,
+        coverageGeneration: Long? = null,
     ): Long {
         cancelStagedImage()
         this.config = config
@@ -482,6 +686,9 @@ open class ReaderPageImageView @JvmOverloads constructor(
                                 landscapeZoom(true)
                             }
                             pageView = this@apply
+                            activeCoverageResult = coverageResult
+                            activeCoverageGeneration = coverageGeneration
+                            activeImageIsAi = true
                             stagedPageView = null
                             stagedCacheLease = null
                             val previousLease = pageCacheLease
@@ -649,8 +856,8 @@ open class ReaderPageImageView @JvmOverloads constructor(
 
     protected open fun aiImageExecutor(): Executor = aiTileExecutor
 
-    private fun createSubsamplingImageView(): SubsamplingScaleImageView =
-        (if (isWebtoon) WebtoonSubsamplingImageView(context) else SubsamplingScaleImageView(context)).apply {
+    private fun createSubsamplingImageView(): SubsamplingScaleImageView {
+        val imageView = (if (isWebtoon) WebtoonSubsamplingImageView(context) else ReaderSubsamplingScaleImageView(context)).apply {
             setExecutor(readerImageExecutor)
             setDoubleTapZoomStyle(SubsamplingScaleImageView.ZOOM_FOCUS_CENTER)
             setPanLimit(SubsamplingScaleImageView.PAN_LIMIT_INSIDE)
@@ -668,6 +875,12 @@ open class ReaderPageImageView @JvmOverloads constructor(
             )
             setOnClickListener { this@ReaderPageImageView.onViewClicked() }
         }
+        (imageView as? ReaderContentDrawCallback)?.apply {
+            onReaderContentDraw = ::reportReaderContentDraw
+            onReaderContentDrawFailure = ::reportReaderContentFailure
+        }
+        return imageView
+    }
 
     private fun SubsamplingScaleImageView.setupZoom(config: Config?) {
         // 5x zoom
@@ -762,9 +975,9 @@ open class ReaderPageImageView @JvmOverloads constructor(
         }
 
         pageView = if (isWebtoon) {
-            AppCompatImageView(context)
+            ReaderAnimatedImageView(context)
         } else {
-            PhotoView(context)
+            ReaderAnimatedPhotoView(context)
         }.apply {
             adjustViewBounds = true
 
@@ -792,6 +1005,10 @@ open class ReaderPageImageView @JvmOverloads constructor(
                     this@ReaderPageImageView.onScaleChanged(scale)
                 }
             }
+        }
+        (pageView as? ReaderContentDrawCallback)?.apply {
+            onReaderContentDraw = ::reportReaderContentDraw
+            onReaderContentDrawFailure = ::reportReaderContentFailure
         }
         addView(pageView, MATCH_PARENT, MATCH_PARENT)
     }

@@ -91,6 +91,11 @@ object ManyueAiUpscaler {
         val aiDetailStrength: Int = 0,
         val enqueueSequence: Long = sequence.incrementAndGet(),
         @Volatile var nativeCancellation: (() -> Unit)? = null,
+        val configuredScalePercent: Int = ManyueRuntimeState.aiScalePercent,
+        val createdAsPrefetch: Boolean = priority < 100,
+        @Volatile var outputWidth: Int = 0,
+        @Volatile var outputHeight: Int = 0,
+        val benchmarkNamespace: Int = ManyueBenchmarkControl.cacheNamespace,
     ) : Comparable<Request> {
         internal val terminal = CompletableDeferred<Int>()
 
@@ -250,6 +255,7 @@ object ManyueAiUpscaler {
         ensureStarted()
         req.enqueuedAt = System.nanoTime() / 1_000_000L
         req.queued = true
+        if (ManyuePerformanceDiagnostics.enabled) ManyueReadingCoverage.requested(coverageStamp(req))
         ManyuePerformanceDiagnostics.event(
             Stage.QUEUED, req.pageIndex, token,
             Metric.PRIORITY to req.priority.toLong(), Metric.QUEUE_DEPTH to (queue.size + 1).toLong(),
@@ -385,7 +391,10 @@ object ManyueAiUpscaler {
         }
         if (req.completed || req.cancelled) {
             val finalState = if (req.cancelled) STATE_CANCELLED else req.completionState
-            if (finalState == STATE_READY) ManyuePerformanceDiagnostics.event(Stage.REUSED_RESULT, req.pageIndex, token)
+            if (finalState == STATE_READY) {
+                ManyuePerformanceDiagnostics.event(Stage.REUSED_RESULT, req.pageIndex, token)
+                coverageResultForToken(token)?.let { ManyueReadingCoverage.ready(it, req.createdAsPrefetch) }
+            }
             mainHandler.post { listener.onAiComplete(token, finalState, req.completionDetail ?: req.failureDetail) }
             return
         }
@@ -564,6 +573,25 @@ object ManyueAiUpscaler {
             modelId = req.model.cacheIdentity,
             anime4kOverlay = req.anime4kOverlay,
             aiDetailStrength = req.aiDetailStrength,
+            benchmarkNamespace = req.benchmarkNamespace,
+        )
+
+    /** Immutable provenance of a completed result; no disk reads or paths on the draw thread. */
+    fun coverageResultForToken(token: String): ManyueReadingCoverage.Result? {
+        val req = requests[token] ?: return null
+        if (!req.completed || req.cancelled || req.completionState != STATE_READY ||
+            req.outputWidth <= 0 || req.outputHeight <= 0
+        ) return null
+        return coverageStamp(req)
+    }
+
+    private fun coverageStamp(req: Request) = ManyueReadingCoverage.Result(
+            ManyueReadingCoverage.Source(
+                req.mangaId, req.chapterId, req.pageIndex, req.sourceFingerprint,
+                req.sourceWidth, req.sourceHeight,
+            ),
+            req.generation, req.model.ordinal, req.expectedMode, req.configuredScalePercent,
+            req.outputWidth, req.outputHeight, req.token,
         )
 
     private fun process(req: Request) {
@@ -585,6 +613,8 @@ object ManyueAiUpscaler {
             val key = cacheKeyFor(req)
             val cachedImage = ManyueEnhancementCache.getImage(context, key)
             if (cachedImage != null) {
+                req.outputWidth = cachedImage.width
+                req.outputHeight = cachedImage.height
                 ManyuePerformanceDiagnostics.event(
                     Stage.CACHE_HIT,
                     req.pageIndex,
@@ -785,6 +815,8 @@ object ManyueAiUpscaler {
             )
             check(cacheCommitted) { "AI 缓存预算不足，暂时保留原图" }
             req.completionDetail = overlayDetail
+            req.outputWidth = outW
+            req.outputHeight = outH
             ManyueEnhancementCache.trimCache(context)
             val waitMs = if (req.enqueuedAt > 0L) {
                 (req.processingStartedAt - req.enqueuedAt).coerceAtLeast(0L)
@@ -836,6 +868,9 @@ object ManyueAiUpscaler {
             if (req.cancelled) state = STATE_CANCELLED
             req.completionState = state
             req.completed = true
+            if (state == STATE_READY && ManyuePerformanceDiagnostics.enabled) {
+                coverageResultForToken(req.token)?.let { ManyueReadingCoverage.ready(it, req.createdAsPrefetch) }
+            }
             if (state == STATE_FAILED) ManyuePerformanceDiagnostics.event(Stage.AI_FAILED, req.pageIndex, req.token)
             req.inputFile.delete()
             outDir?.deleteRecursively()

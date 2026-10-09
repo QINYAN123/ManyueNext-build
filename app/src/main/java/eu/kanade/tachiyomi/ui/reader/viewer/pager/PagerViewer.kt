@@ -9,6 +9,9 @@ import android.view.ViewGroup.LayoutParams
 import androidx.core.view.children
 import androidx.core.view.isGone
 import androidx.core.view.isVisible
+import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleOwner
 import androidx.viewpager.widget.ViewPager
 import eu.kanade.tachiyomi.R
 import eu.kanade.tachiyomi.ui.reader.ReaderActivity
@@ -19,9 +22,14 @@ import eu.kanade.tachiyomi.ui.reader.model.ViewerChapters
 import eu.kanade.tachiyomi.ui.reader.viewer.Viewer
 import eu.kanade.tachiyomi.ui.reader.viewer.ViewerNavigation.NavigationRegion
 import eu.kanade.tachiyomi.ui.reader.manyue.ManyuePrefetchManager
+import eu.kanade.tachiyomi.ui.reader.manyue.ManyueReadingCoverage
 import eu.kanade.tachiyomi.ui.reader.manyue.ManyueReaderPrefetcher
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 import mihon.app.di.appGraph
 import tachiyomi.core.common.util.system.logcat
 import kotlin.math.min
@@ -59,6 +67,19 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
      * Currently active item. It can be a chapter page or a chapter transition.
      */
     private var currentPage: Any? = null
+    private var coverageBlockedByUi = activity.viewModel.state.value.menuVisible || activity.viewModel.state.value.dialog != null
+
+    internal val currentPageForCoverage: Any? get() = currentPage
+
+    private val coverageLifecycleObserver = object : DefaultLifecycleObserver {
+        override fun onPause(owner: LifecycleOwner) {
+            hideReadingCoverage()
+        }
+
+        override fun onResume(owner: LifecycleOwner) {
+            refreshReadingCoverage()
+        }
+    }
 
     /**
      * Viewer chapters to set when the pager enters idle mode. Otherwise, if the view was settling
@@ -90,6 +111,11 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
                 activity.hideMenu()
             }
             onPageChange(position)
+            refreshReadingCoverage()
+        }
+
+        override fun onPageScrolled(position: Int, positionOffset: Float, positionOffsetPixels: Int) {
+            refreshReadingCoverage()
         }
 
         override fun onPageScrollStateChanged(state: Int) {
@@ -98,7 +124,18 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
     }
 
     init {
+        activity.lifecycle.addObserver(coverageLifecycleObserver)
+        scope.launch {
+            activity.viewModel.state
+                .map { it.menuVisible || it.dialog != null }
+                .distinctUntilChanged()
+                .collect { blocked ->
+                    coverageBlockedByUi = blocked
+                    if (blocked) hideReadingCoverage() else refreshReadingCoverage()
+                }
+        }
         pager.addOnLayoutChangeListener { _, left, _, right, _, oldLeft, _, oldRight, _ ->
+            refreshReadingCoverage()
             if (right - left > 0 && right - left != oldRight - oldLeft) {
                 val width = eu.kanade.tachiyomi.ui.reader.manyue.ManyueFoldableController.readingWidthPx(right - left)
                 if (eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.updateDisplayWidth(width)) {
@@ -158,6 +195,10 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
     }
 
     override fun destroy() {
+        for (holder in pager.children.filterIsInstance<PagerPageHolder>()) {
+            holder.clearReadingCoverageState()
+        }
+        activity.lifecycle.removeObserver(coverageLifecycleObserver)
         super.destroy()
         manyuePrefetcher.destroy()
         eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.invalidateSession()
@@ -180,6 +221,7 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
             pager.post { refreshManyue() }
         }
         eu.kanade.tachiyomi.ui.reader.manyue.ManyueFoldableController.applyToTree(pager)
+        refreshReadingCoverage()
     }
 
     /**
@@ -208,6 +250,7 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
     private fun onPageChange(position: Int) {
         val page = adapter.items.getOrNull(position)
         if (page != null && currentPage != page) {
+            (currentPage as? ReaderPage)?.let { getPageHolder(it)?.hideReadingCoverage() }
             val allowPreload = checkAllowPreload(page as? ReaderPage)
             val forward = when {
                 currentPage is ReaderPage && page is ReaderPage -> {
@@ -229,6 +272,7 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
                 is ChapterTransition -> onTransitionSelected(page)
             }
         }
+        refreshReadingCoverage()
     }
 
     private fun checkAllowPreload(page: ReaderPage?): Boolean {
@@ -264,6 +308,7 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
 
         // Notify holder of page change
         getPageHolder(page)?.onPageSelected(forward)
+        refreshReadingCoverage()
         manyuePrefetcher.onPageSelected(page, managerAlreadyUpdated = true)
 
         // Skip preload on inserts it causes unwanted page jumping
@@ -335,6 +380,7 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
         pager.addOnPageChangeListener(pagerListener)
         // Manually call onPageChange to update the UI
         onPageChange(pager.currentItem)
+        refreshReadingCoverage()
     }
 
     /**
@@ -419,6 +465,30 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
         adapter.refresh()
         pager.adapter = adapter
         pager.setCurrentItem(currentItem, false)
+        pager.post { refreshReadingCoverage() }
+    }
+
+    /** True only while the reader is resumed and unobstructed by menus or dialogs. */
+    val isReadingCoverageVisible: Boolean
+        get() = ManyueReadingCoverage.enabled &&
+            !coverageBlockedByUi &&
+            activity.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
+
+    internal fun refreshReadingCoverage() {
+        if (!isReadingCoverageVisible) {
+            hideReadingCoverage()
+            return
+        }
+        val activePage = currentPage as? ReaderPage
+        for (holder in pager.children.filterIsInstance<PagerPageHolder>()) {
+            if (holder.page === activePage) holder.updateReadingCoverageExposure() else holder.hideReadingCoverage()
+        }
+    }
+
+    private fun hideReadingCoverage() {
+        for (holder in pager.children.filterIsInstance<PagerPageHolder>()) {
+            holder.hideReadingCoverage()
+        }
     }
 
     /**

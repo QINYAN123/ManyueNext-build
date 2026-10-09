@@ -556,6 +556,9 @@ class ManyuePageBridge(
         onEnhancedDimensions: (Int, Int) -> Unit,
         onState: (ManyueEnhancementState, String?) -> Unit,
     ) {
+        // Freeze the token's immutable source/configuration/output stamp for this whole staged
+        // image attempt. The staged child itself cannot contribute coverage before it is promoted.
+        val coverageResult = ManyueAiUpscaler.coverageResultForToken(token)
         var readyState = state
         var readyDetail = mergeDisplayDetails(detail, baseImage.detail)
         val recycler = findRecyclerView()
@@ -658,6 +661,7 @@ class ManyuePageBridge(
                     if (!displayFailureReported &&
                         isCurrent(token, expectedIdentity, expectedMode, expectedGeneration)
                     ) {
+                        view.reportReadingCoverageDrawFailure(error)
                         displayFailureReported = true
                         readyDetail = mergeDisplayDetails(
                             readyDetail,
@@ -669,6 +673,8 @@ class ManyuePageBridge(
                         onState(readyState, readyDetail)
                     }
                 },
+                coverageResult = coverageResult,
+                coverageGeneration = coverageResult?.generation,
             )
             if (!callbackRanSynchronously) stagedImageId = requestId
         }

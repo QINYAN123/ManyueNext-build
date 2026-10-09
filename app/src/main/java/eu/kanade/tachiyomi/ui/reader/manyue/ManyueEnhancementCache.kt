@@ -303,6 +303,7 @@ object ManyueEnhancementCache {
         modelId: String = "legacy",
         anime4kOverlay: Boolean = false,
         aiDetailStrength: Int = 0,
+        benchmarkNamespace: Int = ManyueBenchmarkControl.cacheNamespace,
     ): String {
         // v9.5 overlay=true entries could contain a plain AI image after a silent overlay failure.
         // MODEL_VERSION also isolates results encoded before native target resizing.
@@ -310,7 +311,8 @@ object ManyueEnhancementCache {
         val raw = "$MODEL_VERSION|$mangaId|$chapterId|$pageIndex|$mode|$targetMode|$targetWidth|" +
             "$targetScaleTenths|$classicStrength|$sourceFingerprint|$modelId|" +
             "overlay=$anime4kOverlay|$overlayKeyVersion|detail=$aiDetailStrength"
-        val md = MessageDigest.getInstance("MD5").digest(raw.toByteArray())
+        val isolated = if (benchmarkNamespace > 0) "benchmark=$benchmarkNamespace|$raw" else raw
+        val md = MessageDigest.getInstance("MD5").digest(isolated.toByteArray())
         return md.joinToString("") { "%02x".format(it) }
     }
 
