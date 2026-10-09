@@ -181,7 +181,8 @@ def harden_input_read(text: str, variant: str) -> str:
 
 def patch_source(source_root: Path, destination: Path, variant: str,
                  helper_header: Path, status_header: Path,
-                 file_output_header: Path, cmake_template: Path) -> None:
+                 file_output_header: Path, fast_png_header: Path,
+                 cmake_template: Path) -> None:
     module, _target, _binary = UPSTREAM_MODULES[variant]
     source_module = source_root / "RealSR-NCNN-Android-CLI" / module / "src" / "main" / "jni"
     if not (source_module / "main.cpp").is_file():
@@ -191,6 +192,7 @@ def patch_source(source_root: Path, destination: Path, variant: str,
     shutil.copy2(helper_header, destination / "manyue_output_resize.h")
     shutil.copy2(status_header, destination / "manyue_ncnn_status.h")
     shutil.copy2(file_output_header, destination / "manyue_file_output.h")
+    shutil.copy2(fast_png_header, destination / "manyue_fast_png.h")
     shutil.copy2(file_output_header.parent / "manyue_fast_webp.h", destination / "manyue_fast_webp.h")
 
     main_file = destination / "main.cpp"
@@ -199,7 +201,8 @@ def patch_source(source_root: Path, destination: Path, variant: str,
         text,
         '#include "filesystem_utils.h"\n#include <opencv2/opencv.hpp>\n'
         '#include <opencv2/core/hal/interface.h>\nusing namespace cv;',
-        '#include "filesystem_utils.h"\n#include "manyue_output_resize.h"\n#include "manyue_fast_webp.h"',
+        '#include "filesystem_utils.h"\n#include "manyue_output_resize.h"\n'
+        '#include "manyue_fast_webp.h"\n#include "manyue_fast_png.h"',
         "remove OpenCV and include output resize helper",
     )
     if variant == "realesr":
@@ -411,11 +414,10 @@ def patch_source(source_root: Path, destination: Path, variant: str,
             manyue_output::CheckedFileOutput file_output;
             if (manyue_output::open_file_output(v.outpath.c_str(), &file_context, &file_output))
             {
-                const int encode_status = stbi_write_png_to_func(
-                        manyue_output::CheckedFileOutput::stbi_write_callback,
+                const bool encode_status = manyue_output::write_fast_png(
                         &file_output, v.outimage.w, v.outimage.h, v.outimage.elempack,
-                        v.outimage.data, 0);
-                success = file_output.finish(encode_status != 0) ? 1 : 0;
+                        static_cast<const unsigned char*>(v.outimage.data));
+                success = file_output.finish(encode_status) ? 1 : 0;
             }
             else
                 success = 0;
@@ -585,11 +587,13 @@ def main() -> None:
     parser.add_argument("--helper-header", type=Path, required=True)
     parser.add_argument("--status-header", type=Path, required=True)
     parser.add_argument("--file-output-header", type=Path, required=True)
+    parser.add_argument("--fast-png-header", type=Path, required=True)
     parser.add_argument("--cmake-template", type=Path, required=True)
     args = parser.parse_args()
     patch_source(args.source_root.resolve(), args.destination.resolve(), args.variant,
                  args.helper_header.resolve(), args.status_header.resolve(),
-                 args.file_output_header.resolve(), args.cmake_template.resolve())
+                 args.file_output_header.resolve(), args.fast_png_header.resolve(),
+                 args.cmake_template.resolve())
 
 
 if __name__ == "__main__":

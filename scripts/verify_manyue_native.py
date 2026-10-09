@@ -13,7 +13,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 NATIVE = ROOT / "app/src/main/jniLibs/arm64-v8a"
 EXPECTED = {
-    "libmanyue_realesr.so": "e0f380b34979b1a289d30ea284edb33ee011c22537cf73dcfd7d9fb511e7baf5",
+    "libmanyue_realesr.so": "16c49099239d96bb877755838b1e61f3b10fd21aeb7b78bb9bb538a0a5c2466c",
     "libomp.so": "da75dcbe6026a3e08d01bfe86860159432051b329a84deb5ee042ce9b8e1a302",
     "libncnn.so": "87d150e735157b09aa20f26f5e57f72468c548e7ce98ce407ec50ee7e14a52dd",
 }

@@ -570,7 +570,7 @@ object ManyueAiUpscaler {
             ManyueEnhancementMode.AI_2X.value, req.targetMode, req.targetWidth, 0,
             req.sourceFingerprint,
             req.targetScaleTenths,
-            modelId = req.model.cacheIdentity,
+            modelId = ManyueAiSafetyPolicy.nativeOutputCacheIdentity(req.model),
             anime4kOverlay = req.anime4kOverlay,
             aiDetailStrength = req.aiDetailStrength,
             benchmarkNamespace = req.benchmarkNamespace,
@@ -666,6 +666,7 @@ object ManyueAiUpscaler {
                 resolved,
                 resolvedHeight,
                 req.anime4kOverlay,
+                req.model,
             )
             val outFile = File(outDir, "upscaled.$outputFormat")
             val logFile = File(outDir, "native.log")
