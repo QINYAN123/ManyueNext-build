@@ -691,27 +691,25 @@ object ManyueEnhancementCache {
     internal const val OVERLAY_NOT_APPLIED_DETAIL =
         "Anime4KCPP 未生效，已保留 AI 超分"
 
-    fun clearCache(context: Context) {
-        ioScope.launch {
-            synchronized(diskLock) {
-                val current = cacheDir(context)
-                current.listFiles()?.forEach { entry ->
-                    val key = entry.name.takeIf { it.matches(Regex("[0-9a-f]{32}")) }
-                    if (key == null) {
-                        entry.deleteRecursively()
-                    } else {
-                        deleteBundleIfUnleased(
-                            context,
-                            key,
-                            cachedImage(entry)?.readingIdentity,
-                            respectReadingProtection = false,
-                        )
-                    }
+    fun clearCache(context: Context) = ioScope.launch {
+        synchronized(diskLock) {
+            val current = cacheDir(context)
+            current.listFiles()?.forEach { entry ->
+                val key = entry.name.takeIf { it.matches(Regex("[0-9a-f]{32}")) }
+                if (key == null) {
+                    entry.deleteRecursively()
+                } else {
+                    deleteBundleIfUnleased(
+                        context,
+                        key,
+                        cachedImage(entry)?.readingIdentity,
+                        respectReadingProtection = false,
+                    )
                 }
-                File(context.cacheDir, LEGACY_CACHE_DIR_NAME).deleteRecursively()
             }
-            signalBudgetWaiters()
+            File(context.cacheDir, LEGACY_CACHE_DIR_NAME).deleteRecursively()
         }
+        signalBudgetWaiters()
     }
 
     fun cacheSizeBytes(context: Context): Long {

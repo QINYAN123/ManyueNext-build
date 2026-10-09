@@ -18,6 +18,28 @@ class ManyueBenchmarkReceiver : BroadcastReceiver() {
             resultCode = 1
             return
         }
+        if (operation == "clearai") {
+            // Restore original images and release enhancement leases before a cold measurement.
+            // This clears only the two Manyue enhancement roots, never loader/download/user data.
+            if (ManyueRuntimeState.modeInt != ManyueEnhancementMode.OFF.value) {
+                resultCode = 2
+                return
+            }
+            val pending = goAsync()
+            CoroutineScope(Dispatchers.IO).launch {
+                try {
+                    ManyueEnhancementCache.clearCache(context.applicationContext).join()
+                    val bytes = ManyueEnhancementCache.cacheSizeBytes(context.applicationContext)
+                    pending.resultData = bytes.toString()
+                    pending.resultCode = if (bytes == 0L) 0 else 4
+                } catch (_: Throwable) {
+                    pending.resultCode = 3
+                } finally {
+                    pending.finish()
+                }
+            }
+            return
+        }
         when (operation) {
             "begin", "configure", "jump", "end" -> {
                 if (reader?.onManyueBenchmarkCommand(operation, intent) != true) {
