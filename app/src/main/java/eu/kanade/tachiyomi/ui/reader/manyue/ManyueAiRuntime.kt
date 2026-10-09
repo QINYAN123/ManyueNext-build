@@ -254,7 +254,7 @@ object ManyueAiRuntime {
                     environment()["OMP_NUM_THREADS"] = "1"
                     environment()["OMP_WAIT_POLICY"] = "PASSIVE"
                     // Bound each quality-model GPU submission without changing its arithmetic.
-                    environment()["MANYUE_GPU_CHUNK"] = "1"
+                    environment()["MANYUE_GPU_CHUNK"] = "2"
                     redirectErrorStream(false)
                 }.start()
             },
