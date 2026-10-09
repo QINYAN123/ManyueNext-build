@@ -263,6 +263,7 @@ open class ReaderPageImageView @JvmOverloads constructor(
             coverageExposureEligible = false
             return
         }
+        val entering = !coverageExposureEligible
         coverageExposureEligible = true
         ManyueReadingCoverage.exposure(
             owner = this,
@@ -271,6 +272,19 @@ open class ReaderPageImageView @JvmOverloads constructor(
             pageFractionPermille = pageFractionPermille,
             isShortPage = isShortPage,
         )
+        if (entering) {
+            // Cached RenderNodes may otherwise move onscreen without calling the image's onDraw.
+            // One diagnostic-only fresh draw establishes the first visible submitted frame.
+            pageView?.invalidate()
+            invalidate()
+        }
+    }
+
+    override fun dispatchDraw(canvas: Canvas) {
+        super.dispatchDraw(canvas)
+        if (ManyueReadingCoverage.enabled && coverageExposureEligible && isShown && alpha > 0f) {
+            ManyueReadingCoverage.frameSubmitted(this)
+        }
     }
 
     fun hideReadingCoverage() {

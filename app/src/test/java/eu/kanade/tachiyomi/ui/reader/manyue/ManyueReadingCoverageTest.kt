@@ -57,6 +57,21 @@ class ManyueReadingCoverageTest {
         assertEquals("no_correct_ai_draw_before_exit", row.getString("reason"))
     }
 
+    @Test fun placeholderOrStaleImageFramePreventsLateAiFromBeingCalledFirstFrame() {
+        expose()
+        now = 10_000_000
+        ManyueReadingCoverage.frameSubmitted(owner)
+        now = 3_000_000_000
+        ManyueReadingCoverage.ready(stamp(), false)
+        ManyueReadingCoverage.drawn(owner, source, stamp())
+        now = 4_000_000_000
+        ManyueReadingCoverage.hidden(owner)
+        val row = ManyueReadingCoverage.snapshot().getJSONArray("exposures").getJSONObject(0)
+        assertFalse(row.getBoolean("firstFrame"))
+        assertTrue(row.getBoolean("late"))
+        assertEquals(10_000_000L, row.getLong("firstDrawNs"))
+    }
+
     @Test fun staleGenerationWrongSourcePageAndDimensionsNeverBecomeSuccess() {
         expose()
         val result = stamp()

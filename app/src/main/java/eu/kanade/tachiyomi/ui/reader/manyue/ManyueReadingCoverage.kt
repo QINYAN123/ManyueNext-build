@@ -161,6 +161,14 @@ object ManyueReadingCoverage {
         synchronized(lock) { end(owner, now(), "left_visible_region") }
     }
 
+    /** First submitted reader frame includes placeholders and rejected stale active images. */
+    fun frameSubmitted(owner: Any) {
+        if (!enabled) return
+        synchronized(lock) {
+            active[owner]?.let { if (it.firstDrawNs == null) it.firstDrawNs = now() }
+        }
+    }
+
     fun endReader() {
         synchronized(lock) {
             val time = now()
