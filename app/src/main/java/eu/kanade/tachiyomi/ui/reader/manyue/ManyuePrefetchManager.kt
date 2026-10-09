@@ -14,12 +14,15 @@ object ManyuePrefetchManager {
     private const val MAX_REMEMBERED_CURRENT_DECISIONS = 32
 
     private data class PageKey(val chapterId: Long, val pageIndex: Int)
+    // Worker requests are keyed by page, but current-page decisions belong to a settings/session
+    // generation so a late holder callback cannot release a newer request for the same page.
+    private data class DecisionKey(val chapterId: Long, val pageIndex: Int, val generation: Long)
     private data class DirectionKey(val chapterId: Long, val generation: Long, val mode: Int)
 
     private var visiblePages = emptySet<PageKey>()
     private val tokens = java.util.concurrent.ConcurrentHashMap<PageKey, MutableSet<String>>()
-    private val currentDecisions = java.util.concurrent.ConcurrentHashMap<PageKey, CompletableDeferred<Unit>>()
-    private val rememberedCurrentDecisions = linkedSetOf<PageKey>()
+    private val currentDecisions = java.util.concurrent.ConcurrentHashMap<DecisionKey, CompletableDeferred<Unit>>()
+    private val rememberedCurrentDecisions = linkedSetOf<DecisionKey>()
 
     @Volatile private var currentChapterId: Long = Long.MIN_VALUE
 
@@ -54,13 +57,23 @@ object ManyuePrefetchManager {
         register(currentChapterId, pageIndex, token)
     }
 
-    fun register(chapterId: Long, pageIndex: Int, token: String, decisionReady: Boolean = true) {
+    fun register(
+        chapterId: Long,
+        pageIndex: Int,
+        token: String,
+        decisionReady: Boolean = true,
+        generation: Long = ManyueRuntimeState.generation,
+    ) {
         synchronized(this) {
+            if (generation != ManyueRuntimeState.generation) return
             val key = PageKey(chapterId, pageIndex)
+            val decisionKey = DecisionKey(chapterId, pageIndex, generation)
             tokens.getOrPut(key) { linkedSetOf() }.add(token)
-            if (decisionReady) rememberCurrentDecision(key)
+            if (decisionReady) rememberCurrentDecision(decisionKey)
             applyPriorities()
-            if (decisionReady && chapterId == currentChapterId && pageIndex == currentPage) completeCurrentDecision(key)
+            if (decisionReady && chapterId == currentChapterId && pageIndex == currentPage) {
+                completeCurrentDecision(decisionKey)
+            }
         }
     }
 
@@ -99,14 +112,14 @@ object ManyuePrefetchManager {
             }
             currentChapterId = chapterId
             currentPage = current
-            val selectedKey = PageKey(chapterId, current)
+            val selectedKey = DecisionKey(chapterId, current, nextDirectionKey.generation)
             currentDecisions.keys.filter { it != selectedKey }
                 .forEach { key -> currentDecisions.remove(key)?.complete(Unit) }
             if (selectedKey !in rememberedCurrentDecisions) {
                 currentDecisions.putIfAbsent(selectedKey, CompletableDeferred())
             }
             // A retained or already-bound holder can have registered before selection changed.
-            if (tokens[selectedKey]?.any(ManyueAiUpscaler::hasQueuedCurrentDecision) == true) {
+            if (tokens[PageKey(chapterId, current)]?.any(ManyueAiUpscaler::hasQueuedCurrentDecision) == true) {
                 rememberCurrentDecision(selectedKey)
                 completeCurrentDecision(selectedKey)
             } else if (selectedKey in rememberedCurrentDecisions) {
@@ -129,8 +142,10 @@ object ManyuePrefetchManager {
         // A retained holder may already have registered its current request and released the
         // old decision gate before the adapter diff. Do not make the next-page cursor wait again.
         synchronized(this) {
-            val key = PageKey(chapterId, current)
-            if (tokens[key]?.any(ManyueAiUpscaler::hasQueuedCurrentDecision) == true || key in rememberedCurrentDecisions) {
+            val key = DecisionKey(chapterId, current, ManyueRuntimeState.generation)
+            if (tokens[PageKey(chapterId, current)]?.any(ManyueAiUpscaler::hasQueuedCurrentDecision) == true ||
+                key in rememberedCurrentDecisions
+            ) {
                 rememberCurrentDecision(key)
                 completeCurrentDecision(key)
             }
@@ -149,17 +164,33 @@ object ManyuePrefetchManager {
     }
 
     /** Release the selected-page gate after its visible holder has decided its AI request. */
-    fun releaseCurrent(chapterId: Long, pageIndex: Int) {
+    fun releaseCurrent(
+        chapterId: Long,
+        pageIndex: Int,
+        generation: Long = ManyueRuntimeState.generation,
+    ) {
         synchronized(this) {
-            val key = PageKey(chapterId, pageIndex)
+            if (generation != ManyueRuntimeState.generation) return
+            val key = DecisionKey(chapterId, pageIndex, generation)
             rememberCurrentDecision(key)
             completeCurrentDecision(key)
         }
     }
 
     /** Wait briefly for the visible request to be created before read-ahead enqueues work. */
-    suspend fun awaitCurrentDecision(chapterId: Long, pageIndex: Int) {
-        val gate = currentDecisions[PageKey(chapterId, pageIndex)] ?: return
+    suspend fun awaitCurrentDecision(
+        chapterId: Long,
+        pageIndex: Int,
+        generation: Long = ManyueRuntimeState.generation,
+    ) {
+        val gate = synchronized(this) {
+            if (generation != ManyueRuntimeState.generation) return
+            val key = DecisionKey(chapterId, pageIndex, generation)
+            if (key in rememberedCurrentDecisions) return
+            // Reset/reconcile can race the cursor start. Install only this page's gate; selection
+            // and visibility remain owned by onPageChanged/updateVisiblePages.
+            currentDecisions.getOrPut(key) { CompletableDeferred() }
+        }
         withTimeoutOrNull(CURRENT_DECISION_TIMEOUT_MS) { gate.await() }
     }
 
@@ -207,7 +238,7 @@ object ManyuePrefetchManager {
         )
     }
 
-    private fun rememberCurrentDecision(key: PageKey) {
+    private fun rememberCurrentDecision(key: DecisionKey) {
         rememberedCurrentDecisions.remove(key)
         rememberedCurrentDecisions.add(key)
         while (rememberedCurrentDecisions.size > MAX_REMEMBERED_CURRENT_DECISIONS) {
@@ -216,7 +247,7 @@ object ManyuePrefetchManager {
         }
     }
 
-    private fun completeCurrentDecision(key: PageKey) {
+    private fun completeCurrentDecision(key: DecisionKey) {
         currentDecisions.remove(key)?.complete(Unit)
     }
 }

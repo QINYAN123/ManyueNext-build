@@ -390,7 +390,7 @@ class ManyuePageBridge(
                     onState(ManyueEnhancementState.FAILED, "AI 任务创建失败，已保留原图")
                 }
             } finally {
-                ManyuePrefetchManager.releaseCurrent(identity.chapterId, identity.pageIndex)
+                ManyuePrefetchManager.releaseCurrent(identity.chapterId, identity.pageIndex, expectedGeneration)
             }
         }
     }

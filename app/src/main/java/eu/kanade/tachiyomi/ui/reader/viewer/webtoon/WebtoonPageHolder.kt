@@ -206,6 +206,7 @@ class WebtoonPageHolder(
 
         val currentPage = page ?: return
         eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.syncFrom(viewer.readerPreferences)
+        val readingGeneration = eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.generation
         currentPage.resetEnhancementState(eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.modeInt)
         val streamFn = currentPage.stream ?: return
 
@@ -275,7 +276,7 @@ class WebtoonPageHolder(
             }
             if (originalBytes == null) {
                 eu.kanade.tachiyomi.ui.reader.manyue.ManyuePrefetchManager.releaseCurrent(
-                    currentPage.chapter.chapter.id ?: 0L, currentPage.index,
+                    currentPage.chapter.chapter.id ?: 0L, currentPage.index, readingGeneration,
                 )
             }
             val aiMode = eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.modeInt

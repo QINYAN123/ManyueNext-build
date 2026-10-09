@@ -172,6 +172,7 @@ class PagerPageHolder(
 
         // Sync Manyue preferences into process-wide runtime state (cheap, off the IO thread).
         eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.syncFrom(viewer.readerPreferences)
+        val readingGeneration = eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.generation
         item.resetEnhancementState(eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.modeInt)
         val streamFn = page.stream ?: return
 
@@ -253,7 +254,7 @@ class PagerPageHolder(
             // Callback verifies page identity before refreshing.
             if (originalBytes == null) {
                 eu.kanade.tachiyomi.ui.reader.manyue.ManyuePrefetchManager.releaseCurrent(
-                    page.chapter.chapter.id ?: 0L, page.index,
+                    page.chapter.chapter.id ?: 0L, page.index, readingGeneration,
                 )
             }
             val aiMode = eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.modeInt

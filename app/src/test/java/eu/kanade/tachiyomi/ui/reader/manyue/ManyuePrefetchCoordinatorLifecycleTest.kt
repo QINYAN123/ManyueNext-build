@@ -52,7 +52,9 @@ class ManyuePrefetchCoordinatorLifecycleTest {
                 terminalByPage.getValue(pageIndex).await()
                 // Simulate continuous reading. reconcile must update only the reading head while
                 // this same cursor job continues through the rest of the chapter.
-                coordinator.reconcile(91, pageIndex, generation, 12, ManyueEnhancementMode.AI_2X.value, work)
+                coordinator.reconcileAfterDecision(
+                    91, pageIndex, generation, 12, ManyueEnhancementMode.AI_2X.value, work,
+                )
                 completed += pageIndex
                 completedByPage.getValue(pageIndex).complete(Unit)
                 if (pageIndex == 11) finished.complete(Unit)
@@ -63,10 +65,10 @@ class ManyuePrefetchCoordinatorLifecycleTest {
         }
 
         try {
-            coordinator.reconcile(91, 0, generation, 12, ManyueEnhancementMode.AI_2X.value, work)
+            coordinator.reconcileAfterDecision(91, 0, generation, 12, ManyueEnhancementMode.AI_2X.value, work)
             withTimeout(5_000) { firstStarted.await() }
             assertEquals(1, coordinator.activeCursorCount)
-            coordinator.reconcile(91, 1, generation, 12, ManyueEnhancementMode.AI_2X.value, work)
+            coordinator.reconcileAfterDecision(91, 1, generation, 12, ManyueEnhancementMode.AI_2X.value, work)
             for (pageIndex in 1..11) {
                 withTimeout(5_000) { startedByPage.getValue(pageIndex).await() }
                 assertEquals(1, coordinator.activeCursorCount)
@@ -113,7 +115,7 @@ class ManyuePrefetchCoordinatorLifecycleTest {
         }
 
         try {
-            coordinator.reconcile(92, 0, generation, 20, ManyueEnhancementMode.AI_2X.value, work)
+            coordinator.reconcileAfterDecision(92, 0, generation, 20, ManyueEnhancementMode.AI_2X.value, work)
             for (pageIndex in 1..5) {
                 withTimeout(5_000) { startedByPage.getValue(pageIndex).await() }
                 terminalByPage.getValue(pageIndex).complete(Unit)
@@ -125,7 +127,7 @@ class ManyuePrefetchCoordinatorLifecycleTest {
 
             // Reconcile with the same head leaves the cursor at the edge instead of replaying
             // completed/cache-hit pages 1..5 forever.
-            coordinator.reconcile(92, 0, generation, 20, ManyueEnhancementMode.AI_2X.value, work)
+            coordinator.reconcileAfterDecision(92, 0, generation, 20, ManyueEnhancementMode.AI_2X.value, work)
             coordinator.awaitCursorIdle()
             assertEquals((1..5).toList(), completed.toList())
         } finally {
@@ -150,13 +152,13 @@ class ManyuePrefetchCoordinatorLifecycleTest {
         }
 
         try {
-            coordinator.reconcile(93, 10, generation, 20, ManyueEnhancementMode.AI_2X.value, work)
+            coordinator.reconcileAfterDecision(93, 10, generation, 20, ManyueEnhancementMode.AI_2X.value, work)
             coordinator.awaitCursorIdle()
             assertEquals(1, attempts.count { it == 11 })
 
-            coordinator.reconcile(93, 9, generation, 20, ManyueEnhancementMode.AI_2X.value, work)
+            coordinator.reconcileAfterDecision(93, 9, generation, 20, ManyueEnhancementMode.AI_2X.value, work)
             coordinator.awaitCursorIdle()
-            coordinator.reconcile(93, 10, generation, 20, ManyueEnhancementMode.AI_2X.value, work)
+            coordinator.reconcileAfterDecision(93, 10, generation, 20, ManyueEnhancementMode.AI_2X.value, work)
             coordinator.awaitCursorIdle()
 
             // The coordinator does not permanently blacklist successful pages. The request layer
@@ -188,11 +190,11 @@ class ManyuePrefetchCoordinatorLifecycleTest {
         }
 
         try {
-            coordinator.reconcile(94, 10, generation, 20, ManyueEnhancementMode.AI_2X.value, work)
+            coordinator.reconcileAfterDecision(94, 10, generation, 20, ManyueEnhancementMode.AI_2X.value, work)
             coordinator.awaitCursorIdle()
-            coordinator.reconcile(94, 9, generation, 20, ManyueEnhancementMode.AI_2X.value, work)
+            coordinator.reconcileAfterDecision(94, 9, generation, 20, ManyueEnhancementMode.AI_2X.value, work)
             coordinator.awaitCursorIdle()
-            coordinator.reconcile(94, 10, generation, 20, ManyueEnhancementMode.AI_2X.value, work)
+            coordinator.reconcileAfterDecision(94, 10, generation, 20, ManyueEnhancementMode.AI_2X.value, work)
             coordinator.awaitCursorIdle()
 
             assertEquals(1, attemptsFor11.get(), "a failed page is skipped when revisited in the same key")
@@ -225,9 +227,9 @@ class ManyuePrefetchCoordinatorLifecycleTest {
         }
 
         try {
-            coordinator.reconcile(97, 10, generation, 20, ManyueEnhancementMode.AI_2X.value, work)
+            coordinator.reconcileAfterDecision(97, 10, generation, 20, ManyueEnhancementMode.AI_2X.value, work)
             withTimeout(5_000) { page11Started.await() }
-            coordinator.reconcile(97, 9, generation, 20, ManyueEnhancementMode.AI_2X.value, work)
+            coordinator.reconcileAfterDecision(97, 9, generation, 20, ManyueEnhancementMode.AI_2X.value, work)
             assertEquals(1, coordinator.activeCursorCount, "direction reversal keeps one cursor alive")
 
             releasePage11.complete(Unit)
@@ -265,15 +267,15 @@ class ManyuePrefetchCoordinatorLifecycleTest {
         }
 
         try {
-            coordinator.reconcile(100, 10, generation, 20, ManyueEnhancementMode.AI_2X.value, work)
+            coordinator.reconcileAfterDecision(100, 10, generation, 20, ManyueEnhancementMode.AI_2X.value, work)
             withTimeout(5_000) { firstAttemptStarted.await() }
-            coordinator.reconcile(100, 9, generation, 20, ManyueEnhancementMode.AI_2X.value, work)
+            coordinator.reconcileAfterDecision(100, 9, generation, 20, ManyueEnhancementMode.AI_2X.value, work)
             releaseFirstAttempt.complete(Unit)
             coordinator.awaitCursorIdle()
 
             // Backward traversal ends at page 4. Returning to head 10 opens page 11 again because
             // the cancelled request was advanced for this pass but never added to failedPages.
-            coordinator.reconcile(100, 10, generation, 20, ManyueEnhancementMode.AI_2X.value, work)
+            coordinator.reconcileAfterDecision(100, 10, generation, 20, ManyueEnhancementMode.AI_2X.value, work)
             coordinator.awaitCursorIdle()
             assertEquals(2, attemptsFor11.get())
         } finally {
@@ -303,8 +305,8 @@ class ManyuePrefetchCoordinatorLifecycleTest {
         val phaseGuard = ManyuePrefetchPreparationPhaseGuard()
 
         try {
-            coordinator.reconcile(chapterId, 0, generation, 20, mode) { pageIndex, taskGeneration ->
-                if (pageIndex != 1) return@reconcile ManyuePrefetchWorkOutcome.COMPLETED
+            coordinator.reconcileAfterDecision(chapterId, 0, generation, 20, mode) { pageIndex, taskGeneration ->
+                if (pageIndex != 1) return@reconcileAfterDecision ManyuePrefetchWorkOutcome.COMPLETED
                 try {
                     coordinator.awaitWhileCurrent(
                         chapterId,
@@ -336,7 +338,7 @@ class ManyuePrefetchCoordinatorLifecycleTest {
 
             ManyuePrefetchManager.onPageChanged(chapterId, 8)
             ManyuePrefetchManager.releaseCurrent(chapterId, 8)
-            coordinator.reconcile(chapterId, 8, generation, 20, mode) { _, _ ->
+            coordinator.reconcileAfterDecision(chapterId, 8, generation, 20, mode) { _, _ ->
                 ManyuePrefetchWorkOutcome.COMPLETED
             }
 
@@ -372,8 +374,8 @@ class ManyuePrefetchCoordinatorLifecycleTest {
         val phaseGuard = ManyuePrefetchPreparationPhaseGuard()
 
         try {
-            coordinator.reconcile(chapterId, 0, generation, 20, mode) { pageIndex, taskGeneration ->
-                if (pageIndex != 1) return@reconcile ManyuePrefetchWorkOutcome.COMPLETED
+            coordinator.reconcileAfterDecision(chapterId, 0, generation, 20, mode) { pageIndex, taskGeneration ->
+                if (pageIndex != 1) return@reconcileAfterDecision ManyuePrefetchWorkOutcome.COMPLETED
                 try {
                     coordinator.awaitWhileCurrent(
                         chapterId,
@@ -409,7 +411,7 @@ class ManyuePrefetchCoordinatorLifecycleTest {
 
             ManyuePrefetchManager.onPageChanged(chapterId, 8)
             ManyuePrefetchManager.releaseCurrent(chapterId, 8)
-            coordinator.reconcile(chapterId, 8, generation, 20, mode) { _, _ ->
+            coordinator.reconcileAfterDecision(chapterId, 8, generation, 20, mode) { _, _ ->
                 ManyuePrefetchWorkOutcome.COMPLETED
             }
 
@@ -445,7 +447,7 @@ class ManyuePrefetchCoordinatorLifecycleTest {
         val enqueueCount = AtomicInteger()
 
         try {
-            coordinator.reconcile(chapterId, 0, generation, 20, mode) { pageIndex, taskGeneration ->
+            coordinator.reconcileAfterDecision(chapterId, 0, generation, 20, mode) { pageIndex, taskGeneration ->
                 if (pageIndex == 1) {
                     val phaseGuard = ManyuePrefetchPreparationPhaseGuard()
                     coordinator.awaitWhileCurrent(
@@ -482,7 +484,7 @@ class ManyuePrefetchCoordinatorLifecycleTest {
 
             ManyuePrefetchManager.onPageChanged(chapterId, 3)
             ManyuePrefetchManager.releaseCurrent(chapterId, 3)
-            coordinator.reconcile(chapterId, 3, generation, 20, mode) { pageIndex, _ ->
+            coordinator.reconcileAfterDecision(chapterId, 3, generation, 20, mode) { pageIndex, _ ->
                 if (pageIndex == 4) nextPageStarted.complete(Unit)
                 ManyuePrefetchWorkOutcome.COMPLETED
             }
@@ -522,9 +524,9 @@ class ManyuePrefetchCoordinatorLifecycleTest {
         }
         try {
             ManyuePrefetchManager.reset()
-            coordinator.reconcile(107, 0, generation, 10, mode, work)
+            coordinator.reconcileAfterDecision(107, 0, generation, 10, mode, work)
             withTimeout(5_000) { started.await() }
-            coordinator.reconcile(107, 1, generation, 10, mode, work)
+            coordinator.reconcileAfterDecision(107, 1, generation, 10, mode, work)
             assertTrue(coordinator.isPreparationCurrent(107, generation, mode, 1))
             finish.complete(Unit)
             coordinator.awaitCursorIdle()
@@ -587,7 +589,7 @@ class ManyuePrefetchCoordinatorLifecycleTest {
         val newPass = Collections.synchronizedList(mutableListOf<Int>())
 
         try {
-            coordinator.reconcile(98, 35, firstGeneration, 40, mode) { pageIndex, _ ->
+            coordinator.reconcileAfterDecision(98, 35, firstGeneration, 40, mode) { pageIndex, _ ->
                 oldPass += pageIndex
                 ManyuePrefetchWorkOutcome.COMPLETED
             }
@@ -601,7 +603,7 @@ class ManyuePrefetchCoordinatorLifecycleTest {
             }
             ManyueRuntimeState.updateAiModel(nextModel)
             val nextGeneration = ManyueRuntimeState.generation
-            coordinator.reconcile(98, 0, nextGeneration, 40, mode) { pageIndex, _ ->
+            coordinator.reconcileAfterDecision(98, 0, nextGeneration, 40, mode) { pageIndex, _ ->
                 newPass += pageIndex
                 ManyuePrefetchWorkOutcome.COMPLETED
             }
@@ -645,7 +647,7 @@ class ManyuePrefetchCoordinatorLifecycleTest {
         }
 
         try {
-            coordinator.reconcile(99, 0, generation, 20, ManyueEnhancementMode.AI_2X.value, work)
+            coordinator.reconcileAfterDecision(99, 0, generation, 20, ManyueEnhancementMode.AI_2X.value, work)
             withTimeout(5_000) { page5Started.await() }
 
             val finish = async(Dispatchers.Default) {
@@ -654,7 +656,7 @@ class ManyuePrefetchCoordinatorLifecycleTest {
             }
             val moveHead = async(Dispatchers.Default) {
                 raceStart.await()
-                coordinator.reconcile(99, 1, generation, 20, ManyueEnhancementMode.AI_2X.value, work)
+                coordinator.reconcileAfterDecision(99, 1, generation, 20, ManyueEnhancementMode.AI_2X.value, work)
             }
             raceStart.complete(Unit)
             finish.await()
@@ -687,7 +689,9 @@ class ManyuePrefetchCoordinatorLifecycleTest {
         try {
             ManyueRuntimeState.updateMode(ManyueEnhancementMode.AI_2X.value)
             val generation = ManyueRuntimeState.generation
-            coordinator.reconcile(93, 0, generation, 8, ManyueEnhancementMode.AI_2X.value) { _, taskGeneration ->
+            coordinator.reconcileAfterDecision(
+                93, 0, generation, 8, ManyueEnhancementMode.AI_2X.value,
+            ) { _, taskGeneration ->
                 oldStarted.complete(Unit)
                 try {
                     coordinator.awaitWhileCurrent(93, taskGeneration, ManyueEnhancementMode.AI_2X.value) {
@@ -702,7 +706,9 @@ class ManyuePrefetchCoordinatorLifecycleTest {
             withTimeout(5_000) { oldStarted.await() }
 
             // A different chapter invalidates the old cursor, then receives exactly one new job.
-            coordinator.reconcile(94, 0, generation, 3, ManyueEnhancementMode.AI_2X.value) { pageIndex, _ ->
+            coordinator.reconcileAfterDecision(
+                94, 0, generation, 3, ManyueEnhancementMode.AI_2X.value,
+            ) { pageIndex, _ ->
                 if (pageIndex == 1) replacementStarted.complete(Unit)
                 ManyuePrefetchWorkOutcome.COMPLETED
             }
@@ -725,7 +731,9 @@ class ManyuePrefetchCoordinatorLifecycleTest {
                 generation = generation,
                 sourceFingerprint = "await-$generation",
             )
-            coordinator.reconcile(94, 0, generation, 3, ManyueEnhancementMode.AI_2X.value) { _, taskGeneration ->
+            coordinator.reconcileAfterDecision(
+                94, 0, generation, 3, ManyueEnhancementMode.AI_2X.value,
+            ) { _, taskGeneration ->
                 modeWaitStarted.complete(Unit)
                 try {
                     if (coordinator.awaitWorkerCompletion(
@@ -777,7 +785,7 @@ class ManyuePrefetchCoordinatorLifecycleTest {
         try {
             ManyueRuntimeState.updateMode(mode)
             val generation = ManyueRuntimeState.generation
-            coordinator.reconcile(96, 0, generation, 4, mode) { _, taskGeneration ->
+            coordinator.reconcileAfterDecision(96, 0, generation, 4, mode) { _, taskGeneration ->
                 // Model a cache budget reservation that has not become available yet.
                 coordinator.awaitWhileCurrent(96, taskGeneration, mode) {
                     budgetWaitStarted.complete(Unit)
@@ -825,7 +833,7 @@ class ManyuePrefetchCoordinatorLifecycleTest {
         try {
             ManyueReaderWorkGate.update(gateOwner, active = false)
             ManyueReaderWorkGate.reportThermalStatus(gateOwner, ManyueReaderWorkGate.THERMAL_STATUS_SEVERE)
-            coordinator.reconcile(95, 0, generation, 4, mode) { _, taskGeneration ->
+            coordinator.reconcileAfterDecision(95, 0, generation, 4, mode) { _, taskGeneration ->
                 waitingOnGate.complete(Unit)
                 coordinator.awaitReaderWork(95, taskGeneration, mode)
                 loads.incrementAndGet()
@@ -868,4 +876,17 @@ class ManyuePrefetchCoordinatorLifecycleTest {
             super.close()
         }
     }
+}
+
+/** Pure cursor fixtures model the visible holder's queue/skip decision before starting a cursor. */
+private fun ManyuePrefetchJobCoordinator.reconcileAfterDecision(
+    chapterId: Long,
+    currentPageIndex: Int,
+    generation: Long,
+    pageCount: Int,
+    mode: Int,
+    work: suspend (pageIndex: Int, generation: Long) -> ManyuePrefetchWorkOutcome,
+) {
+    ManyuePrefetchManager.releaseCurrent(chapterId, currentPageIndex, generation)
+    reconcile(chapterId, currentPageIndex, generation, pageCount, mode, work)
 }

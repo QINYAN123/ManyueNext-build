@@ -370,7 +370,9 @@ internal class ManyuePrefetchJobCoordinator(private val scope: CoroutineScope) {
     }
 
     private suspend fun awaitCurrentDecision(key: CursorKey, pageIndex: Int) = coroutineScope {
-        val waiter = async { ManyuePrefetchManager.awaitCurrentDecision(key.chapterId, pageIndex) }
+        val waiter = async {
+            ManyuePrefetchManager.awaitCurrentDecision(key.chapterId, pageIndex, key.generation)
+        }
         while (!waiter.isCompleted) {
             ensureCurrent(key.chapterId, key.generation, key.mode)
             delay(STATE_POLL_MS)

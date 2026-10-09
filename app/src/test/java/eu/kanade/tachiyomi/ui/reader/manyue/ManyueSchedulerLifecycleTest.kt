@@ -183,20 +183,99 @@ class ManyueSchedulerLifecycleTest {
     @Test fun priorityRegistrationCannotOpenCurrentGateBeforeTheRequestIsQueued() = runBlocking {
         ManyuePrefetchManager.reset()
         ManyuePrefetchManager.onPageChanged(92, 4)
+        val generation = ManyueRuntimeState.generation
         val token = register(4)
         try {
             val waiting = async(start = CoroutineStart.UNDISPATCHED) {
-                ManyuePrefetchManager.awaitCurrentDecision(92, 4)
+                ManyuePrefetchManager.awaitCurrentDecision(92, 4, generation)
             }
-            ManyuePrefetchManager.register(92, 4, token, decisionReady = false)
+            ManyuePrefetchManager.register(92, 4, token, decisionReady = false, generation = generation)
             assertEquals(120, request(token).priority)
             assertFalse(waiting.isCompleted)
             ManyuePrefetchManager.onPageChanged(92, 4)
             assertFalse(waiting.isCompleted)
             // Factory calls this only after queue() has offered the request under the worker lock.
-            ManyuePrefetchManager.releaseCurrent(92, 4)
+            ManyuePrefetchManager.releaseCurrent(92, 4, generation)
             withTimeout(1_000L) { waiting.await() }
         } finally {
+            ManyuePrefetchManager.reset()
+        }
+    }
+
+    @Test fun missingGateWaitsWithoutClaimingReaderSelectionAndSameGenerationReleaseOpensIt() = runBlocking {
+        val chapterId = 92L
+        val pageIndex = 4
+        val generation = ManyueRuntimeState.generation
+        ManyuePrefetchManager.reset()
+        try {
+            val waiting = async(start = CoroutineStart.UNDISPATCHED) {
+                ManyuePrefetchManager.awaitCurrentDecision(chapterId, pageIndex, generation)
+            }
+            assertFalse(waiting.isCompleted)
+            assertFalse(ManyuePrefetchManager.isVisiblePage(chapterId, pageIndex))
+
+            ManyuePrefetchManager.releaseCurrent(chapterId, pageIndex, generation)
+            withTimeout(1_000L) { waiting.await() }
+            assertFalse(ManyuePrefetchManager.isVisiblePage(chapterId, pageIndex))
+        } finally {
+            ManyuePrefetchManager.reset()
+        }
+    }
+
+    @Test fun oldHolderFinallyCannotReleaseSamePageGateAfterModelAndScaleGenerationChanges() = runBlocking {
+        val chapterId = 9_200L
+        val pageIndex = 4
+        val originalModel = ManyueRuntimeState.aiModel
+        val originalScale = ManyueRuntimeState.aiScalePercent
+        val changedModel = ManyueAiModel.selectableModels.first { it != originalModel }
+        val changedScale = if (originalScale == 150) 151 else 150
+
+        ManyuePrefetchManager.reset()
+        try {
+            ManyuePrefetchManager.onPageChanged(chapterId, pageIndex)
+            val oldGeneration = ManyueRuntimeState.generation
+
+            ManyueRuntimeState.updateAiModel(changedModel)
+            val modelGeneration = ManyueRuntimeState.generation
+            assertTrue(modelGeneration != oldGeneration)
+            ManyuePrefetchManager.onPageChanged(chapterId, pageIndex)
+            val modelWaiting = async(start = CoroutineStart.UNDISPATCHED) {
+                ManyuePrefetchManager.awaitCurrentDecision(chapterId, pageIndex, modelGeneration)
+            }
+            assertFalse(modelWaiting.isCompleted)
+            val staleToken = register(pageIndex, chapterId)
+            try {
+                ManyuePrefetchManager.register(
+                    chapterId,
+                    pageIndex,
+                    staleToken,
+                    decisionReady = true,
+                    generation = oldGeneration,
+                )
+                assertEquals(10, request(staleToken).priority)
+            } finally {
+                ManyueAiUpscaler.cancel(staleToken)
+            }
+            ManyuePrefetchManager.releaseCurrent(chapterId, pageIndex, oldGeneration)
+            assertFalse(modelWaiting.isCompleted)
+
+            ManyueRuntimeState.updateAiScale(changedScale)
+            withTimeout(1_000L) { modelWaiting.await() }
+            val scaleGeneration = ManyueRuntimeState.generation
+            assertTrue(scaleGeneration != modelGeneration)
+            ManyuePrefetchManager.onPageChanged(chapterId, pageIndex)
+            val scaleWaiting = async(start = CoroutineStart.UNDISPATCHED) {
+                ManyuePrefetchManager.awaitCurrentDecision(chapterId, pageIndex, scaleGeneration)
+            }
+            assertFalse(scaleWaiting.isCompleted)
+            ManyuePrefetchManager.releaseCurrent(chapterId, pageIndex, modelGeneration)
+            assertFalse(scaleWaiting.isCompleted)
+
+            ManyuePrefetchManager.releaseCurrent(chapterId, pageIndex, scaleGeneration)
+            withTimeout(1_000L) { scaleWaiting.await() }
+        } finally {
+            ManyueRuntimeState.updateAiModel(originalModel)
+            ManyueRuntimeState.updateAiScale(originalScale)
             ManyuePrefetchManager.reset()
         }
     }

@@ -78,9 +78,15 @@ object ManyueAiRequestFactory {
         )
         if (reusable != null) {
             ManyueAiUpscaler.promotePriority(reusable, priority)
-            ManyuePrefetchManager.register(identity.chapterId, identity.pageIndex, reusable, decisionReady = false)
+            ManyuePrefetchManager.register(
+                identity.chapterId,
+                identity.pageIndex,
+                reusable,
+                decisionReady = false,
+                generation = generation,
+            )
             ManyueAiUpscaler.queue(reusable)
-            ManyuePrefetchManager.releaseCurrent(identity.chapterId, identity.pageIndex)
+            ManyuePrefetchManager.releaseCurrent(identity.chapterId, identity.pageIndex, generation)
             return reusable
         }
 
@@ -108,9 +114,15 @@ object ManyueAiRequestFactory {
             )
             // Register priority first, but open read-ahead only after queue() has offered the
             // current request. A registration-only gate lets a future page win this small race.
-            ManyuePrefetchManager.register(identity.chapterId, identity.pageIndex, token, decisionReady = false)
+            ManyuePrefetchManager.register(
+                identity.chapterId,
+                identity.pageIndex,
+                token,
+                decisionReady = false,
+                generation = generation,
+            )
             ManyueAiUpscaler.queue(token)
-            ManyuePrefetchManager.releaseCurrent(identity.chapterId, identity.pageIndex)
+            ManyuePrefetchManager.releaseCurrent(identity.chapterId, identity.pageIndex, generation)
             logcat {
                 "Manyue AI queued chapter=${identity.chapterId} page=${identity.pageIndex} priority=$priority token=$token"
             }
