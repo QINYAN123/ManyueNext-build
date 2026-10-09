@@ -78,8 +78,9 @@ object ManyueAiRequestFactory {
         )
         if (reusable != null) {
             ManyueAiUpscaler.promotePriority(reusable, priority)
-            ManyuePrefetchManager.register(identity.chapterId, identity.pageIndex, reusable)
+            ManyuePrefetchManager.register(identity.chapterId, identity.pageIndex, reusable, decisionReady = false)
             ManyueAiUpscaler.queue(reusable)
+            ManyuePrefetchManager.releaseCurrent(identity.chapterId, identity.pageIndex)
             return reusable
         }
 
@@ -105,8 +106,11 @@ object ManyueAiRequestFactory {
                 anime4kOverlay = ManyueRuntimeState.anime4kOverlay && !model.continuousScale,
                 aiDetailStrength = if (model.continuousScale) ManyueRuntimeState.aiDetailStrength else 0,
             )
-            ManyuePrefetchManager.register(identity.chapterId, identity.pageIndex, token)
+            // Register priority first, but open read-ahead only after queue() has offered the
+            // current request. A registration-only gate lets a future page win this small race.
+            ManyuePrefetchManager.register(identity.chapterId, identity.pageIndex, token, decisionReady = false)
             ManyueAiUpscaler.queue(token)
+            ManyuePrefetchManager.releaseCurrent(identity.chapterId, identity.pageIndex)
             logcat {
                 "Manyue AI queued chapter=${identity.chapterId} page=${identity.pageIndex} priority=$priority token=$token"
             }

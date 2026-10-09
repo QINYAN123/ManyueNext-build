@@ -431,6 +431,11 @@ object ManyueAiUpscaler {
         it.completed || it.cancelled
     } ?: true
 
+    internal fun hasQueuedCurrentDecision(token: String): Boolean = requests[token]?.let {
+        it.generation == ManyueRuntimeState.generation && !it.cancelled &&
+            (it.queued || it.processing || it.completed)
+    } == true
+
     fun removeListener(token: String, listener: OnAiCompleteListener) {
         listeners[token]?.let { current ->
             current.remove(listener)

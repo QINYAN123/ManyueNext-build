@@ -180,6 +180,27 @@ class ManyueSchedulerLifecycleTest {
         }
     }
 
+    @Test fun priorityRegistrationCannotOpenCurrentGateBeforeTheRequestIsQueued() = runBlocking {
+        ManyuePrefetchManager.reset()
+        ManyuePrefetchManager.onPageChanged(92, 4)
+        val token = register(4)
+        try {
+            val waiting = async(start = CoroutineStart.UNDISPATCHED) {
+                ManyuePrefetchManager.awaitCurrentDecision(92, 4)
+            }
+            ManyuePrefetchManager.register(92, 4, token, decisionReady = false)
+            assertEquals(120, request(token).priority)
+            assertFalse(waiting.isCompleted)
+            ManyuePrefetchManager.onPageChanged(92, 4)
+            assertFalse(waiting.isCompleted)
+            // Factory calls this only after queue() has offered the request under the worker lock.
+            ManyuePrefetchManager.releaseCurrent(92, 4)
+            withTimeout(1_000L) { waiting.await() }
+        } finally {
+            ManyuePrefetchManager.reset()
+        }
+    }
+
     @Test fun foreignChapterRequestInNumericalWindowSurvivesOnlyWhileActuallyVisible() {
         ManyuePrefetchManager.reset()
         ManyuePrefetchManager.onPageChanged(92, 2, setOf(92L to 2, 93L to 4))

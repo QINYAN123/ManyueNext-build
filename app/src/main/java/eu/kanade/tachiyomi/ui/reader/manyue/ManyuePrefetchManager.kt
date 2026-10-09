@@ -54,13 +54,13 @@ object ManyuePrefetchManager {
         register(currentChapterId, pageIndex, token)
     }
 
-    fun register(chapterId: Long, pageIndex: Int, token: String) {
+    fun register(chapterId: Long, pageIndex: Int, token: String, decisionReady: Boolean = true) {
         synchronized(this) {
             val key = PageKey(chapterId, pageIndex)
             tokens.getOrPut(key) { linkedSetOf() }.add(token)
-            if (chapterId == currentChapterId && pageIndex == currentPage) rememberCurrentDecision(key)
+            if (decisionReady && chapterId == currentChapterId && pageIndex == currentPage) rememberCurrentDecision(key)
             applyPriorities()
-            if (chapterId == currentChapterId && pageIndex == currentPage) completeCurrentDecision(key)
+            if (decisionReady && chapterId == currentChapterId && pageIndex == currentPage) completeCurrentDecision(key)
         }
     }
 
@@ -106,7 +106,7 @@ object ManyuePrefetchManager {
                 currentDecisions.putIfAbsent(selectedKey, CompletableDeferred())
             }
             // A retained or already-bound holder can have registered before selection changed.
-            if (tokens[selectedKey]?.isNotEmpty() == true) {
+            if (tokens[selectedKey]?.any(ManyueAiUpscaler::hasQueuedCurrentDecision) == true) {
                 rememberCurrentDecision(selectedKey)
                 completeCurrentDecision(selectedKey)
             } else if (selectedKey in rememberedCurrentDecisions) {
@@ -130,7 +130,7 @@ object ManyuePrefetchManager {
         // old decision gate before the adapter diff. Do not make the next-page cursor wait again.
         synchronized(this) {
             val key = PageKey(chapterId, current)
-            if (tokens[key]?.isNotEmpty() == true || key in rememberedCurrentDecisions) {
+            if (tokens[key]?.any(ManyueAiUpscaler::hasQueuedCurrentDecision) == true || key in rememberedCurrentDecisions) {
                 rememberCurrentDecision(key)
                 completeCurrentDecision(key)
             }
