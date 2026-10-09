@@ -58,7 +58,7 @@ object ManyuePrefetchManager {
         synchronized(this) {
             val key = PageKey(chapterId, pageIndex)
             tokens.getOrPut(key) { linkedSetOf() }.add(token)
-            if (decisionReady && chapterId == currentChapterId && pageIndex == currentPage) rememberCurrentDecision(key)
+            if (decisionReady) rememberCurrentDecision(key)
             applyPriorities()
             if (decisionReady && chapterId == currentChapterId && pageIndex == currentPage) completeCurrentDecision(key)
         }
