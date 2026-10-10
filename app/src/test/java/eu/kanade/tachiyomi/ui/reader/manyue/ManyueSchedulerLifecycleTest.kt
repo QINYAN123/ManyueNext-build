@@ -259,6 +259,9 @@ class ManyueSchedulerLifecycleTest {
             ManyuePrefetchManager.releaseCurrent(chapterId, pageIndex, oldGeneration)
             assertFalse(modelWaiting.isCompleted)
 
+            // Quality has a fixed scale now. A scale transition belongs to Lite; preserve
+            // the model-transition gate checks above and test scale invalidation on Lite.
+            ManyueRuntimeState.updateAiModel(ManyueAiModel.MOBILE_LITE)
             ManyueRuntimeState.updateAiScale(changedScale)
             withTimeout(1_000L) { modelWaiting.await() }
             val scaleGeneration = ManyueRuntimeState.generation

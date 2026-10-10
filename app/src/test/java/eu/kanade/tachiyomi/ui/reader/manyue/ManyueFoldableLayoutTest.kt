@@ -31,14 +31,14 @@ class ManyueFoldableLayoutTest {
             ManyueRuntimeState.updateMode(ManyueEnhancementMode.AUTO.value)
             assertEquals(2000, ManyueFoldableController.readingWidthPx(2000))
             ManyueRuntimeState.updateDisplayWidth(2000)
-            assertEquals(ManyueAutoEnhancementPolicy.Path.ORIGINAL_SIZE, ManyueAutoEnhancementPolicy.decide(1900, ManyueRuntimeState.displayWidthPx).path)
+            assertEquals(ManyueAutoEnhancementPolicy.Decision(ManyueAutoEnhancementPolicy.Path.AI, 3800), ManyueAutoEnhancementPolicy.decide(1900, ManyueRuntimeState.displayWidthPx))
             val beforeSamples = ManyueRuntimeState.generation
             ManyueFoldableController.recordSample(1900, 6000)
             val width = ManyueFoldableController.readingWidthPx(2000)
             assertEquals(2000, width)
             org.junit.Assert.assertFalse(ManyueRuntimeState.updateDisplayWidth(width))
             assertEquals(beforeSamples, ManyueRuntimeState.generation)
-            assertEquals(ManyueAutoEnhancementPolicy.Path.ORIGINAL_SIZE, ManyueAutoEnhancementPolicy.decide(1900, ManyueRuntimeState.displayWidthPx).path)
+            assertEquals(ManyueAutoEnhancementPolicy.Decision(ManyueAutoEnhancementPolicy.Path.AI, 3800), ManyueAutoEnhancementPolicy.decide(1900, ManyueRuntimeState.displayWidthPx))
         } finally {
             ManyueRuntimeState.updateMode(oldMode)
             ManyueRuntimeState.foldableMode = oldFold

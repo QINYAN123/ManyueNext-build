@@ -41,7 +41,11 @@ class ManyueBenchmarkReceiver : BroadcastReceiver() {
             return
         }
         when (operation) {
-            "begin", "observe", "configure", "jump", "end" -> {
+            "state" -> {
+                resultData = reader?.manyueBenchmarkReaderSnapshot()
+                return
+            }
+            "begin", "observe", "comfort", "configure", "jump", "end" -> {
                 if (reader?.onManyueBenchmarkCommand(operation, intent) != true) {
                     resultCode = 2
                     return

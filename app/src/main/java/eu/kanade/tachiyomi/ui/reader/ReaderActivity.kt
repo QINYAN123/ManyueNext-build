@@ -507,6 +507,13 @@ class ReaderActivity : BaseActivity() {
                 onManyuePerformanceDiagnosticsChanged(true)
                 if (intent.getBooleanExtra("reset", false)) resetManyuePerformanceDiagnostics()
             }
+            "comfort" -> {
+                val webtoon = viewModel.state.value.viewer as? WebtoonViewer ?: return false
+                val permille = intent.getIntExtra("permille", 1000)
+                if (permille != 1000 && permille !in 500..999) return false
+                if (permille == 1000) webtoon.resetComfortScale() else webtoon.restoreComfortScale(permille / 1000f)
+                saveComfortScale()
+            }
             "end" -> {
                 readerPreferences.manyuePerformanceDiagnostics.set(false)
                 onManyuePerformanceDiagnosticsChanged(false)
@@ -514,6 +521,20 @@ class ReaderActivity : BaseActivity() {
             else -> return false
         }
         return true
+    }
+
+    /** Read-only benchmark snapshot, without book titles, IDs, URLs or paths. */
+    fun manyueBenchmarkReaderSnapshot(): String {
+        check(eu.kanade.tachiyomi.BuildConfig.BUILD_TYPE == "benchmark")
+        val webtoon = viewModel.state.value.viewer as? WebtoonViewer
+        return org.json.JSONObject().apply {
+            put("viewer", if (webtoon != null) "webtoon" else "other")
+            put("comfortScale", webtoon?.comfortScaleForPersistence() ?: 1f)
+            put("innerWindow", comfortInnerScreen)
+            put("model", eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.aiModel.id)
+            put("scalePercent", eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.aiScalePercent)
+            put("generation", eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.generation)
+        }.toString()
     }
 
     private fun updateManyueFrameMonitor() {

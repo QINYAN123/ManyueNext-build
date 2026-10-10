@@ -21,7 +21,7 @@ class ManyueReadingCoverageTest {
     @Before fun setup() {
         ManyueRuntimeState.updateMode(2)
         ManyueRuntimeState.updateAiModel(ManyueAiModel.QUALITY_REAL_ESRGAN)
-        ManyueRuntimeState.updateAiScale(137)
+        ManyueRuntimeState.updateAiScale(200)
         ManyuePerformanceDiagnostics.setEnabled(true)
         ManyuePerformanceDiagnostics.clear()
         ManyueReadingCoverage.clockOverride = { now }
@@ -37,7 +37,7 @@ class ManyueReadingCoverageTest {
     }
 
     private fun stamp(token: String = "private-task") = ManyueReadingCoverage.Result(
-        source, ManyueRuntimeState.generation, ManyueRuntimeState.aiModel.ordinal, 2, 137, 945, 1946, token,
+        source, ManyueRuntimeState.generation, ManyueRuntimeState.aiModel.ordinal, 2, 200, 1380, 2842, token,
     )
 
     private fun expose(source: ManyueReadingCoverage.Source = this.source) =
@@ -111,7 +111,7 @@ class ManyueReadingCoverageTest {
         assertFalse(rows.getJSONObject(0).getBoolean("firstFrame"))
         assertTrue(rows.getJSONObject(1).getBoolean("firstFrame"))
         assertTrue(rows.getJSONObject(1).getBoolean("timely"))
-        assertEquals(945, rows.getJSONObject(1).getInt("outputWidth"))
+        assertEquals(1380, rows.getJSONObject(1).getInt("outputWidth"))
     }
 
     @Test fun activeImageErrorRemainsInDenominatorAndInvalidatesItsSuccess() {
