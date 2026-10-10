@@ -453,6 +453,19 @@ class WebtoonViewer(val activity: ReaderActivity, val isContinuous: Boolean = tr
         }
     }
 
+    /** Restore a saved per-manga comfort scale after the initial viewer is created. */
+    fun restoreComfortScale(scale: Float) {
+        recycler.restoreComfortScale(scale)
+    }
+
+    /** Clear a saved shrink scale for the current screen shape. */
+    fun resetComfortScale() {
+        recycler.resetComfortScale()
+    }
+
+    /** Return a persistable scale only while the reader is deliberately zoomed out. */
+    fun comfortScaleForPersistence(): Float? = recycler.comfortScaleForPersistence()
+
     private fun hideReadingCoverage() {
         for (index in 0 until recycler.childCount) {
             val child = recycler.getChildAt(index) ?: continue

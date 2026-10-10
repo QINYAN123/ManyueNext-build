@@ -77,6 +77,21 @@ class ManyuePerformanceRecorderTest {
         assertEquals(4L, recorder.snapshot().events.last().metrics[Metric.NATIVE_MS])
     }
 
+    @Test fun blockedWorkSamplesAreImmediateRateLimitedAndKeepFullIntervalDuration() {
+        var now = 10_000L
+        val sampler = ManyueBlockedWorkSampler(intervalNanos = 1_000L, nanoTime = { now })
+
+        assertEquals(ManyueBlockedWorkSampler.Sample(0L, first = true), sampler.observe())
+        now += 999L
+        assertEquals(null, sampler.observe())
+        now += 1L
+        assertEquals(ManyueBlockedWorkSampler.Sample(1_000L, first = false), sampler.observe())
+        now += 450L
+        assertEquals(1_450L, sampler.finish())
+        assertEquals(null, sampler.finish())
+        assertEquals(ManyueBlockedWorkSampler.Sample(0L, first = true), sampler.observe())
+    }
+
     @Test fun concurrentFramesAndJobsStayWithinCapacity() {
         val recorder = ManyuePerformanceRecorder(maxEvents = 32, maxFrames = 16)
         recorder.setEnabled(true)

@@ -20,7 +20,7 @@ import org.robolectric.annotation.LooperMode
 @Config(application = Application::class, sdk = [34], manifest = Config.NONE)
 @LooperMode(LooperMode.Mode.PAUSED)
 class ManyueFoldableLayoutTest {
-    @Test fun automaticEnhancementReevaluatesFoldWidthWhenSourceSamplesArrive() {
+    @Test fun automaticFoldWidthRemainsViewportWhenSourceSamplesArrive() {
         val oldMode = ManyueRuntimeState.modeInt
         val oldFold = ManyueRuntimeState.foldableMode
         val oldDisplay = ManyueRuntimeState.displayWidthPx
@@ -29,17 +29,16 @@ class ManyueFoldableLayoutTest {
             ManyueFoldableController.onConfigurationChanged(Configuration().apply { smallestScreenWidthDp = 700 })
             ManyueRuntimeState.foldableMode = -1
             ManyueRuntimeState.updateMode(ManyueEnhancementMode.AUTO.value)
-            assertEquals(1920, ManyueFoldableController.readingWidthPx(2000))
-            ManyueRuntimeState.updateDisplayWidth(1920)
+            assertEquals(2000, ManyueFoldableController.readingWidthPx(2000))
+            ManyueRuntimeState.updateDisplayWidth(2000)
             assertEquals(ManyueAutoEnhancementPolicy.Path.ORIGINAL_SIZE, ManyueAutoEnhancementPolicy.decide(1900, ManyueRuntimeState.displayWidthPx).path)
+            val beforeSamples = ManyueRuntimeState.generation
             ManyueFoldableController.recordSample(1900, 6000)
             val width = ManyueFoldableController.readingWidthPx(2000)
             assertEquals(2000, width)
-            val before = ManyueRuntimeState.generation
-            org.junit.Assert.assertTrue(ManyueRuntimeState.updateDisplayWidth(width))
-            assertEquals(before + 1, ManyueRuntimeState.generation)
             org.junit.Assert.assertFalse(ManyueRuntimeState.updateDisplayWidth(width))
-            assertEquals(ManyueAutoEnhancementPolicy.Path.AI, ManyueAutoEnhancementPolicy.decide(1900, ManyueRuntimeState.displayWidthPx).path)
+            assertEquals(beforeSamples, ManyueRuntimeState.generation)
+            assertEquals(ManyueAutoEnhancementPolicy.Path.ORIGINAL_SIZE, ManyueAutoEnhancementPolicy.decide(1900, ManyueRuntimeState.displayWidthPx).path)
         } finally {
             ManyueRuntimeState.updateMode(oldMode)
             ManyueRuntimeState.foldableMode = oldFold

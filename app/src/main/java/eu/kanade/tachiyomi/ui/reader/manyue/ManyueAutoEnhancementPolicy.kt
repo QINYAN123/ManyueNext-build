@@ -14,12 +14,12 @@ object ManyueAutoEnhancementPolicy {
         continuousScale: Boolean = false,
     ): Decision {
         if (sourceWidth <= 0 || displayWidth <= 0) return Decision(Path.WAIT_FOR_WIDTH, 0)
-        val maximumWidth = ManyueAiUpscaler.customTargetWidth(sourceWidth, maximumScalePercent)
+        val maximumWidth = ManyueAiUpscaler.customTargetWidth(sourceWidth, if (continuousScale) maximumScalePercent else 200)
         val target = minOf(displayWidth, maximumWidth)
         return if (target.toLong() * 100L >
             sourceWidth.toLong() * (100L + WIDTH_TOLERANCE_PERCENT)
         ) {
-            Decision(Path.AI, target)
+            Decision(Path.AI, if (continuousScale) target else maximumWidth)
         } else {
             Decision(if (continuousScale) Path.AI else Path.ORIGINAL_SIZE, sourceWidth)
         }

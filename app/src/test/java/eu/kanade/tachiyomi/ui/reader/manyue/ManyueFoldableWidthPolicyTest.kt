@@ -26,34 +26,20 @@ class ManyueFoldableWidthPolicyTest {
         assertEquals(2000, w)
     }
 
-    @Test fun `auto with no samples falls back`() {
+    @Test fun `auto uses full viewport with no samples`() {
         val w = ManyueFoldableWidthPolicy.computeTargetWidth(1200, emptyList(), ManyueFoldableWidthPolicy.FOLD_AUTO, 0)
-        assertEquals(1200, w) // min(1920, screen)
+        assertEquals(1200, w)
     }
 
-    @Test fun `extreme ratio uses full width`() {
-        // very tall strip -> ratio > 2.35 -> full width
-        val samples = listOf(400 to 1200, 500 to 1500)
-        val w = ManyueFoldableWidthPolicy.computeTargetWidth(2000, samples, ManyueFoldableWidthPolicy.FOLD_AUTO, 0)
-        assertEquals(2000, w)
+    @Test fun `auto source samples do not narrow viewport`() {
+        val mixedPageSizes = listOf(1000 to 1400, 400 to 2400, 2200 to 1800)
+        val w = ManyueFoldableWidthPolicy.computeTargetWidth(2400, mixedPageSizes, ManyueFoldableWidthPolicy.FOLD_AUTO, 0)
+        assertEquals(2400, w)
     }
 
-    @Test fun `normal ratio narrows to at least 1632`() {
-        val samples = listOf(1000 to 1400, 1100 to 1500) // ~1.36 ratio
-        val w = ManyueFoldableWidthPolicy.computeTargetWidth(2400, samples, ManyueFoldableWidthPolicy.FOLD_AUTO, 0)
-        assertTrue(w in 1632..2344)
-    }
-
-    @Test fun `auto uses lower median for even sample count`() {
-        val samples = listOf(1000 to 1500, 2000 to 3000)
-        val w = ManyueFoldableWidthPolicy.computeTargetWidth(3000, samples, ManyueFoldableWidthPolicy.FOLD_AUTO, 0)
-        assertEquals(1632, w)
-    }
-
-    @Test fun `auto is not capped by AI target width`() {
-        val samples = listOf(2400 to 3600)
-        val w = ManyueFoldableWidthPolicy.computeTargetWidth(3000, samples, ManyueFoldableWidthPolicy.FOLD_AUTO, 0)
-        assertEquals(2880, w)
+    @Test fun `auto uses full viewport regardless of source dimensions`() {
+        val w = ManyueFoldableWidthPolicy.computeTargetWidth(3000, listOf(2400 to 3600), ManyueFoldableWidthPolicy.FOLD_AUTO, 0)
+        assertEquals(3000, w)
     }
 
     @Test fun `manual never exceeds current screen`() {

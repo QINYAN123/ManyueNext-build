@@ -168,6 +168,19 @@ internal class ManyueReaderPressurePolicy(
     fun isVisibleWorkBlocked(): Boolean =
         thermalPressure || isBefore(nanoTime(), badFrameUntilNanos)
 
+    /** Diagnostic-only reason snapshot at one clock sample; it does not control work scheduling. */
+    @Synchronized
+    fun aiWorkBlockReasonMask(priority: Int): Int {
+        val now = nanoTime()
+        var reasons = 0
+        if (thermalPressure) reasons = reasons or BLOCK_REASON_THERMAL
+        if (isBefore(now, badFrameUntilNanos)) reasons = reasons or BLOCK_REASON_BAD_FRAME
+        if (priority < 100 && isBefore(now, fastScrollUntilNanos)) {
+            reasons = reasons or BLOCK_REASON_FAST_SCROLL
+        }
+        return reasons
+    }
+
     /** A decoded result commits through motion; measured frame pressure still defers it. */
     @Synchronized
     fun isDisplayBlocked(): Boolean {
@@ -260,5 +273,8 @@ internal class ManyueReaderPressurePolicy(
         const val FRAME_CADENCE_MIN_SAMPLES = 6
         const val FRAME_CADENCE_TOLERANCE_PERCENT = 8.0
         const val REFRESH_INTERVAL_CHANGE_PERCENT = 5.0
+        const val BLOCK_REASON_THERMAL = 1
+        const val BLOCK_REASON_BAD_FRAME = 2
+        const val BLOCK_REASON_FAST_SCROLL = 4
     }
 }

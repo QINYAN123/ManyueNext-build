@@ -67,6 +67,27 @@ class ManyueAiModelCompatibilityTest {
         assertEquals(ManyueAiModel.DEFAULT, ManyueAiModel.fromId("removed-or-unknown-model"))
     }
 
+    @Test
+    fun `quality ignores saved fractional output without erasing the Lite choice`() {
+        val context = RuntimeEnvironment.getApplication()
+        val shared = context.getSharedPreferences("quality-fixed-scale-${System.nanoTime()}", Context.MODE_PRIVATE)
+        val prefs = ReaderPreferences(AndroidPreferenceStore(shared))
+        val old = RuntimeSnapshot.capture()
+        try {
+            prefs.manyueAiScalePercent.set(125)
+            prefs.manyueAiModel.set(ManyueAiModel.QUALITY_REAL_ESRGAN.id)
+            ManyueRuntimeState.syncFrom(prefs)
+            assertEquals(200, ManyueRuntimeState.aiScalePercent)
+            assertEquals(125, prefs.manyueAiScalePercent.get())
+            prefs.manyueAiModel.set(ManyueAiModel.MOBILE_LITE.id)
+            ManyueRuntimeState.syncFrom(prefs)
+            assertEquals(125, ManyueRuntimeState.aiScalePercent)
+        } finally {
+            old.restore()
+            shared.edit().clear().apply()
+        }
+    }
+
     private data class RuntimeSnapshot(
         val mode: Int,
         val classicStrength: Int,

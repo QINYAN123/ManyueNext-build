@@ -30,6 +30,11 @@ internal class ManyuePerformanceRecorder(
         DISPLAYED,
         DISPLAY_FAILED,
         THERMAL_CHANGED,
+        VISIBILITY_WAIT_STARTED,
+        VISIBILITY_WAIT_FINISHED,
+        WORK_BLOCKED,
+        WORK_UNBLOCKED,
+        WORK_BLOCK_CANCELLED,
     }
 
     enum class Metric {
@@ -74,6 +79,18 @@ internal class ManyuePerformanceRecorder(
         OUTPUT_TILE,
         GPU_READBACK_BYTES,
         STATUS,
+        WAIT_ELAPSED_MS,
+        WAIT_OUTCOME,
+        VIEW_ATTACHED,
+        VIEW_SHOWN,
+        RECT_VISIBLE,
+        MANAGER_SELECTED,
+        CAPTURED_GENERATION,
+        CURRENT_GENERATION,
+        BLOCK_REASON_MASK,
+        READER_GATE_BLOCKED,
+        WORK_PACER_BLOCKED,
+        BLOCKED_ELAPSED_MS,
     }
 
     data class Event(val timeNs: Long, val stage: Stage, val page: Int, val job: Int, val metrics: Map<Metric, Long>)
@@ -180,4 +197,41 @@ internal class ManyuePerformanceRecorder(
         overwrittenFrames,
         callbackDrops,
     )
+}
+
+/** Rate-limits repeated observations while preserving the full duration of one blocked interval. */
+internal class ManyueBlockedWorkSampler(
+    private val intervalNanos: Long = 1_000_000_000L,
+    private val nanoTime: () -> Long = System::nanoTime,
+) {
+    data class Sample(val elapsedNanos: Long, val first: Boolean)
+
+    private var blockedSinceNanos: Long? = null
+    private var lastSampleNanos: Long? = null
+
+    init {
+        require(intervalNanos > 0L)
+    }
+
+    @Synchronized
+    fun observe(nowNanos: Long = nanoTime()): Sample? {
+        val startedAt = blockedSinceNanos
+        if (startedAt == null) {
+            blockedSinceNanos = nowNanos
+            lastSampleNanos = nowNanos
+            return Sample(elapsedNanos = 0L, first = true)
+        }
+        val lastSample = lastSampleNanos ?: startedAt
+        if (nowNanos - lastSample < intervalNanos) return null
+        lastSampleNanos = nowNanos
+        return Sample((nowNanos - startedAt).coerceAtLeast(0L), first = false)
+    }
+
+    @Synchronized
+    fun finish(nowNanos: Long = nanoTime()): Long? {
+        val startedAt = blockedSinceNanos ?: return null
+        blockedSinceNanos = null
+        lastSampleNanos = null
+        return (nowNanos - startedAt).coerceAtLeast(0L)
+    }
 }

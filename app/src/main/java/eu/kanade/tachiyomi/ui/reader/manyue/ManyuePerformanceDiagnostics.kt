@@ -95,7 +95,8 @@ object ManyuePerformanceDiagnostics {
                 "notes",
                 JSONArray(
                     listOf(
-                        "Page indices are zero-based; job is a hash of an ephemeral task ID.",
+                        "Page indices are zero-based; nonzero job is a hash of an ephemeral task ID; job=0 means no request token exists yet.",
+                        "Pre-request visibility waits pair by page, captured generation, and event time.",
                         "CACHE_HIT is distinct from new inference. Events can begin/end outside the capture window.",
                         "INFER_MS includes native tile preparation, dispatch and stitching, not only GPU execution.",
                         "OUTPUT_TILE and GPU_READBACK_BYTES are bounded numeric native telemetry; GPU device names are not exported.",
@@ -104,6 +105,9 @@ object ManyuePerformanceDiagnostics {
                         "Frame summaries exclude first draws and menus/dialogs. Deadline/GPU may be unavailable (-1).",
                         "Callback drops are missing observations, not measured janky frames. " +
                             "Samples are bounded recent history.",
+                        "VISIBILITY_WAIT_FINISHED.WAIT_OUTCOME: 1 visible, 2 stale, 3 cancelled.",
+                        "BLOCK_REASON_MASK bits: 1 thermal, 2 bad-frame, 4 fast-scroll; fast-scroll does not block priority >= 100.",
+                        "WORK_BLOCKED status records the actual reader-gate and work-pacer decisions; reason mask is a diagnostic snapshot.",
                     ),
                 ),
             )

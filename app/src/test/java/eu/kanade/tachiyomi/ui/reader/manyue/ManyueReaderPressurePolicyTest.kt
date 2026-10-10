@@ -1,5 +1,6 @@
 package eu.kanade.tachiyomi.ui.reader.manyue
 
+import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -225,6 +226,36 @@ class ManyueReaderPressurePolicyTest {
         clock.moveTo(-6_000_000_000L)
         policy.reportScroll(reader, dx = 10_000, dy = 0, viewportHeightPx = 400)
         assertFalse(policy.isBlocked(), "clock regression must not be treated as an infinite speed")
+    }
+
+    @Test
+    fun `diagnostic reason snapshot matches the unchanged priority gate rules`() {
+        val clock = FakeClock(1_000_000_000L)
+        val policy = ManyueReaderPressurePolicy(clock::now)
+        val reader = Any()
+        policy.update(reader, active = true)
+
+        repeat(5) {
+            clock.advance(8_000_000L)
+            policy.reportScroll(reader, dx = 100, dy = 0, viewportHeightPx = 100)
+        }
+        assertEquals(ManyueReaderPressurePolicy.BLOCK_REASON_FAST_SCROLL, policy.aiWorkBlockReasonMask(99))
+        assertEquals(0, policy.aiWorkBlockReasonMask(100), "visible work continues during fast scroll")
+        assertEquals(policy.aiWorkBlockReasonMask(99) != 0, policy.isBlocked())
+        assertEquals(policy.aiWorkBlockReasonMask(100) != 0, policy.isVisibleWorkBlocked())
+
+        clock.advance(FAST_SCROLL_HOLD_NANOS + 1L)
+        repeat(3) {
+            clock.advance(20_000_000L)
+            policy.reportFrame(reader, frameIntervalNanos = 20_000_000L, expectedIntervalNanos = 8_333_333L)
+        }
+        assertEquals(ManyueReaderPressurePolicy.BLOCK_REASON_BAD_FRAME, policy.aiWorkBlockReasonMask(100))
+        policy.reportThermalStatus(reader, ManyueReaderWorkGate.THERMAL_STATUS_SEVERE)
+        assertEquals(
+            ManyueReaderPressurePolicy.BLOCK_REASON_THERMAL or ManyueReaderPressurePolicy.BLOCK_REASON_BAD_FRAME,
+            policy.aiWorkBlockReasonMask(100),
+        )
+        assertEquals(policy.aiWorkBlockReasonMask(100) != 0, policy.isVisibleWorkBlocked())
     }
 
     private class FakeClock(private var currentNanos: Long) {

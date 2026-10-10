@@ -12,14 +12,19 @@ class ManyueAutoEnhancementPolicyTest {
         assertEquals(ManyueAutoEnhancementPolicy.Decision(ManyueAutoEnhancementPolicy.Path.ORIGINAL_SIZE, 1440), ManyueAutoEnhancementPolicy.decide(1440, 1080))
         assertEquals(ManyueAutoEnhancementPolicy.Path.ORIGINAL_SIZE, ManyueAutoEnhancementPolicy.decide(690, 690).path)
     }
-    @Test fun `low resolution uses the actual reading width with a two times ceiling`() {
-        assertEquals(1035, ManyueAutoEnhancementPolicy.decide(690, 1035).targetWidth)
+    @Test fun `quality low resolution always reconstructs full two times output`() {
+        assertEquals(1380, ManyueAutoEnhancementPolicy.decide(690, 1035).targetWidth)
         assertEquals(1380, ManyueAutoEnhancementPolicy.decide(690, 2000).targetWidth)
         assertEquals(ManyueAutoEnhancementPolicy.Path.AI, ManyueAutoEnhancementPolicy.decide(690, 1035).path)
     }
-    @Test fun `manual maximum is respected and one times avoids useless upscale work`() {
-        assertEquals(863, ManyueAutoEnhancementPolicy.decide(690, 1200, 125).targetWidth)
-        assertEquals(ManyueAutoEnhancementPolicy.Path.ORIGINAL_SIZE, ManyueAutoEnhancementPolicy.decide(690, 1200, 100).path)
+    @Test fun `saved fractional settings do not shrink quality reconstruction`() {
+        assertEquals(1380, ManyueAutoEnhancementPolicy.decide(690, 1200, 125).targetWidth)
+        assertEquals(1380, ManyueAutoEnhancementPolicy.decide(690, 1200, 100).targetWidth)
+    }
+    @Test fun `Lite still directly targets reading width or its saved scale cap`() {
+        assertEquals(1035, ManyueAutoEnhancementPolicy.decide(690, 1035, 200, true).targetWidth)
+        assertEquals(863, ManyueAutoEnhancementPolicy.decide(690, 1200, 125, true).targetWidth)
+        assertEquals(690, ManyueAutoEnhancementPolicy.decide(690, 1200, 100, true).targetWidth)
     }
     @Test fun `unmeasured width defers the decision instead of treating an image as clear`() {
         assertEquals(ManyueAutoEnhancementPolicy.Path.WAIT_FOR_WIDTH, ManyueAutoEnhancementPolicy.decide(690, 0).path)

@@ -58,6 +58,9 @@ object ManyueReaderWorkGate {
     fun isAiWorkBlocked(priority: Int): Boolean =
         if (priority >= 100) policy.isVisibleWorkBlocked() else policy.isBlocked()
 
+    /** Diagnostic-only snapshot; callers must keep [isAiWorkBlocked] as the scheduling decision. */
+    fun aiWorkBlockReasonMask(priority: Int): Int = policy.aiWorkBlockReasonMask(priority)
+
     /** Keeps thermal protection for expensive work without indefinitely hiding a ready image. */
     @Synchronized
     fun isDisplayBlocked(): Boolean = policy.isDisplayBlocked()

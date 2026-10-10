@@ -44,7 +44,7 @@ object ManyueAiRequestFactory {
             if (decision.path != ManyueAutoEnhancementPolicy.Path.AI) return null
             decision.targetWidth
         } else {
-            ManyueAiUpscaler.customTargetWidth(width, ManyueRuntimeState.aiScalePercent)
+            ManyueAiUpscaler.customTargetWidth(width, model.outputScalePercent(ManyueRuntimeState.aiScalePercent))
         }
         if (!ManyueAiSafetyPolicy.isNativeWorkSafe(model, width, height, targetWidth)) return null
         // The resolved width is in both cache and request identity; legacy tenths stays native x2.

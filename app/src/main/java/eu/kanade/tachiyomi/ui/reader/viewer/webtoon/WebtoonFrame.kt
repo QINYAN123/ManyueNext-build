@@ -16,6 +16,11 @@ import android.widget.FrameLayout
  */
 class WebtoonFrame(context: Context) : FrameLayout(context) {
 
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        recycler?.onViewportSizeChanged(w, h)
+    }
+
     /**
      * Scale detector, either with pinch or quick scale.
      */
@@ -103,7 +108,6 @@ class WebtoonFrame(context: Context) : FrameLayout(context) {
             velocityX: Float,
             velocityY: Float,
         ): Boolean {
-            recycler?.onManualScroll()
             return recycler?.zoomFling(velocityX.toInt(), velocityY.toInt()) ?: false
         }
     }

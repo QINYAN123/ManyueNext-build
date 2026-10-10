@@ -23,6 +23,24 @@ class ManyuePageBridgeLogicTest {
         assertFalse(a == c)
     }
 
+    @Test fun `prefetch manager selected snapshot excludes visible neighbors`() {
+        val chapterId = 9_107L
+        ManyuePrefetchManager.reset()
+        try {
+            ManyuePrefetchManager.onPageChanged(
+                chapterId,
+                current = 5,
+                visible = setOf(chapterId to 4, chapterId to 6),
+            )
+            assertTrue(ManyuePrefetchManager.isSelectedPage(chapterId, 5))
+            assertFalse(ManyuePrefetchManager.isSelectedPage(chapterId, 4))
+            assertFalse(ManyuePrefetchManager.isSelectedPage(chapterId, 6))
+            assertFalse(ManyuePrefetchManager.isSelectedPage(chapterId + 1, 5))
+        } finally {
+            ManyuePrefetchManager.reset()
+        }
+    }
+
     @Test fun `runtime state defaults to OFF`() {
         assertEquals(0, ManyueRuntimeState.modeInt)
     }
@@ -172,6 +190,50 @@ class ManyuePageBridgeLogicTest {
             currentDecision.cancelAndJoin()
             ManyuePrefetchManager.reset()
         }
+    }
+
+    @Test fun `visible action reports one wait outcome for visible stale and cancelled paths`() = runBlocking {
+        val outcomes = mutableListOf<VisibleActionWaitOutcome>()
+        var current = true
+        val stale = async(start = CoroutineStart.UNDISPATCHED) {
+            awaitVisiblePageAction(
+                isCurrent = { current },
+                isVisible = { false },
+                onWaitFinished = { outcomes.add(it) },
+            ) { error("stale holder must not enqueue") }
+        }
+        current = false
+        assertEquals(VisibleActionResult.Stale, withTimeout(1_000L) { stale.await() })
+        assertEquals(listOf(VisibleActionWaitOutcome.STALE), outcomes)
+
+        current = true
+        val cancelled = async(start = CoroutineStart.UNDISPATCHED) {
+            awaitVisiblePageAction(
+                isCurrent = { current },
+                isVisible = { false },
+                onWaitFinished = { outcomes.add(it) },
+            ) { error("cancelled holder must not enqueue") }
+        }
+        cancelled.cancelAndJoin()
+        assertEquals(
+            listOf(VisibleActionWaitOutcome.STALE, VisibleActionWaitOutcome.CANCELLED),
+            outcomes,
+        )
+
+        val visible = awaitVisiblePageAction(
+            isCurrent = { true },
+            isVisible = { true },
+            onWaitFinished = { outcomes.add(it) },
+        ) { "token" }
+        assertEquals(VisibleActionResult.Completed("token"), visible)
+        assertEquals(
+            listOf(
+                VisibleActionWaitOutcome.STALE,
+                VisibleActionWaitOutcome.CANCELLED,
+                VisibleActionWaitOutcome.VISIBLE,
+            ),
+            outcomes,
+        )
     }
 
     @Test fun `classic render rechecks visibility after waiting for the shared lock`() = runBlocking {

@@ -364,52 +364,50 @@ internal fun ColumnScope.GeneralPage(viewModel: ReaderSettingsViewModel) {
         if (selectedAiModel.continuousScale) {
             "轻量模型同时支持原尺寸修复和连续倍率超分，直接生成所选尺寸。优先使用 GPU；实际后端记录在每页完成状态中。"
         } else {
-            "质量模型先运行完整网络，再生成所选输出尺寸。降低倍率主要减少显示开销，主干推理量不会同比减少。"
+            "质量模型固定输出 2×，使用完整质量网络。原图文件保留；低倍率设置仅用于轻量模型。"
         },
         style = MaterialTheme.typography.bodySmall,
     )
-    val aiScalePercent by viewModel.preferences.manyueAiScalePercent.collectAsState()
-    var draftScale by remember(aiScalePercent) { mutableIntStateOf(aiScalePercent.coerceIn(100, 200)) }
-    Text(
-        (
-            if (manyueMode ==
-                4
-            ) {
-                "智能模式最高倍率：%.2f×"
-            } else {
-                "自定义超分倍率：%.2f×"
-            }
-            ).format(draftScale / 100f),
-        style = MaterialTheme.typography.bodyMedium,
-    )
-    tachiyomi.presentation.core.components.material.Slider(
-        value = draftScale,
-        valueRange = 100..200,
-        steps = 99,
-        onValueChange = { draftScale = it },
-        onValueChangeFinished = {
-            // Commit only after release: dragging must not repeatedly rebuild the reader
-            // or cancel/relaunch native inference for every one-percent step.
-            if (draftScale != aiScalePercent) {
-                viewModel.preferences.manyueAiScalePercent.set(draftScale)
-                readerActivity?.onManyueAiScaleChanged(draftScale)
-            }
-        },
-    )
-    Text(
-        if (selectedAiModel.continuousScale) {
+    if (selectedAiModel.continuousScale) {
+        val aiScalePercent by viewModel.preferences.manyueAiScalePercent.collectAsState()
+        var draftScale by remember(aiScalePercent) { mutableIntStateOf(aiScalePercent.coerceIn(100, 200)) }
+        Text(
+            (
+                if (manyueMode ==
+                    4
+                ) {
+                    "智能模式最高倍率：%.2f×"
+                } else {
+                    "自定义超分倍率：%.2f×"
+                }
+                ).format(draftScale / 100f),
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        tachiyomi.presentation.core.components.material.Slider(
+            value = draftScale,
+            valueRange = 100..200,
+            steps = 99,
+            onValueChange = { draftScale = it },
+            onValueChangeFinished = {
+                // Commit only after release: dragging must not repeatedly rebuild the reader
+                // or cancel/relaunch native inference for every one-percent step.
+                if (draftScale != aiScalePercent) {
+                    viewModel.preferences.manyueAiScalePercent.set(draftScale)
+                    readerActivity?.onManyueAiScaleChanged(draftScale)
+                }
+            },
+        )
+        Text(
             if (manyueMode == 4) {
                 "不够宽时按阅读区宽度与倍率上限超分；已经足够宽时进行 1×轻量 AI 修复。原图文件保留。"
             } else {
                 "1×做原尺寸 AI 修复；1.01–2×直接按目标尺寸重建。倍率越低，输出重建计算越少；原图文件保留。"
-            }
-        } else if (manyueMode == 4) {
-            "智能模式输出不超过阅读区宽度与所选上限。需要 AI 时仍运行完整质量网络；原图文件保留。"
-        } else {
-            "1×仍运行完整网络再生成原尺寸结果；1.01–2×保持比例输出。原图文件保留。"
-        },
-        style = MaterialTheme.typography.bodySmall,
-    )
+            },
+            style = MaterialTheme.typography.bodySmall,
+        )
+    } else {
+        Text("质量超分倍率：2×（固定）", style = MaterialTheme.typography.bodyMedium)
+    }
     if (selectedAiModel.continuousScale) {
         val aiDetailStrength by viewModel.preferences.manyueAiDetailStrength.collectAsState()
         var draftDetail by remember(aiDetailStrength) { mutableIntStateOf(aiDetailStrength.coerceIn(0, 100)) }
@@ -454,9 +452,9 @@ internal fun ColumnScope.GeneralPage(viewModel: ReaderSettingsViewModel) {
     val foldManualWidth by viewModel.preferences.manyueFoldableTargetWidth.collectAsState()
     Text("折叠屏宽度", style = MaterialTheme.typography.bodyMedium)
     androidx.compose.foundation.layout.FlowRow {
-        listOf("AUTO" to -1, "FULL" to 0, "MANUAL" to 1).map { (label, value) ->
+        listOf("全宽" to 0, "自定义宽度" to 1).map { (label, value) ->
             FilterChip(
-                selected = if (value > 0) foldMode > 0 else foldMode == value,
+                selected = if (value > 0) foldMode > 0 else foldMode <= 0,
                 onClick = {
                     viewModel.preferences.manyueFoldableMode.set(value)
                     readerActivity?.onManyueFoldableWidthChanged(value, foldManualWidth)
@@ -465,6 +463,7 @@ internal fun ColumnScope.GeneralPage(viewModel: ReaderSettingsViewModel) {
             )
         }
     }
+    Text("条漫可用双指缩小留出两侧黑边，退出时按漫画分别记住内外屏比例。", style = MaterialTheme.typography.bodySmall)
     if (foldMode > 0) {
         SliderItem(
             label = "手动宽度 / MANUAL WIDTH",

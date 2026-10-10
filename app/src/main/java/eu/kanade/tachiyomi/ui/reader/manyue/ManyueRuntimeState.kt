@@ -75,13 +75,14 @@ object ManyueRuntimeState {
     fun updateAiModel(newModel: ManyueAiModel) {
         if (aiModel == newModel) return
         aiModel = newModel
+        aiScalePercent = newModel.outputScalePercent(aiScalePercent)
         generation++
         ManyuePrefetchManager.reset()
     }
 
     @Synchronized
     fun updateAiScale(percent: Int) {
-        val safePercent = percent.coerceIn(100, 200)
+        val safePercent = aiModel.outputScalePercent(percent)
         if (aiScalePercent == safePercent) return
         aiScalePercent = safePercent
         generation++

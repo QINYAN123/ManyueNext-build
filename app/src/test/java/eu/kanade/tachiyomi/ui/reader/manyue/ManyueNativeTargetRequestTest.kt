@@ -20,11 +20,14 @@ import java.io.ByteArrayOutputStream
 @Config(application = Application::class, sdk = [34], manifest = Config.NONE)
 @LooperMode(LooperMode.Mode.PAUSED)
 class ManyueNativeTargetRequestTest {
-    @Test fun originalSizeEnhancementQueuesTheOriginalPixelsForTheTwoTimesModel() =
-        checkRequest(mode = 2, scalePercent = 100, displayWidth = 0, expectedTarget = 8)
+    @Test fun savedOneTimesQualitySettingStillQueuesFullTwoTimesWithoutAlteringInput() =
+        checkRequest(mode = 2, scalePercent = 100, displayWidth = 0, expectedTarget = 16)
 
-    @Test fun automaticUpscaleQueuesOriginalPixelsAndOnlyTheNecessaryTargetWidth() =
-        checkRequest(mode = 4, scalePercent = 200, displayWidth = 12, expectedTarget = 12)
+    @Test fun savedFractionalQualitySettingStillQueuesFullTwoTimesWithoutAlteringInput() =
+        checkRequest(mode = 2, scalePercent = 120, displayWidth = 0, expectedTarget = 16)
+
+    @Test fun automaticQualityQueuesFullTwoTimesOutputWhenAiIsNecessary() =
+        checkRequest(mode = 4, scalePercent = 200, displayWidth = 12, expectedTarget = 16)
 
     @Test fun automaticWideSourceCreatesNoNativeRequestOrInputFile() =
         checkRequest(mode = 4, scalePercent = 200, displayWidth = 6, expectedTarget = null)
@@ -51,12 +54,12 @@ class ManyueNativeTargetRequestTest {
                 null,
                 Triple(
                     context.applicationInfo.nativeLibraryDir,
-                    ManyueAiModel.FAST_REAL_CUGAN.id,
+                    ManyueAiModel.QUALITY_REAL_ESRGAN.id,
                     ManyueAiRuntime.Capability.READY,
                 ),
             )
             startedField.setBoolean(null, true)
-            ManyueRuntimeState.updateAiModel(ManyueAiModel.FAST_REAL_CUGAN)
+            ManyueRuntimeState.updateAiModel(ManyueAiModel.QUALITY_REAL_ESRGAN)
             ManyueRuntimeState.updateMode(mode)
             ManyueRuntimeState.updateAiScale(scalePercent)
             val bitmap = Bitmap.createBitmap(8, 17, Bitmap.Config.ARGB_8888)
@@ -85,7 +88,7 @@ class ManyueNativeTargetRequestTest {
                 )
                 return
             }
-            assertNotNull("1x target must enqueue real x2 inference instead of bypassing AI", token)
+            assertNotNull("Quality must enqueue real x2 inference instead of bypassing AI", token)
             val requestsField = scheduler.javaClass.getDeclaredField("requests").apply { isAccessible = true }
 
             @Suppress("UNCHECKED_CAST")
@@ -99,9 +102,9 @@ class ManyueNativeTargetRequestTest {
             assertArrayEquals(originalCopy, request.inputFile.readBytes())
         } finally {
             token?.let(scheduler::cancel)
-            ManyueRuntimeState.updateAiScale(oldScale)
             ManyueRuntimeState.updateMode(oldMode)
             ManyueRuntimeState.updateAiModel(oldModel)
+            ManyueRuntimeState.updateAiScale(oldScale)
             startedField.setBoolean(null, oldStarted)
             probeField.set(null, oldProbe)
             ReflectionHelpers.setStaticField(Build::class.java, "SUPPORTED_64_BIT_ABIS", oldAbis)

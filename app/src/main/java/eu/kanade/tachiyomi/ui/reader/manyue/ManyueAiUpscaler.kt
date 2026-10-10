@@ -98,6 +98,10 @@ object ManyueAiUpscaler {
         val benchmarkNamespace: Int = ManyueBenchmarkControl.cacheNamespace,
     ) : Comparable<Request> {
         internal val terminal = CompletableDeferred<Int>()
+        internal val blockedWorkSampler = ManyueBlockedWorkSampler()
+        internal var lastBlockedReasonMask = 0
+        internal var lastReaderGateBlocked = false
+        internal var lastWorkPacerBlocked = false
 
         override fun compareTo(other: Request): Int =
             other.priority.compareTo(this.priority).takeIf { it != 0 }
@@ -144,18 +148,33 @@ object ManyueAiUpscaler {
                         )
                         continue
                     }
-                    if (req.cancelled || req.completed) continue
+                    if (req.cancelled || req.completed) {
+                        finishBlockedWork(req, cancelled = req.cancelled)
+                        continue
+                    }
                     if (!requestIsCurrent(req)) {
+                        finishBlockedWork(req, cancelled = true)
                         cancel(req.token)
                         continue
                     }
-                    if (ManyueReaderWorkGate.isAiWorkBlocked(req.priority) || workPacer.isBlocked()) {
+                    val diagnosticsEnabled = ManyuePerformanceDiagnostics.enabled
+                    val readerGateBlocked = ManyueReaderWorkGate.isAiWorkBlocked(req.priority)
+                    // Preserve the original short-circuit when diagnostics are off. When enabled,
+                    // read the pacer even if the reader gate already blocks so both reasons export.
+                    val workPacerBlocked = if (readerGateBlocked && !diagnosticsEnabled) {
+                        false
+                    } else {
+                        workPacer.isBlocked()
+                    }
+                    if (readerGateBlocked || workPacerBlocked) {
+                        if (diagnosticsEnabled) recordBlockedWork(req, readerGateBlocked, workPacerBlocked)
                         synchronized(this@ManyueAiUpscaler) {
                             if (!req.cancelled && !req.completed) queue.offer(req)
                         }
                         Thread.sleep(80L)
                         continue
                     }
+                    finishBlockedWork(req, cancelled = false)
                     val claimed = synchronized(this@ManyueAiUpscaler) {
                         if (queue.peek()?.let { shouldYieldToVisible(req, it) } == true) {
                             queue.offer(req)
@@ -302,6 +321,7 @@ object ManyueAiUpscaler {
         if (!req.cancelled) ManyuePerformanceDiagnostics.event(Stage.CANCELLED, req.pageIndex, token)
         req.cancelled = true
         req.queued = false
+        finishBlockedWork(req, cancelled = true)
         req.completionState = STATE_CANCELLED
         req.failureDetail = reason
         queue.remove(req)
@@ -314,6 +334,57 @@ object ManyueAiUpscaler {
             runCatching { req.runningProcess?.destroy() }
             runCatching { req.runningProcess?.destroyForcibly() }
             req.inputFile.delete()
+        }
+    }
+
+    private fun recordBlockedWork(req: Request, readerGateBlocked: Boolean, workPacerBlocked: Boolean) {
+        if (!ManyuePerformanceDiagnostics.enabled) return
+        // This snapshot is explanatory telemetry only. The scheduling decision continues to use
+        // the existing gate boolean and pacer boolean unchanged.
+        val reasonMask = if (readerGateBlocked) {
+            ManyueReaderWorkGate.aiWorkBlockReasonMask(req.priority)
+        } else {
+            0
+        }
+        synchronized(req) {
+            if (req.cancelled || req.completed) return
+            val sample = req.blockedWorkSampler.observe() ?: return
+            req.lastBlockedReasonMask = reasonMask
+            req.lastReaderGateBlocked = readerGateBlocked
+            req.lastWorkPacerBlocked = workPacerBlocked
+            ManyuePerformanceDiagnostics.event(
+                Stage.WORK_BLOCKED,
+                req.pageIndex,
+                req.token,
+                Metric.BLOCK_REASON_MASK to reasonMask.toLong(),
+                Metric.READER_GATE_BLOCKED to if (readerGateBlocked) 1L else 0L,
+                Metric.WORK_PACER_BLOCKED to if (workPacerBlocked) 1L else 0L,
+                Metric.BLOCKED_ELAPSED_MS to sample.elapsedNanos / 1_000_000L,
+                Metric.PRIORITY to req.priority.toLong(),
+                Metric.QUEUE_MS to ((System.nanoTime() / 1_000_000L) - req.enqueuedAt).coerceAtLeast(0L),
+            )
+        }
+    }
+
+    private fun finishBlockedWork(req: Request, cancelled: Boolean) {
+        synchronized(req) {
+            val elapsedNanos = req.blockedWorkSampler.finish() ?: return
+            if (ManyuePerformanceDiagnostics.enabled) {
+                ManyuePerformanceDiagnostics.event(
+                    if (cancelled) Stage.WORK_BLOCK_CANCELLED else Stage.WORK_UNBLOCKED,
+                    req.pageIndex,
+                    req.token,
+                    Metric.BLOCK_REASON_MASK to req.lastBlockedReasonMask.toLong(),
+                    Metric.READER_GATE_BLOCKED to if (req.lastReaderGateBlocked) 1L else 0L,
+                    Metric.WORK_PACER_BLOCKED to if (req.lastWorkPacerBlocked) 1L else 0L,
+                    Metric.BLOCKED_ELAPSED_MS to elapsedNanos / 1_000_000L,
+                    Metric.PRIORITY to req.priority.toLong(),
+                    Metric.QUEUE_MS to ((System.nanoTime() / 1_000_000L) - req.enqueuedAt).coerceAtLeast(0L),
+                )
+            }
+            req.lastBlockedReasonMask = 0
+            req.lastReaderGateBlocked = false
+            req.lastWorkPacerBlocked = false
         }
     }
 

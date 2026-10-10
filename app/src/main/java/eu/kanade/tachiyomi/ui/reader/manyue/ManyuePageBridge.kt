@@ -120,9 +120,31 @@ class ManyuePageBridge(
                 }
                 // Only the visible holder submits direct work. Offscreen pages are covered by
                 // the bounded reader prefetch cursor and can reuse that request when they appear.
+                val visibilityDiagnosticStartedAt = if (ManyuePerformanceDiagnostics.enabled) {
+                    val startedAt = SystemClock.elapsedRealtime()
+                    val recorded = recordVisibilityWait(
+                            stage = Stage.VISIBILITY_WAIT_STARTED,
+                            identity = identity,
+                            expectedGeneration = expectedGeneration,
+                        )
+                    if (recorded) startedAt else null
+                } else {
+                    null
+                }
                 val requestResult = awaitVisiblePageAction(
                     isCurrent = { isCurrentBeforeToken(identity, mode, expectedGeneration) },
                     isVisible = ::isPageVisible,
+                    onWaitFinished = { outcome ->
+                        visibilityDiagnosticStartedAt?.let { startedAt ->
+                            recordVisibilityWait(
+                                stage = Stage.VISIBILITY_WAIT_FINISHED,
+                                identity = identity,
+                                expectedGeneration = expectedGeneration,
+                                elapsedMs = (SystemClock.elapsedRealtime() - startedAt).coerceAtLeast(0L),
+                                outcome = outcome,
+                            )
+                        }
+                    },
                 ) {
                     withContext(Dispatchers.IO) {
                         try {
@@ -450,6 +472,33 @@ class ManyuePageBridge(
         return view.getGlobalVisibleRect(Rect())
     }
 
+    private fun recordVisibilityWait(
+        stage: Stage,
+        identity: Identity,
+        expectedGeneration: Long,
+        elapsedMs: Long? = null,
+        outcome: VisibleActionWaitOutcome? = null,
+    ): Boolean {
+        if (!ManyuePerformanceDiagnostics.enabled) return false
+        val attached = view.isAttachedToWindow
+        val shown = view.isShown
+        val rectVisible = attached && shown && runCatching { view.getGlobalVisibleRect(Rect()) }.getOrDefault(false)
+        val metrics = mutableListOf(
+            Metric.VIEW_ATTACHED to if (attached) 1L else 0L,
+            Metric.VIEW_SHOWN to if (shown) 1L else 0L,
+            Metric.RECT_VISIBLE to if (rectVisible) 1L else 0L,
+            Metric.MANAGER_SELECTED to if (
+                ManyuePrefetchManager.isSelectedPage(identity.chapterId, identity.pageIndex)
+            ) 1L else 0L,
+            Metric.CAPTURED_GENERATION to expectedGeneration,
+            Metric.CURRENT_GENERATION to ManyueRuntimeState.generation,
+        )
+        elapsedMs?.let { metrics.add(Metric.WAIT_ELAPSED_MS to it) }
+        outcome?.let { metrics.add(Metric.WAIT_OUTCOME to it.metricValue) }
+        ManyuePerformanceDiagnostics.event(stage, identity.pageIndex, null, *metrics.toTypedArray())
+        return true
+    }
+
     private suspend fun awaitDisplayPause(
         expectedToken: String,
         expectedIdentity: Identity,
@@ -760,14 +809,35 @@ internal sealed class VisibleActionResult<out T> {
     data class Completed<T>(val value: T) : VisibleActionResult<T>()
 }
 
+internal enum class VisibleActionWaitOutcome(val metricValue: Long) {
+    VISIBLE(1L),
+    STALE(2L),
+    CANCELLED(3L),
+}
+
 /** Runs a direct page request only after its holder is visible. */
 internal suspend fun <T> awaitVisiblePageAction(
     isCurrent: () -> Boolean,
     isVisible: () -> Boolean,
+    onWaitFinished: (VisibleActionWaitOutcome) -> Unit = {},
     action: suspend () -> T,
 ): VisibleActionResult<T> {
-    if (!awaitPageVisibility(isCurrent, isVisible)) return VisibleActionResult.Stale
-    return VisibleActionResult.Completed(action())
+    var outcomeReported = false
+    try {
+        if (!awaitPageVisibility(isCurrent, isVisible)) {
+            outcomeReported = true
+            onWaitFinished(VisibleActionWaitOutcome.STALE)
+            return VisibleActionResult.Stale
+        }
+        outcomeReported = true
+        onWaitFinished(VisibleActionWaitOutcome.VISIBLE)
+        return VisibleActionResult.Completed(action())
+    } finally {
+        if (!outcomeReported) {
+            outcomeReported = true
+            onWaitFinished(VisibleActionWaitOutcome.CANCELLED)
+        }
+    }
 }
 
 /** Opens the coordinator gate only after this holder actually decided whether to enqueue. */

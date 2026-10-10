@@ -1,5 +1,7 @@
 package eu.kanade.tachiyomi.ui.reader.viewer.webtoon
 
+import android.animation.Animator
+import android.animation.AnimatorListenerAdapter
 import android.animation.AnimatorSet
 import android.animation.ValueAnimator
 import android.content.Context
@@ -11,6 +13,7 @@ import android.view.Choreographer
 import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.ViewConfiguration
+import android.view.ViewGroup
 import android.view.animation.DecelerateInterpolator
 import androidx.core.animation.doOnEnd
 import androidx.recyclerview.widget.LinearLayoutManager
@@ -160,6 +163,7 @@ class WebtoonRecyclerView @JvmOverloads constructor(
     }
 
     override fun onDetachedFromWindow() {
+        cancelActiveZoomAnimations()
         manyueTouchActive = false
         manyueLastInteraction = 0L
         stopFrameSampling()
@@ -171,9 +175,15 @@ class WebtoonRecyclerView @JvmOverloads constructor(
     private var atFirstPosition = false
     private var halfWidth = 0
     private var halfHeight = 0
+    private var viewportWidth = 0
+    private var zoomTargetRate: Float? = null
+    private var zoomAnimator: AnimatorSet? = null
+    private var zoomFlingActive = false
+    private var zoomFlingAnimator: AnimatorSet? = null
     var originalHeight = 0
         private set
-    private var heightSet = false
+    private var hasViewportSize = false
+    private var pendingComfortScale: Float? = null
     private var firstVisibleItemPosition = 0
     private var lastVisibleItemPosition = 0
     private var currentScale = DEFAULT_RATE
@@ -199,18 +209,121 @@ class WebtoonRecyclerView @JvmOverloads constructor(
     private var tapDuringManualScroll = false
 
     override fun onMeasure(widthSpec: Int, heightSpec: Int) {
-        halfWidth = MeasureSpec.getSize(widthSpec) / 2
-        halfHeight = MeasureSpec.getSize(heightSpec) / 2
-        if (!heightSet) {
-            originalHeight = MeasureSpec.getSize(heightSpec)
-            heightSet = true
-        }
         super.onMeasure(widthSpec, heightSpec)
+        halfWidth = measuredWidth / 2
+        halfHeight = measuredHeight / 2
+        if (!hasViewportSize && originalHeight == 0) {
+            originalHeight = measuredHeight
+        }
+    }
+
+    /** Called with the frame's viewport, never the possibly expanded recycler height. */
+    fun onViewportSizeChanged(width: Int, height: Int) {
+        if (width <= 0 || height <= 0) return
+
+        val heightChanged = originalHeight != height
+        val widthChanged = viewportWidth != width
+        originalHeight = height
+        hasViewportSize = true
+        viewportWidth = width
+        halfWidth = width / 2
+
+        val restoreScale = pendingComfortScale
+        if (restoreScale != null) {
+            pendingComfortScale = null
+            applyComfortScale(restoreScale)
+            return
+        }
+
+        if (!heightChanged && !widthChanged) return
+        updateScaleLayout(currentScale)
+        if (currentScale < DEFAULT_RATE) {
+            x = 0f
+            y = WebtoonComfortScalePolicy.verticalOffset(originalHeight, layoutHeightForScale(currentScale))
+        } else {
+            x = getPositionX(x)
+            y = getPositionY(y)
+        }
+    }
+
+    /** Apply saved book comfort zoom once the reader has a real viewport. */
+    fun restoreComfortScale(scale: Float) {
+        if (zoomOutDisabled) return
+        val rememberedScale = WebtoonComfortScalePolicy.rememberedScale(scale) ?: return
+        cancelActiveZoomAnimations()
+        if (!hasViewportSize || originalHeight <= 0) {
+            pendingComfortScale = rememberedScale
+            return
+        }
+        applyComfortScale(rememberedScale)
+    }
+
+    /** Reset the current reader shape to 1x and discard any deferred saved shrink scale. */
+    fun resetComfortScale() {
+        pendingComfortScale = null
+        cancelActiveZoomAnimations()
+        currentScale = DEFAULT_RATE
+        zoomTargetRate = null
+        setScaleRate(DEFAULT_RATE)
+        updateScaleLayout(DEFAULT_RATE)
+        x = 0f
+        y = 0f
+        requestLayout()
+    }
+
+    /** Only a deliberate sub-1 scale is persistent; magnification and reset mean no saved zoom. */
+    fun comfortScaleForPersistence(): Float? = WebtoonComfortScalePolicy.rememberedScale(
+        zoomTargetRate?.takeIf { isZooming } ?: pendingComfortScale ?: currentScale,
+    )
+
+    private fun applyComfortScale(scale: Float) {
+        currentScale = scale
+        setScaleRate(scale)
+        updateScaleLayout(scale)
+        x = 0f
+        y = WebtoonComfortScalePolicy.verticalOffset(originalHeight, layoutHeightForScale(scale))
+        requestLayout()
+    }
+
+    private fun cancelActiveZoomAnimations() {
+        val scaleAnimator = zoomAnimator
+        zoomAnimator = null
+        scaleAnimator?.cancel()
+
+        val flingAnimator = zoomFlingAnimator
+        zoomFlingAnimator = null
+        flingAnimator?.cancel()
+
+        isZooming = false
+        zoomTargetRate = null
+        zoomFlingActive = false
+        isManuallyScrolling = false
+    }
+
+    private fun layoutHeightForScale(scale: Float): Int =
+        if (scale < DEFAULT_RATE) {
+            WebtoonComfortScalePolicy.contentHeight(originalHeight, scale)
+        } else {
+            originalHeight
+        }
+
+    private fun updateScaleLayout(scale: Float) {
+        val params = layoutParams ?: return
+        val targetHeight = if (scale < DEFAULT_RATE) {
+            layoutHeightForScale(scale)
+        } else {
+            ViewGroup.LayoutParams.MATCH_PARENT
+        }
+        if (params.height != targetHeight) {
+            params.height = targetHeight
+            layoutParams = params
+        }
+        halfHeight = if (scale < DEFAULT_RATE) layoutHeightForScale(scale) / 2 else originalHeight / 2
     }
 
     override fun onTouchEvent(e: MotionEvent): Boolean {
         if (e.actionMasked == MotionEvent.ACTION_DOWN) {
-            tapDuringManualScroll = isManuallyScrolling
+            tapDuringManualScroll = isManuallyScrolling || scrollState != SCROLL_STATE_IDLE
         }
 
         detector.onTouchEvent(e)
@@ -240,8 +353,8 @@ class WebtoonRecyclerView @JvmOverloads constructor(
         atLastPosition = visibleItemCount > 0 && lastVisibleItemPosition == totalItemCount - 1
         atFirstPosition = firstVisibleItemPosition == 0
 
-        if (state == SCROLL_STATE_IDLE) {
-            isManuallyScrolling = false
+        if (state == SCROLL_STATE_IDLE && !zoomFlingActive) {
+            isManuallyScrolling = scrollState != SCROLL_STATE_IDLE
         }
     }
 
@@ -255,7 +368,7 @@ class WebtoonRecyclerView @JvmOverloads constructor(
 
     private fun getPositionY(positionY: Float): Float {
         if (currentScale < 1) {
-            return (originalHeight / 2 - halfHeight).toFloat()
+            return WebtoonComfortScalePolicy.verticalOffset(originalHeight, layoutHeightForScale(currentScale))
         }
         val maxPositionY = halfHeight * (currentScale - 1)
         return positionY.coerceIn(-maxPositionY, maxPositionY)
@@ -269,7 +382,14 @@ class WebtoonRecyclerView @JvmOverloads constructor(
         fromY: Float,
         toY: Float,
     ) {
+        val previousAnimator = zoomAnimator
+        zoomAnimator = null
+        previousAnimator?.cancel()
+        if (toRate >= DEFAULT_RATE && currentScale < DEFAULT_RATE) {
+            updateScaleLayout(toRate)
+        }
         isZooming = true
+        zoomTargetRate = toRate
         val animatorSet = AnimatorSet()
         val translationXAnimator = ValueAnimator.ofFloat(fromX, toX)
         translationXAnimator.addUpdateListener { animation -> x = animation.animatedValue as Float }
@@ -286,13 +406,20 @@ class WebtoonRecyclerView @JvmOverloads constructor(
         animatorSet.duration = ANIMATOR_DURATION_TIME.toLong()
         animatorSet.interpolator = DecelerateInterpolator()
         manyueAnimating++
+        zoomAnimator = animatorSet
         updateManyueWorkGate()
         animatorSet.doOnEnd {
             manyueAnimating--
             manyueLastInteraction = SystemClock.uptimeMillis()
+            if (zoomAnimator === animatorSet) {
+                zoomAnimator = null
+                isZooming = false
+                zoomTargetRate = null
+                currentScale = toRate
+                setScaleRate(toRate)
+                updateScaleLayout(toRate)
+            }
             updateManyueWorkGate()
-            isZooming = false
-            currentScale = toRate
         }
         animatorSet.start()
     }
@@ -318,15 +445,39 @@ class WebtoonRecyclerView @JvmOverloads constructor(
             animatorSet.play(translationYAnimator)
         }
 
+        if (animatorSet.childAnimations.isEmpty()) return false
+
+        zoomFlingAnimator?.let { previousAnimator ->
+            zoomFlingAnimator = null
+            previousAnimator.cancel()
+        }
+        zoomFlingActive = true
+        onManualScroll()
+
         animatorSet.duration = 400
         animatorSet.interpolator = DecelerateInterpolator()
         manyueAnimating++
         updateManyueWorkGate()
-        animatorSet.doOnEnd {
+        var finished = false
+        fun finishZoomFling() {
+            if (finished) return
+            finished = true
             manyueAnimating--
             manyueLastInteraction = SystemClock.uptimeMillis()
+            if (zoomFlingAnimator === animatorSet) {
+                zoomFlingAnimator = null
+                zoomFlingActive = false
+                isManuallyScrolling = scrollState != SCROLL_STATE_IDLE
+            }
             updateManyueWorkGate()
         }
+        animatorSet.addListener(
+            object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) = finishZoomFling()
+                override fun onAnimationCancel(animation: Animator) = finishZoomFling()
+            },
+        )
+        zoomFlingAnimator = animatorSet
         animatorSet.start()
 
         return true
@@ -354,13 +505,7 @@ class WebtoonRecyclerView @JvmOverloads constructor(
         )
 
         setScaleRate(currentScale)
-
-        layoutParams.height = if (currentScale < 1) {
-            (originalHeight / currentScale).toInt()
-        } else {
-            originalHeight
-        }
-        halfHeight = layoutParams.height / 2
+        updateScaleLayout(currentScale)
 
         if (currentScale != DEFAULT_RATE) {
             x = getPositionX(x)
@@ -385,7 +530,7 @@ class WebtoonRecyclerView @JvmOverloads constructor(
         }
     }
 
-    fun onManualScroll() {
+    private fun onManualScroll() {
         isManuallyScrolling = true
     }
 
@@ -407,9 +552,6 @@ class WebtoonRecyclerView @JvmOverloads constructor(
             if (!isZooming && doubleTapZoom) {
                 if (scaleX != DEFAULT_RATE) {
                     zoom(currentScale, DEFAULT_RATE, x, 0f, y, 0f)
-                    layoutParams.height = originalHeight
-                    halfHeight = layoutParams.height / 2
-                    requestLayout()
                 } else {
                     val toScale = 2f
                     val toX = (halfWidth - ev.x) * (toScale - 1)

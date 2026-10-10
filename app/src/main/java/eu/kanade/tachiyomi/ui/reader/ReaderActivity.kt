@@ -65,6 +65,8 @@ import eu.kanade.tachiyomi.ui.reader.ReaderViewModel.SetAsCoverResult.AddToLibra
 import eu.kanade.tachiyomi.ui.reader.ReaderViewModel.SetAsCoverResult.Error
 import eu.kanade.tachiyomi.ui.reader.ReaderViewModel.SetAsCoverResult.Success
 import eu.kanade.tachiyomi.ui.reader.manyue.ManyueFrameMonitor
+import eu.kanade.tachiyomi.ui.reader.manyue.ManyueComfortScaleStore
+import eu.kanade.tachiyomi.ui.reader.manyue.ManyueFoldableWidthPolicy
 import eu.kanade.tachiyomi.ui.reader.manyue.ManyueGpuDisplayController
 import eu.kanade.tachiyomi.ui.reader.manyue.ManyueGpuDisplayStatus
 import eu.kanade.tachiyomi.ui.reader.manyue.ManyuePerformanceDiagnostics
@@ -81,6 +83,7 @@ import eu.kanade.tachiyomi.ui.reader.setting.ReadingMode
 import eu.kanade.tachiyomi.ui.reader.viewer.ReaderProgressIndicator
 import eu.kanade.tachiyomi.ui.reader.viewer.pager.R2LPagerViewer
 import eu.kanade.tachiyomi.ui.reader.viewer.webgpu.WebGpuViewer
+import eu.kanade.tachiyomi.ui.reader.viewer.webtoon.WebtoonViewer
 import eu.kanade.tachiyomi.ui.webview.WebViewActivity
 import eu.kanade.tachiyomi.util.system.openInBrowser
 import eu.kanade.tachiyomi.util.system.readerBackgroundColor
@@ -145,6 +148,9 @@ class ReaderActivity : BaseActivity() {
     private var manyueGpuDisplayController: ManyueGpuDisplayController? = null
     private var manyueFrameMonitor: ManyueFrameMonitor? = null
     private var manyueReaderResumed = false
+    private var comfortMangaId: Long? = null
+    private var comfortInnerScreen = false
+    private val comfortScaleStore by lazy { ManyueComfortScaleStore(readerPreferences.manyueComfortScales) }
     private val mutableGpuDisplayStatus = MutableStateFlow(ManyueGpuDisplayStatus())
     val manyueGpuDisplayStatus = mutableGpuDisplayStatus.asStateFlow()
 
@@ -194,6 +200,7 @@ class ReaderActivity : BaseActivity() {
         // lastConfig null when Reader is opened directly on an already-unfolded inner screen.
         eu.kanade.tachiyomi.ui.reader.manyue.ManyueFoldableController
             .onConfigurationChanged(resources.configuration)
+        comfortInnerScreen = ManyueFoldableWidthPolicy.isInnerScreen(resources.configuration.smallestScreenWidthDp)
         eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.syncFrom(readerPreferences)
 
         if (!viewModel.hasValidArgs) {
@@ -352,6 +359,7 @@ class ReaderActivity : BaseActivity() {
      * Called when the activity is destroyed. Cleans up the viewer, configuration and any view.
      */
     override fun onDestroy() {
+        saveComfortScale()
         manyueFrameMonitor?.close()
         manyueFrameMonitor = null
         manyueGpuDisplayController?.close()
@@ -365,6 +373,7 @@ class ReaderActivity : BaseActivity() {
     }
 
     override fun onPause() {
+        saveComfortScale()
         manyueReaderResumed = false
         eu.kanade.tachiyomi.ui.reader.manyue.ManyueReadingCoverage.endReader()
         manyueFrameMonitor?.close()
@@ -394,12 +403,19 @@ class ReaderActivity : BaseActivity() {
     }
 
     override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        val newInnerScreen = ManyueFoldableWidthPolicy.isInnerScreen(newConfig.smallestScreenWidthDp)
+        val screenFormChanged = newInnerScreen != comfortInnerScreen
+        if (screenFormChanged) saveComfortScale()
         super.onConfigurationChanged(newConfig)
+        comfortInnerScreen = newInnerScreen
         recordManyueConfiguration()
         // Manyue foldable: track inner-screen state. No-op on regular phones.
         runCatching {
             eu.kanade.tachiyomi.ui.reader.manyue.ManyueFoldableController.onConfigurationChanged(newConfig)
-            binding.root.post { viewModel.state.value.viewer?.reapplyManyueWidth() }
+            binding.root.post {
+                viewModel.state.value.viewer?.reapplyManyueWidth()
+                if (screenFormChanged) restoreComfortScale()
+            }
         }
     }
 
@@ -483,6 +499,13 @@ class ReaderActivity : BaseActivity() {
                 onManyuePerformanceDiagnosticsChanged(true)
                 resetManyuePerformanceDiagnostics()
                 viewModel.state.value.viewer?.refreshManyue()
+            }
+            "observe" -> {
+                // Observe an existing queue without refreshing holders, cancelling jobs,
+                // changing cache namespace, model, crop settings, or comfort zoom.
+                readerPreferences.manyuePerformanceDiagnostics.set(true)
+                onManyuePerformanceDiagnosticsChanged(true)
+                if (intent.getBooleanExtra("reset", false)) resetManyuePerformanceDiagnostics()
             }
             "end" -> {
                 readerPreferences.manyuePerformanceDiagnostics.set(false)
@@ -586,6 +609,9 @@ class ReaderActivity : BaseActivity() {
     fun onManyueAiModelChanged(modelId: String) {
         eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.updateAiModel(
             eu.kanade.tachiyomi.ui.reader.manyue.ManyueAiModel.fromId(modelId),
+        )
+        eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.updateAiScale(
+            readerPreferences.manyueAiScalePercent.get(),
         )
         recordManyueConfiguration()
         viewModel.state.value.viewer?.refreshManyue()
@@ -792,6 +818,7 @@ class ReaderActivity : BaseActivity() {
      */
     private fun updateViewer() {
         val prevViewer = viewModel.state.value.viewer
+        saveComfortScale()
         val newViewer = ReadingMode.toViewer(viewModel.getMangaReadingMode(), this)
 
         if (window.sharedElementEnterTransition is MaterialContainerTransform) {
@@ -809,6 +836,8 @@ class ReaderActivity : BaseActivity() {
             binding.viewerContainer.removeAllViews()
         }
         viewModel.onViewerLoaded(newViewer)
+        comfortMangaId = viewModel.manga?.id
+        restoreComfortScale()
         updateViewerInset(readerPreferences.fullscreen.get(), readerPreferences.drawUnderCutout.get())
         binding.viewerContainer.addView(newViewer.getView())
 
@@ -830,6 +859,19 @@ class ReaderActivity : BaseActivity() {
         }
 
         startPostponedEnterTransition()
+    }
+
+    private fun saveComfortScale() {
+        val mangaId = comfortMangaId ?: return
+        val webtoon = viewModel.state.value.viewer as? WebtoonViewer ?: return
+        comfortScaleStore.save(mangaId, comfortInnerScreen, webtoon.comfortScaleForPersistence())
+    }
+
+    private fun restoreComfortScale() {
+        val mangaId = comfortMangaId ?: return
+        val webtoon = viewModel.state.value.viewer as? WebtoonViewer ?: return
+        val remembered = comfortScaleStore.get(mangaId, comfortInnerScreen)
+        if (remembered != null) webtoon.restoreComfortScale(remembered) else webtoon.resetComfortScale()
     }
 
     private fun openMangaScreen() {

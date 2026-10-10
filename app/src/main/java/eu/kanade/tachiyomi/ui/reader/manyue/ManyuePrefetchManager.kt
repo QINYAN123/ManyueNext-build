@@ -37,6 +37,10 @@ object ManyuePrefetchManager {
             (chapterId == currentChapterId && pageIndex == currentPage)
     }
 
+    internal fun isSelectedPage(chapterId: Long, pageIndex: Int): Boolean = synchronized(this) {
+        chapterId == currentChapterId && pageIndex == currentPage
+    }
+
     fun reset() {
         synchronized(this) {
             tokens.values.flatten().forEach(ManyueAiUpscaler::cancel)
