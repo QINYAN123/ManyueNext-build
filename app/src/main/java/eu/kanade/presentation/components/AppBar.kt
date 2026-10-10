@@ -276,6 +276,7 @@ fun SearchToolbar(
     placeholderText: String? = null,
     onSearch: (String) -> Unit = {},
     onClickCloseSearch: () -> Unit = { onChangeSearchQuery(null) },
+    beforeSearchAction: @Composable RowScope.() -> Unit = {},
     actions: @Composable RowScope.() -> Unit = {},
     scrollBehavior: TopAppBarScrollBehavior? = null,
     interactionSource: MutableInteractionSource = remember { MutableInteractionSource() },
@@ -358,6 +359,8 @@ fun SearchToolbar(
         },
         navigateUp = if (searchQuery == null) navigateUp else onClickCloseSearch,
         actions = {
+            key("beforeSearchAction") { beforeSearchAction() }
+
             key("search") {
                 val onClick = { onChangeSearchQuery("") }
 

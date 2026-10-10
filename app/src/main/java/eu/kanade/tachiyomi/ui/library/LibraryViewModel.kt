@@ -46,7 +46,9 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import mihon.core.common.utils.mutate
@@ -199,6 +201,7 @@ class LibraryViewModel(
 
         LibraryData(
             isInitialized = true,
+            showAdultContent = showAdult,
             showSystemCategory = showSystemCategory,
             categories = categories,
             favorites = filteredFavorites,
@@ -216,6 +219,7 @@ class LibraryViewModel(
                 groupedFavorites = data.favorites
                     .applyGrouping(data.categories, data.showSystemCategory)
                     .applySort(data.favoritesById, data.tracksMap, data.loggedInTrackerIds),
+                showAdultContent = data.showAdultContent,
             )
         }
         .flowOn(Dispatchers.IO)
@@ -225,19 +229,22 @@ class LibraryViewModel(
         library,
         combine(searchQuery, selection, dialog, ::Triple),
         combine(activeCategoryIndex, displayPreferences, hasActiveFilters, ::Triple),
-    ) { library, (searchQuery, selection, dialog), (activeCategoryIndex, display, hasActiveFilters) ->
+        adultContentSessionState.isShown,
+    ) { library, (searchQuery, selection, dialog), (activeCategoryIndex, display, hasActiveFilters), showAdult ->
+        val visibleLibrary = library?.takeIf { it.showAdultContent == showAdult }
         State(
-            isLoading = library == null,
+            isLoading = visibleLibrary == null,
             searchQuery = searchQuery,
-            selection = selection,
+            selection = selection.takeIf { visibleLibrary != null }.orEmpty(),
             hasActiveFilters = hasActiveFilters,
+            showAdultContent = showAdult,
             showCategoryTabs = display.showCategoryTabs,
             showMangaCount = display.showMangaCount,
             showMangaContinueButton = display.showMangaContinueButton,
-            dialog = dialog,
-            libraryData = library?.data ?: LibraryData(),
+            dialog = dialog.takeIf { visibleLibrary != null },
+            libraryData = visibleLibrary?.data ?: LibraryData(),
             activeCategoryIndex = activeCategoryIndex,
-            groupedFavorites = library?.groupedFavorites.orEmpty(),
+            groupedFavorites = visibleLibrary?.groupedFavorites.orEmpty(),
         )
     }
 
@@ -258,7 +265,14 @@ class LibraryViewModel(
     private data class Library(
         val data: LibraryData,
         val groupedFavorites: Map<Category, List</* LibraryItem */ Long>>,
+        val showAdultContent: Boolean,
     )
+
+    init {
+        adultContentSessionState.isShown
+            .onEach { shown -> if (!shown) clearSelection() }
+            .launchIn(viewModelScope)
+    }
 
     private fun List<LibraryItem>.applyFilters(
         trackMap: Map<Long, List<Track>>,
@@ -690,6 +704,10 @@ class LibraryViewModel(
         dialog.update { Dialog.SettingsSheet }
     }
 
+    fun toggleAdultContent() {
+        adultContentSessionState.toggle()
+    }
+
     private var lastSelectionCategory: Long? = null
 
     /**
@@ -875,6 +893,7 @@ class LibraryViewModel(
     @Immutable
     data class LibraryData(
         val isInitialized: Boolean = false,
+        val showAdultContent: Boolean = false,
         val showSystemCategory: Boolean = false,
         val categories: List<Category> = emptyList(),
         val favorites: List<LibraryItem> = emptyList(),
@@ -890,6 +909,7 @@ class LibraryViewModel(
     data class State(
         val isInitialized: Boolean = false,
         val isLoading: Boolean = true,
+        val showAdultContent: Boolean = false,
         val searchQuery: String? = null,
         val selection: Set</* Manga */ Long> = setOf(),
         val hasActiveFilters: Boolean = false,

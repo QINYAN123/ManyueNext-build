@@ -442,7 +442,7 @@ class WebtoonViewer(val activity: ReaderActivity, val isContinuous: Boolean = tr
             !coverageBlockedByUi &&
             activity.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
 
-    private fun refreshReadingCoverage() {
+    override fun refreshReadingCoverage() {
         if (!isReadingCoverageVisible) {
             hideReadingCoverage()
             return

@@ -138,6 +138,8 @@ data object LibraryTab : Tab {
                             }
                         }
                     },
+                    showAdultContent = state.showAdultContent,
+                    onToggleAdultContent = viewModel::toggleAdultContent,
                     searchQuery = state.searchQuery,
                     onSearchQueryChange = viewModel::search,
                     // For scroll overlay when no tab

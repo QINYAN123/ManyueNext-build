@@ -6,6 +6,11 @@ import mihon.domain.extension.model.ContentWarning
 object AdultContentPolicy {
     private val classifier = AdultContentClassifier()
 
+    data class ContentPartition<T>(
+        val regular: List<T>,
+        val adult: List<T>,
+    )
+
     fun isAdult(sourceId: Long, warning: ContentWarning, genres: List<String>?): Boolean =
         classifier.isAdult(sourceId, warning, genres)
 
@@ -66,5 +71,29 @@ object AdultContentPolicy {
             override = overrideFor(item),
             detectedAdult = classifier.isAdult(id, warningFor(id), genres(item)),
         )
+    }
+
+    /** Splits items according to the same policy as the default hidden state. */
+    fun <T> partition(
+        items: List<T>,
+        autoDetectionEnabled: Boolean,
+        overrideFor: (T) -> ContentRatingOverride,
+        warningFor: (Long) -> ContentWarning,
+        sourceId: (T) -> Long,
+        genres: (T) -> List<String>?,
+    ): ContentPartition<T> {
+        val regular = mutableListOf<T>()
+        val adult = mutableListOf<T>()
+        items.forEach { item ->
+            val id = sourceId(item)
+            val visibleByDefault = shouldShow(
+                showAdult = false,
+                autoDetectionEnabled = autoDetectionEnabled,
+                override = overrideFor(item),
+                detectedAdult = classifier.isAdult(id, warningFor(id), genres(item)),
+            )
+            if (visibleByDefault) regular += item else adult += item
+        }
+        return ContentPartition(regular = regular, adult = adult)
     }
 }

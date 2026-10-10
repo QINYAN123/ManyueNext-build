@@ -27,6 +27,9 @@ interface Viewer {
     /** Recompute widths of already-created image views after fold/unfold or width changes. */
     fun reapplyManyueWidth() {}
 
+    /** Recompute visible coverage after diagnostics clear their in-memory exposure registry. */
+    fun refreshReadingCoverage() {}
+
     /**
      * Tells this viewer to set the given [chapters] as active.
      */

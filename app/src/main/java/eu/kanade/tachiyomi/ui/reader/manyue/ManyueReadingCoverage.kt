@@ -66,8 +66,10 @@ object ManyueReadingCoverage {
     private val stamps = LinkedHashMap<Int, Result>()
     private var droppedExposures = 0
     private var droppedResults = 0
+    @Volatile private var resetEpoch = 0L
 
     val enabled: Boolean get() = ManyuePerformanceDiagnostics.enabled
+    internal val epoch: Long get() = resetEpoch
 
     internal var clockOverride: (() -> Long)? = null
     private fun now(): Long = clockOverride?.invoke() ?: ManyuePerformanceDiagnostics.recorder.elapsedNs()
@@ -88,6 +90,7 @@ object ManyueReadingCoverage {
         stamps.clear()
         droppedExposures = 0
         droppedResults = 0
+        resetEpoch++
     }
 
     private fun samePage(a: Source, b: Source): Boolean =
@@ -159,6 +162,48 @@ object ManyueReadingCoverage {
     fun hidden(owner: Any) {
         if (!enabled) return
         synchronized(lock) { end(owner, now(), "left_visible_region") }
+    }
+
+    /**
+     * Validates a late AI source stamp and upgrades a matching active exposure when present.
+     * This never creates/restarts an exposure, so its entry time and dwell stay intact. The caller
+     * must still report an actual active-child draw through [drawn].
+     */
+    internal fun upgradeActiveSource(
+        owner: Any,
+        currentSource: Source,
+        result: Result,
+    ): Boolean {
+        if (!enabled) return false
+        synchronized(lock) {
+            val config = configuration()
+            if (result.generation != config.generation ||
+                result.model != config.model ||
+                result.mode != config.mode ||
+                result.scalePercent != config.scale ||
+                currentSource.fingerprint != null ||
+                !samePage(currentSource, result.source) ||
+                currentSource.sourceWidth <= 0 || currentSource.sourceHeight <= 0 ||
+                currentSource.sourceWidth != result.source.sourceWidth ||
+                currentSource.sourceHeight != result.source.sourceHeight ||
+                result.source.fingerprint.isNullOrBlank() ||
+                result.outputWidth <= 0 || result.outputHeight <= 0
+            ) {
+                return false
+            }
+            val current = active[owner] ?: return true
+            if (current.configuration != config) return false
+            if (current.source.fingerprint != null) return current.source == result.source
+            if (!samePage(current.source, currentSource) ||
+                current.source.sourceWidth != currentSource.sourceWidth ||
+                current.source.sourceHeight != currentSource.sourceHeight
+            ) {
+                return false
+            }
+            current.source = result.source
+            current.sourceId = sourceId(result.source)
+            return true
+        }
     }
 
     /** First submitted reader frame includes placeholders and rejected stale active images. */

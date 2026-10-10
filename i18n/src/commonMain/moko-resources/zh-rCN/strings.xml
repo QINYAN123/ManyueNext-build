@@ -953,4 +953,10 @@
     <string name="reader_source_image_status_loading">正在读取图像尺寸</string>
     <string name="reader_source_image_status_unavailable">图像尺寸未知</string>
     <string name="reader_enhancement_interpolated_ready">普通插值</string>
+    <string name="history_r18_show">展开R18历史记录</string>
+    <string name="history_r18_hide">收起R18历史记录</string>
+    <string name="history_r18_hidden">成人历史记录已隐藏</string>
+    <string name="history_adult_content_group">成人内容</string>
+    <string name="library_r18_show">本次运行显示R18内容</string>
+    <string name="library_r18_hide">本次运行隐藏R18内容</string>
 </resources>

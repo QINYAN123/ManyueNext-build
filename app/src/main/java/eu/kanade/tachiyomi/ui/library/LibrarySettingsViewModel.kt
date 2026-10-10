@@ -9,7 +9,6 @@ import dev.zacsweers.metrox.viewmodel.ViewModelKey
 import eu.kanade.domain.base.BasePreferences
 import eu.kanade.domain.adult.service.AdultContentPreferences
 import eu.kanade.tachiyomi.data.track.TrackerManager
-import eu.kanade.tachiyomi.ui.adult.AdultContentSessionState
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.stateIn
 import tachiyomi.core.common.preference.Preference
@@ -33,13 +32,8 @@ class LibrarySettingsViewModel(
     private val setDisplayMode: SetDisplayMode,
     private val setSortModeForCategory: SetSortModeForCategory,
     trackerManager: TrackerManager,
-    private val adultContentSessionState: AdultContentSessionState,
     private val adultContentPreferences: AdultContentPreferences,
 ) : ViewModel() {
-
-    val showAdultContent = adultContentSessionState.isShown
-
-    fun setAdultContentShown(shown: Boolean) = adultContentSessionState.setShown(shown)
 
     val autoDetectionEnabled = adultContentPreferences.autoDetectionEnabled
 

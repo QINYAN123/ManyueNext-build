@@ -1145,4 +1145,10 @@
     <string name="reader_source_image_status_loading">Reading image size</string>
     <string name="reader_source_image_status_unavailable">Image size unknown</string>
     <string name="reader_enhancement_interpolated_ready">Interpolation</string>
+    <string name="history_r18_show">Show R18 history</string>
+    <string name="history_r18_hide">Hide R18 history</string>
+    <string name="history_r18_hidden">Adult history is hidden</string>
+    <string name="history_adult_content_group">Adult content</string>
+    <string name="library_r18_show">Show R18 content this session</string>
+    <string name="library_r18_hide">Hide R18 content this session</string>
 </resources>

@@ -9,6 +9,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.tooling.preview.PreviewLightDark
 import androidx.compose.ui.tooling.preview.PreviewParameter
+import eu.kanade.presentation.components.AdultContentToggle
 import eu.kanade.presentation.components.AppBar
 import eu.kanade.presentation.components.AppBarActions
 import eu.kanade.presentation.components.AppBarTitle
@@ -38,6 +39,7 @@ fun HistoryScreen(
     onClickResume: (mangaId: Long, chapterId: Long) -> Unit,
     onClickFavorite: (mangaId: Long) -> Unit,
     onDialogChange: (HistoryViewModel.Dialog?) -> Unit,
+    onToggleAdultContent: () -> Unit,
 ) {
     Scaffold(
         topBar = { scrollBehavior ->
@@ -46,6 +48,15 @@ fun HistoryScreen(
                 searchQuery = state.searchQuery,
                 onChangeSearchQuery = onSearchQueryChange,
                 actions = {
+                    if (state.hasAdultHistory || state.showAdult) {
+                        AdultContentToggle(
+                            expanded = state.showAdult,
+                            contentDescription = stringResource(
+                                if (state.showAdult) MR.strings.history_r18_hide else MR.strings.history_r18_show,
+                            ),
+                            onClick = onToggleAdultContent,
+                        )
+                    }
                     AppBarActions(
                         listOf(
                             AppBar.Action(
@@ -66,9 +77,11 @@ fun HistoryScreen(
         state.list.let {
             if (it == null) {
                 LoadingScreen(Modifier.padding(contentPadding))
-            } else if (it.isEmpty()) {
+            } else if (it.isEmpty() && state.adultList.isEmpty()) {
                 val msg = if (!state.searchQuery.isNullOrEmpty()) {
                     MR.strings.no_results_found
+                } else if (state.hasAdultHistory && !state.showAdult) {
+                    MR.strings.history_r18_hidden
                 } else {
                     MR.strings.information_no_recent_manga
                 }
@@ -79,6 +92,7 @@ fun HistoryScreen(
             } else {
                 HistoryScreenContent(
                     history = it,
+                    adultHistory = state.adultList,
                     contentPadding = contentPadding,
                     onClickCover = { history -> onClickCover(history.mangaId) },
                     onClickResume = { history -> onClickResume(history.mangaId, history.chapterId) },
@@ -93,22 +107,37 @@ fun HistoryScreen(
 @Composable
 private fun HistoryScreenContent(
     history: List<HistoryUiModel>,
+    adultHistory: List<HistoryUiModel>,
     contentPadding: PaddingValues,
     onClickCover: (HistoryWithRelations) -> Unit,
     onClickResume: (HistoryWithRelations) -> Unit,
     onClickDelete: (HistoryWithRelations) -> Unit,
     onClickFavorite: (HistoryWithRelations) -> Unit,
 ) {
+    val items = buildList {
+        addAll(history)
+        if (adultHistory.isNotEmpty()) {
+            add(HistoryUiModel.AdultGroupHeader)
+            addAll(adultHistory)
+        }
+    }
     FastScrollLazyColumn(
         contentPadding = contentPadding,
     ) {
         items(
-            items = history,
-            key = { "history-${it.hashCode()}" },
+            items = items,
+            key = {
+                when (it) {
+                    is HistoryUiModel.Header -> "history-header-${it.section.name}-${it.date}"
+                    is HistoryUiModel.Item -> "history-item-${it.item.id}"
+                    HistoryUiModel.AdultGroupHeader -> "history-adult-group"
+                }
+            },
             contentType = {
                 when (it) {
                     is HistoryUiModel.Header -> "header"
                     is HistoryUiModel.Item -> "item"
+                    HistoryUiModel.AdultGroupHeader -> "adult-group-header"
                 }
             },
         ) { item ->
@@ -117,6 +146,12 @@ private fun HistoryScreenContent(
                     ListGroupHeader(
                         modifier = Modifier.animateItem(),
                         text = relativeDateText(item.date),
+                    )
+                }
+                HistoryUiModel.AdultGroupHeader -> {
+                    ListGroupHeader(
+                        modifier = Modifier.animateItem(),
+                        text = stringResource(MR.strings.history_adult_content_group),
                     )
                 }
                 is HistoryUiModel.Item -> {
@@ -136,8 +171,14 @@ private fun HistoryScreenContent(
 }
 
 sealed interface HistoryUiModel {
-    data class Header(val date: LocalDate) : HistoryUiModel
+    data class Header(
+        val date: LocalDate,
+        val section: Section = Section.REGULAR,
+    ) : HistoryUiModel
     data class Item(val item: HistoryWithRelations) : HistoryUiModel
+    data object AdultGroupHeader : HistoryUiModel
+
+    enum class Section { REGULAR, ADULT }
 }
 
 @PreviewLightDark
@@ -155,6 +196,7 @@ internal fun HistoryScreenPreviews(
             onClickResume = { _, _ -> run {} },
             onDialogChange = {},
             onClickFavorite = {},
+            onToggleAdultContent = {},
         )
     }
 }

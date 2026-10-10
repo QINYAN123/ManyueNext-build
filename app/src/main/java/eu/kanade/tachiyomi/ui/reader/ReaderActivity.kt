@@ -15,6 +15,7 @@ import android.os.Bundle
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewGroup
 import android.view.View.LAYER_TYPE_HARDWARE
 import android.view.WindowManager
 import android.widget.Toast
@@ -69,9 +70,13 @@ import eu.kanade.tachiyomi.ui.reader.manyue.ManyueComfortScaleStore
 import eu.kanade.tachiyomi.ui.reader.manyue.ManyueFoldableWidthPolicy
 import eu.kanade.tachiyomi.ui.reader.manyue.ManyueGpuDisplayController
 import eu.kanade.tachiyomi.ui.reader.manyue.ManyueGpuDisplayStatus
+import eu.kanade.tachiyomi.ui.reader.manyue.ManyueAiUpscaler
+import eu.kanade.tachiyomi.ui.reader.manyue.ManyueBenchmarkPairDescriptor
+import eu.kanade.tachiyomi.ui.reader.manyue.ManyueEnhancementMode
 import eu.kanade.tachiyomi.ui.reader.manyue.ManyuePerformanceDiagnostics
 import eu.kanade.tachiyomi.ui.reader.manyue.ManyuePerformanceRecorder.Metric
 import eu.kanade.tachiyomi.ui.reader.manyue.ManyuePerformanceRecorder.Stage
+import eu.kanade.tachiyomi.ui.reader.manyue.ManyueReadingCoverage
 import eu.kanade.tachiyomi.ui.reader.metadata.ReaderMetadataPresentation
 import eu.kanade.tachiyomi.ui.reader.model.ReaderChapter
 import eu.kanade.tachiyomi.ui.reader.model.ReaderPage
@@ -81,6 +86,8 @@ import eu.kanade.tachiyomi.ui.reader.setting.ReaderPreferences
 import eu.kanade.tachiyomi.ui.reader.setting.ReaderSettingsViewModel
 import eu.kanade.tachiyomi.ui.reader.setting.ReadingMode
 import eu.kanade.tachiyomi.ui.reader.viewer.ReaderProgressIndicator
+import eu.kanade.tachiyomi.ui.reader.viewer.ReaderPageImageView
+import eu.kanade.tachiyomi.ui.reader.viewer.pager.PagerViewer
 import eu.kanade.tachiyomi.ui.reader.viewer.pager.R2LPagerViewer
 import eu.kanade.tachiyomi.ui.reader.viewer.webgpu.WebGpuViewer
 import eu.kanade.tachiyomi.ui.reader.viewer.webtoon.WebtoonViewer
@@ -432,6 +439,7 @@ class ReaderActivity : BaseActivity() {
 
     fun onManyuePerformanceDiagnosticsChanged(enabled: Boolean) {
         ManyuePerformanceDiagnostics.setEnabled(enabled)
+        refreshReadingCoverageAfterDiagnosticsReset()
         updateManyueFrameMonitor()
         recordManyueConfiguration()
     }
@@ -440,8 +448,86 @@ class ReaderActivity : BaseActivity() {
         manyueFrameMonitor?.close()
         manyueFrameMonitor = null
         ManyuePerformanceDiagnostics.clear()
+        refreshReadingCoverageAfterDiagnosticsReset()
         updateManyueFrameMonitor()
         recordManyueConfiguration()
+    }
+
+    private fun refreshReadingCoverageAfterDiagnosticsReset() {
+        binding.root.post {
+            viewModel.state.value.viewer?.refreshReadingCoverage()
+        }
+    }
+
+    /** Prepare an immutable current-page benchmark pair and pin its cached AI file on main. */
+    internal fun prepareManyueBenchmarkPair(pageIndex: Int): ManyueBenchmarkPairDescriptor? {
+        if (eu.kanade.tachiyomi.BuildConfig.BUILD_TYPE != "benchmark" || !manyueReaderResumed ||
+            isFinishing || isDestroyed || android.os.Looper.myLooper() != android.os.Looper.getMainLooper()
+        ) {
+            return null
+        }
+        val state = viewModel.state.value
+        val viewer = state.viewer ?: return null
+        val page = state.viewerChapters?.currChapter?.pages?.firstOrNull { it.index == pageIndex } ?: return null
+        val openSource = page.stream ?: return null
+        val mangaId = page.chapter.chapter.manga_id?.takeIf { it > 0L } ?: return null
+        val chapterId = page.chapter.chapter.id?.takeIf { it > 0L } ?: return null
+
+        // A screenshot comparison must pair the untouched source bytes with the native AI file.
+        val transformsAreOff = when (viewer) {
+            is WebtoonViewer -> !viewer.config.imageCropBorders &&
+                !viewer.config.dualPageSplit && !viewer.config.dualPageRotateToFit
+            is PagerViewer -> !viewer.config.imageCropBorders &&
+                !viewer.config.dualPageSplit && !viewer.config.dualPageRotateToFit
+            else -> false
+        }
+        if (!transformsAreOff) return null
+
+        val runtime = eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState
+        if (!ManyueEnhancementMode.fromInt(runtime.modeInt).usesAi()) return null
+        val expected = ManyueReadingCoverage.Source(mangaId, chapterId, page.index)
+        val matching = mutableListOf<ManyueReadingCoverage.Result>()
+        collectVisibleBenchmarkResults(binding.viewerContainer, expected, matching)
+        val result = matching.singleOrNull() ?: return null
+        if (result.generation != runtime.generation || result.model != runtime.aiModel.ordinal ||
+            result.mode != runtime.modeInt || result.scalePercent != runtime.aiScalePercent ||
+            ManyueAiUpscaler.coverageResultForToken(result.token) != result
+        ) {
+            return null
+        }
+
+        val pinned = ManyueAiUpscaler.pinnedCachedImage(applicationContext, result.token) ?: return null
+        if (pinned.image.width != result.outputWidth || pinned.image.height != result.outputHeight ||
+            pinned.image.overlayApplied ||
+            ManyueAiUpscaler.coverageResultForToken(result.token) != result ||
+            runtime.generation != result.generation || runtime.aiModel.ordinal != result.model ||
+            runtime.modeInt != result.mode || runtime.aiScalePercent != result.scalePercent
+        ) {
+            pinned.lease.close()
+            return null
+        }
+        return ManyueBenchmarkPairDescriptor(
+            pageIndex = page.index,
+            openSource = openSource,
+            result = result,
+            modelId = runtime.aiModel.id,
+            pinnedImage = pinned,
+        )
+    }
+
+    private fun collectVisibleBenchmarkResults(
+        root: View,
+        expected: ManyueReadingCoverage.Source,
+        results: MutableList<ManyueReadingCoverage.Result>,
+    ) {
+        if (root is ReaderPageImageView) {
+            root.benchmarkActiveAiResult(expected)?.let(results::add)
+        }
+        if (root is ViewGroup) {
+            for (index in 0 until root.childCount) {
+                collectVisibleBenchmarkResults(root.getChildAt(index), expected, results)
+            }
+        }
     }
 
     /** Isolated cache namespaces make matched cold/warm runs possible without deleting books. */

@@ -3,6 +3,7 @@ package eu.kanade.domain.adult.service
 import dev.zacsweers.metro.AppScope
 import dev.zacsweers.metro.Inject
 import dev.zacsweers.metro.SingleIn
+import kotlinx.coroutines.flow.Flow
 import mihon.domain.content.model.ContentRatingOverride
 import tachiyomi.core.common.preference.Preference
 import tachiyomi.core.common.preference.PreferenceStore
@@ -17,15 +18,19 @@ class SourceContentRatingStore(
         emptySet(),
     )
 
-    fun get(sourceId: Long): ContentRatingOverride {
+    fun get(sourceId: Long): ContentRatingOverride = get(sourceId, values.get())
+
+    fun get(sourceId: Long, currentValues: Set<String>): ContentRatingOverride {
         val prefix = "$sourceId:"
-        return values.get()
+        return currentValues
             .firstOrNull { it.startsWith(prefix) }
             ?.substringAfter(prefix)
             ?.toIntOrNull()
             ?.let { code -> ContentRatingOverride.fromCode(code) }
             ?: ContentRatingOverride.AUTO
     }
+
+    fun changes(): Flow<Set<String>> = values.changes()
 
     fun set(sourceId: Long, override: ContentRatingOverride) {
         val prefix = "$sourceId:"

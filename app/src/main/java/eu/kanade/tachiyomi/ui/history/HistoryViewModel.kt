@@ -30,9 +30,12 @@ import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.mapLatest
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
@@ -100,55 +103,101 @@ class HistoryViewModel(
                     _events.send(Event.InternalError)
                 }
         },
-        adultContentSessionState.isShown,
         adultContentPreferences.autoDetectionEnabled.changes(),
+        sourceContentRatingStore.changes(),
         sourceContentWarningResolver.warnings,
-    ) { history, showAdult, autoDetectionEnabled, warningMap ->
-        HistoryInputs(history, showAdult, autoDetectionEnabled, warningMap)
+    ) { history, autoDetectionEnabled, sourceOverrides, warningMap ->
+        HistoryInputs(history, autoDetectionEnabled, sourceOverrides, warningMap)
     }
         .mapLatest { inputs ->
-            inputs.history.mapNotNull { item ->
-                val manga = getManga.await(item.mangaId)
-                if (manga == null || AdultContentPolicy.shouldShow(
-                        showAdult = inputs.showAdult,
-                        autoDetectionEnabled = inputs.autoDetectionEnabled,
-                        override = manga.contentRatingOverride.takeIf {
-                            it != ContentRatingOverride.AUTO
-                        } ?: sourceContentRatingStore.get(manga.source),
-                        detectedAdult = AdultContentPolicy.isAdult(
-                            sourceId = manga.source,
-                            warning = inputs.warningMap[manga.source] ?: ContentWarning.SAFE,
-                            genres = manga.genre,
-                        ),
-                    )
-                ) item else null
-            }.toHistoryUiModels()
+            val records = inputs.history.map { item ->
+                HistoryRecord(item, getManga.await(item.mangaId))
+            }
+            val partition = AdultContentPolicy.partition(
+                items = records,
+                autoDetectionEnabled = inputs.autoDetectionEnabled,
+                overrideFor = { record ->
+                    record.manga?.contentRatingOverride?.takeIf {
+                        it != ContentRatingOverride.AUTO
+                    } ?: record.manga?.let { sourceContentRatingStore.get(it.source, inputs.sourceOverrides) }
+                        ?: ContentRatingOverride.ADULT
+                },
+                warningFor = { sourceId -> inputs.warningMap[sourceId] ?: ContentWarning.SAFE },
+                sourceId = { it.manga?.source ?: 0L },
+                genres = { it.manga?.genre },
+            )
+            HistoryContent(
+                regularList = partition.regular
+                    .map { it.history }
+                    .toHistoryUiModels(HistoryUiModel.Section.REGULAR),
+                adultList = partition.adult
+                    .map { it.history }
+                    .toHistoryUiModels(HistoryUiModel.Section.ADULT),
+                adultMangaIds = partition.adult.mapTo(mutableSetOf()) { it.history.mangaId },
+            )
         }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5.seconds), emptyList())
+        .flowOn(Dispatchers.IO)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5.seconds), HistoryContent())
 
     private data class HistoryInputs(
         val history: List<HistoryWithRelations>,
-        val showAdult: Boolean,
         val autoDetectionEnabled: Boolean,
+        val sourceOverrides: Set<String>,
         val warningMap: Map<Long, ContentWarning>,
     )
+
+    private data class HistoryRecord(
+        val history: HistoryWithRelations,
+        val manga: Manga?,
+    )
+
+    private data class HistoryContent(
+        val regularList: List<HistoryUiModel>? = null,
+        val adultList: List<HistoryUiModel> = emptyList(),
+        val adultMangaIds: Set<Long> = emptySet(),
+    )
+
+    init {
+        adultContentSessionState.isShown
+            .onEach { isShown ->
+                if (!isShown) {
+                    val adultMangaIds = history.value.adultMangaIds
+                    dialog.update { current ->
+                        current?.takeUnless { it.referencesAdultContent(adultMangaIds) }
+                    }
+                }
+            }
+            .launchIn(viewModelScope)
+    }
 
     val state: StateFlow<State> = combine(
         searchQuery,
         history,
         dialog,
-    ) { searchQuery, history, dialog ->
-        State(searchQuery = searchQuery, list = history, dialog = dialog)
+        adultContentSessionState.isShown,
+    ) { searchQuery, history, dialog, showAdult ->
+        State(
+            searchQuery = searchQuery,
+            list = history.regularList,
+            adultList = if (showAdult) history.adultList else emptyList(),
+            hasAdultHistory = history.adultList.isNotEmpty(),
+            showAdult = showAdult,
+            dialog = if (showAdult) dialog else dialog?.takeUnless {
+                it.referencesAdultContent(history.adultMangaIds)
+            },
+        )
     }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5.seconds), State())
 
-    private fun List<HistoryWithRelations>.toHistoryUiModels(): List<HistoryUiModel> {
+    private fun List<HistoryWithRelations>.toHistoryUiModels(
+        section: HistoryUiModel.Section,
+    ): List<HistoryUiModel> {
         return map { HistoryUiModel.Item(it) }
             .insertSeparators { before, after ->
                 val beforeDate = before?.item?.readAt?.time?.toLocalDate()
                 val afterDate = after?.item?.readAt?.time?.toLocalDate()
                 when {
-                    beforeDate != afterDate && afterDate != null -> HistoryUiModel.Header(afterDate)
+                    beforeDate != afterDate && afterDate != null -> HistoryUiModel.Header(afterDate, section)
                     // Return null to avoid adding a separator between two items.
                     else -> null
                 }
@@ -156,18 +205,58 @@ class HistoryViewModel(
     }
 
     suspend fun getNextChapter(): Chapter? {
-        return withIOContext { getNextChapters.await(onlyUnread = false).firstOrNull() }
+        return withIOContext {
+            val latestVisibleHistory = getHistory.subscribe("")
+                .first()
+                .distinctBy { it.mangaId }
+                .firstOrNull { isMangaVisibleNow(it.mangaId) }
+                ?: return@withIOContext null
+            getNextChapters.await(
+                mangaId = latestVisibleHistory.mangaId,
+                fromChapterId = latestVisibleHistory.chapterId,
+                onlyUnread = false,
+            ).firstOrNull()
+        }
     }
 
     fun getNextChapterForManga(mangaId: Long, chapterId: Long) {
         viewModelScope.launchIO {
-            sendNextChapterEvent(getNextChapters.await(mangaId, chapterId, onlyUnread = false))
+            if (!isMangaVisibleNow(mangaId)) return@launchIO
+            val chapter = getNextChapters.await(mangaId, chapterId, onlyUnread = false).firstOrNull()
+            if (chapter == null || isChapterVisibleNow(chapter)) {
+                _events.send(Event.OpenChapter(chapter))
+            }
         }
     }
 
-    private suspend fun sendNextChapterEvent(chapters: List<Chapter>) {
-        val chapter = chapters.firstOrNull()
-        _events.send(Event.OpenChapter(chapter))
+    suspend fun isChapterVisibleNow(chapter: Chapter): Boolean = isMangaVisibleNow(chapter.mangaId)
+
+    private suspend fun isMangaVisibleNow(mangaId: Long): Boolean {
+        val manga = getManga.await(mangaId) ?: return false
+        return AdultContentPolicy.shouldShow(
+            showAdult = adultContentSessionState.isShown.value,
+            autoDetectionEnabled = adultContentPreferences.autoDetectionEnabled.get(),
+            override = manga.contentRatingOverride.takeIf {
+                it != ContentRatingOverride.AUTO
+            } ?: sourceContentRatingStore.get(manga.source),
+            detectedAdult = AdultContentPolicy.isAdult(
+                sourceId = manga.source,
+                warning = sourceContentWarningResolver.warningFor(manga.source),
+                genres = manga.genre,
+            ),
+        )
+    }
+
+    fun toggleAdultContent() {
+        adultContentSessionState.toggle()
+    }
+
+    private fun Dialog.referencesAdultContent(adultMangaIds: Set<Long>): Boolean = when (this) {
+        is Dialog.Delete -> history.mangaId in adultMangaIds
+        is Dialog.DuplicateManga -> manga.id in adultMangaIds
+        is Dialog.ChangeCategory -> manga.id in adultMangaIds
+        is Dialog.Migrate -> target.id in adultMangaIds || current.id in adultMangaIds
+        Dialog.DeleteAll -> false
     }
 
     fun removeFromHistory(history: HistoryWithRelations) {
@@ -298,6 +387,9 @@ class HistoryViewModel(
     data class State(
         val searchQuery: String? = null,
         val list: List<HistoryUiModel>? = null,
+        val adultList: List<HistoryUiModel> = emptyList(),
+        val hasAdultHistory: Boolean = false,
+        val showAdult: Boolean = false,
         val dialog: Dialog? = null,
     )
 

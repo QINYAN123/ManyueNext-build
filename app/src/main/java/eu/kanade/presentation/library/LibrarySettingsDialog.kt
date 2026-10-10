@@ -134,13 +134,6 @@ private fun ColumnScope.FilterPage(
         )
     }
 
-    val showAdultContent by viewModel.showAdultContent.collectAsState()
-    CheckboxItem(
-        label = stringResource(MR.strings.show_adult_content_session),
-        checked = showAdultContent,
-        onClick = { viewModel.setAdultContentShown(!showAdultContent) },
-    )
-
     val autoDetectionEnabled by viewModel.autoDetectionEnabled.collectAsState()
     CheckboxItem(
         label = stringResource(MR.strings.adult_content_auto_detection),

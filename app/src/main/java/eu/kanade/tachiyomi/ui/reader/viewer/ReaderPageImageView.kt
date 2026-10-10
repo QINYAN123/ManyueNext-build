@@ -59,6 +59,16 @@ interface ReaderContentDrawCallback {
     var onReaderContentDrawFailure: ((View, Throwable) -> Unit)?
 }
 
+/** Source-identity gate shared by the diagnostics-OFF adoption path and its regression test. */
+internal fun canAdoptManyueCoverageResultSource(
+    current: ManyueReadingCoverage.Source,
+    result: ManyueReadingCoverage.Source,
+): Boolean = current.mangaId == result.mangaId &&
+    current.chapterId == result.chapterId && current.page == result.page &&
+    current.sourceWidth > 0 && current.sourceHeight > 0 &&
+    current.sourceWidth == result.sourceWidth && current.sourceHeight == result.sourceHeight &&
+    current.fingerprint == null && !result.fingerprint.isNullOrBlank()
+
 open class ReaderSubsamplingScaleImageView @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null,
@@ -143,6 +153,7 @@ open class ReaderPageImageView @JvmOverloads constructor(
     private var activeCoverageGeneration: Long? = null
     private var activeImageIsAi = false
     private var coverageExposureEligible = false
+    private var coverageResetEpoch = ManyueReadingCoverage.epoch
     private var landscapeZoomHandler: Handler? = null
     private var landscapeZoomRunnable: Runnable? = null
 
@@ -247,6 +258,81 @@ open class ReaderPageImageView @JvmOverloads constructor(
         coverageSource = source
     }
 
+    /** Records provenance only after the staged image has become the active page child. */
+    internal fun setDisplayedCoverageResult(result: ManyueReadingCoverage.Result?, generation: Long?) {
+        activeCoverageResult = result
+        activeCoverageGeneration = generation
+        activeImageIsAi = true
+        promoteCoverageSourceFromActiveResult()
+    }
+
+    /**
+     * A source loaded before diagnostics started has no fingerprint. Reuse the immutable source
+     * stamp from the active AI result only when its page, real input dimensions and live config
+     * all match. A known hash is never overwritten, and no source bytes are read here.
+     */
+    private fun promoteCoverageSourceFromActiveResult() {
+        val source = coverageSource ?: return
+        val result = activeCoverageResult ?: return
+        val runtime = eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState
+        if (!canAdoptManyueCoverageResultSource(source, result.source)) return
+        if (!activeImageIsAi || activeSourceGeneration != sourceGeneration ||
+            activeCoverageGeneration != result.generation ||
+            result.generation != runtime.generation ||
+            result.model != runtime.aiModel.ordinal ||
+            result.mode != runtime.modeInt ||
+            result.scalePercent != runtime.aiScalePercent ||
+            result.outputWidth <= 0 || result.outputHeight <= 0 ||
+            result.source.fingerprint.isNullOrBlank()
+        ) {
+            return
+        }
+        val upgradedExposure = ManyueReadingCoverage.upgradeActiveSource(this, source, result)
+        // A committed result can predate passive observation. Its immutable provenance is still
+        // safe to retain locally while diagnostics are off; enabling/resetting later will create
+        // a fresh exposure from this stamp without reloading the page.
+        if (upgradedExposure || !ManyueReadingCoverage.enabled) {
+            coverageSource = result.source
+        }
+    }
+
+    /**
+     * Returns immutable provenance only for the currently visible, decoded AI child.
+     * Benchmark export still hashes the original ReaderPage stream before pairing files.
+     */
+    internal fun benchmarkActiveAiResult(expectedPage: ManyueReadingCoverage.Source): ManyueReadingCoverage.Result? {
+        if (eu.kanade.tachiyomi.BuildConfig.BUILD_TYPE != "benchmark" ||
+            !isAttachedToWindow || !isShown || !getGlobalVisibleRect(android.graphics.Rect())
+        ) {
+            return null
+        }
+        val image = pageView as? SubsamplingScaleImageView ?: return null
+        if (!image.isImageLoaded || !image.isReady) return null
+        val source = coverageSource ?: return null
+        val result = activeCoverageResult ?: return null
+        val runtime = eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState
+        if (!activeImageIsAi || activeSourceGeneration != sourceGeneration ||
+            activeCoverageGeneration != result.generation ||
+            source.mangaId != expectedPage.mangaId || source.chapterId != expectedPage.chapterId ||
+            source.page != expectedPage.page ||
+            source.mangaId != result.source.mangaId || source.chapterId != result.source.chapterId ||
+            source.page != result.source.page ||
+            source.sourceWidth <= 0 || source.sourceHeight <= 0 ||
+            source.sourceWidth != result.source.sourceWidth || source.sourceHeight != result.source.sourceHeight ||
+            (source.fingerprint != null && source.fingerprint != result.source.fingerprint) ||
+            result.source.fingerprint.isNullOrBlank() ||
+            result.generation != runtime.generation || result.model != runtime.aiModel.ordinal ||
+            result.mode != runtime.modeInt || result.scalePercent != runtime.aiScalePercent ||
+            !eu.kanade.tachiyomi.ui.reader.manyue.ManyueEnhancementMode.fromInt(result.mode).usesAi() ||
+            image.sWidth != result.outputWidth || image.sHeight != result.outputHeight ||
+            result.outputWidth <= 0 || result.outputHeight <= 0 ||
+            eu.kanade.tachiyomi.ui.reader.manyue.ManyueAiUpscaler.coverageResultForToken(result.token) != result
+        ) {
+            return null
+        }
+        return result
+    }
+
     /** Called by the holder/viewer when its visible rectangle crosses the exposure threshold. */
     fun updateReadingCoverageExposure(
         viewportFractionPermille: Int,
@@ -256,8 +342,13 @@ open class ReaderPageImageView @JvmOverloads constructor(
     ) {
         if (!ManyueReadingCoverage.enabled) {
             coverageExposureEligible = false
+            coverageResetEpoch = ManyueReadingCoverage.epoch
             return
         }
+        val currentEpoch = ManyueReadingCoverage.epoch
+        val resetSinceLastUpdate = currentEpoch != coverageResetEpoch
+        coverageResetEpoch = currentEpoch
+        promoteCoverageSourceFromActiveResult()
         val source = coverageSource
         if (!eligible || source == null) {
             if (coverageExposureEligible) ManyueReadingCoverage.hidden(this)
@@ -273,9 +364,9 @@ open class ReaderPageImageView @JvmOverloads constructor(
             pageFractionPermille = pageFractionPermille,
             isShortPage = isShortPage,
         )
-        if (entering) {
+        if (entering || resetSinceLastUpdate) {
             // Cached RenderNodes may otherwise move onscreen without calling the image's onDraw.
-            // One diagnostic-only fresh draw establishes the first visible submitted frame.
+            // A single fresh diagnostic-only draw re-registers active child evidence after reset.
             pageView?.invalidate()
             invalidate()
         }
@@ -709,9 +800,7 @@ open class ReaderPageImageView @JvmOverloads constructor(
                                 landscapeZoom(true)
                             }
                             pageView = this@apply
-                            activeCoverageResult = coverageResult
-                            activeCoverageGeneration = coverageGeneration
-                            activeImageIsAi = true
+                            this@ReaderPageImageView.setDisplayedCoverageResult(coverageResult, coverageGeneration)
                             stagedPageView = null
                             stagedCacheLease = null
                             val previousLease = pageCacheLease

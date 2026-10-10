@@ -91,4 +91,84 @@ class AdultContentPolicyTest {
             ),
         )
     }
+
+    @Test
+    fun `partition keeps normal overrides in regular and detected adult items in adult section`() {
+        val items = listOf(
+            TestItem("normal", 1L, ContentRatingOverride.AUTO, listOf("Action")),
+            TestItem("tagged", 1L, ContentRatingOverride.AUTO, listOf("R-18")),
+            TestItem("manual normal", 1L, ContentRatingOverride.NORMAL, listOf("Hentai")),
+            TestItem("manual adult", 1L, ContentRatingOverride.ADULT, listOf("Action")),
+        )
+
+        val partition = AdultContentPolicy.partition(
+            items = items,
+            autoDetectionEnabled = true,
+            overrideFor = { it.override },
+            warningFor = { ContentWarning.SAFE },
+            sourceId = { it.sourceId },
+            genres = { it.genres },
+        )
+
+        assertEquals(listOf("normal", "manual normal"), partition.regular.map { it.name })
+        assertEquals(listOf("tagged", "manual adult"), partition.adult.map { it.name })
+    }
+
+    @Test
+    fun `partition follows auto detection setting and exposes hidden only state`() {
+        val items = listOf(
+            TestItem("detected", 1L, ContentRatingOverride.AUTO, listOf("NSFW")),
+            TestItem("manual adult", 1L, ContentRatingOverride.ADULT, listOf("Action")),
+        )
+
+        val hidden = AdultContentPolicy.partition(
+            items = items,
+            autoDetectionEnabled = true,
+            overrideFor = { it.override },
+            warningFor = { ContentWarning.SAFE },
+            sourceId = { it.sourceId },
+            genres = { it.genres },
+        )
+        assertTrue(hidden.regular.isEmpty())
+        assertEquals(items, hidden.adult)
+
+        val autoDetectionOff = AdultContentPolicy.partition(
+            items = items,
+            autoDetectionEnabled = false,
+            overrideFor = { it.override },
+            warningFor = { ContentWarning.SAFE },
+            sourceId = { it.sourceId },
+            genres = { it.genres },
+        )
+        assertEquals(listOf("detected"), autoDetectionOff.regular.map { it.name })
+        assertEquals(listOf("manual adult"), autoDetectionOff.adult.map { it.name })
+    }
+
+    @Test
+    fun `resume visibility follows the current session gate`() {
+        val detectedAdult = true
+        assertFalse(
+            AdultContentPolicy.shouldShow(
+                showAdult = false,
+                autoDetectionEnabled = true,
+                override = ContentRatingOverride.AUTO,
+                detectedAdult = detectedAdult,
+            ),
+        )
+        assertTrue(
+            AdultContentPolicy.shouldShow(
+                showAdult = true,
+                autoDetectionEnabled = true,
+                override = ContentRatingOverride.AUTO,
+                detectedAdult = detectedAdult,
+            ),
+        )
+    }
+
+    private data class TestItem(
+        val name: String,
+        val sourceId: Long,
+        val override: ContentRatingOverride,
+        val genres: List<String>,
+    )
 }

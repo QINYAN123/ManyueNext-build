@@ -48,6 +48,44 @@ class ManyuePageBridge(
                 .joinToString("；")
                 .takeIf(String::isNotEmpty)
 
+        internal fun rejectionMessage(rejection: ManyueAiRequestFactory.Rejection): String {
+            val pixelLimit = rejection.limit ?: ManyueAiSafetyPolicy.MAX_DISPLAY_PIXELS.toLong()
+            return when (rejection.reason) {
+                ManyueAiRequestFactory.RejectionReason.MODE_NOT_AI -> "当前模式未启用 AI，已保留原图"
+                ManyueAiRequestFactory.RejectionReason.SESSION_EXPIRED -> "阅读设置已更改，已保留原图"
+                ManyueAiRequestFactory.RejectionReason.MODEL_UNAVAILABLE ->
+                    rejection.capability?.userMessage ?: "AI 模型当前不可用，已保留原图"
+                ManyueAiRequestFactory.RejectionReason.EMPTY_INPUT -> "图片数据为空，已保留原图"
+                ManyueAiRequestFactory.RejectionReason.INPUT_BYTES_LIMIT ->
+                    "原图文件超过 64 MiB AI 输入限制，已保留原图"
+                ManyueAiRequestFactory.RejectionReason.ANIMATED_IMAGE -> "动画图片暂不执行 AI 超分，已保留原图"
+                ManyueAiRequestFactory.RejectionReason.INVALID_DECODE_BOUNDS ->
+                    "系统无法读取图片尺寸，图片可能不受支持或数据已损坏；已保留原图"
+                ManyueAiRequestFactory.RejectionReason.AUTO_ORIGINAL_SIZE -> "智能模式当前选择原尺寸，未运行 AI"
+                ManyueAiRequestFactory.RejectionReason.AUTO_WAIT_FOR_WIDTH -> "阅读区宽度尚未确定，暂时保留原图"
+                ManyueAiRequestFactory.RejectionReason.INVALID_TARGET_BOUNDS ->
+                    "无法计算 AI 输出尺寸，已保留原图"
+                ManyueAiRequestFactory.RejectionReason.SOURCE_PIXEL_BUDGET ->
+                    "原图 ${dimensions(rejection.sourceWidth, rejection.sourceHeight)} 超过当前 $pixelLimit 像素输入上限，已保留原图"
+                ManyueAiRequestFactory.RejectionReason.DISPLAY_PIXEL_BUDGET ->
+                    "AI 输出 ${dimensions(rejection.targetWidth, rejection.targetHeight)} " +
+                        "（${pixelCount(rejection.targetWidth, rejection.targetHeight)} 像素）超过当前 $pixelLimit 像素上限，已保留原图"
+                ManyueAiRequestFactory.RejectionReason.NATIVE_PIXEL_BUDGET ->
+                    "模型完整 2× 推理尺寸 ${dimensions(rejection.targetWidth, rejection.targetHeight)} " +
+                        "（${pixelCount(rejection.targetWidth, rejection.targetHeight)} 像素）超过当前 $pixelLimit 像素上限，已保留原图"
+                ManyueAiRequestFactory.RejectionReason.UNCLASSIFIED_PIXEL_BUDGET ->
+                    "AI 图片尺寸超出当前处理安全限制，已保留原图"
+                ManyueAiRequestFactory.RejectionReason.REQUEST_CREATION_FAILED ->
+                    "创建 AI 输入失败，已保留原图"
+            }
+        }
+
+        private fun dimensions(width: Int?, height: Int?): String =
+            if (width != null && height != null) "${width}×$height" else "未知尺寸"
+
+        private fun pixelCount(width: Int?, height: Int?): Long =
+            if (width != null && height != null) width.toLong() * height.toLong() else 0L
+
         private val classicDispatcher = java.util.concurrent.Executors.newSingleThreadExecutor { task ->
             Thread({
                 runCatching { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND) }
@@ -131,6 +169,7 @@ class ManyuePageBridge(
                 } else {
                     null
                 }
+                var enqueueRejection: ManyueAiRequestFactory.Rejection? = null
                 val requestResult = awaitVisiblePageAction(
                     isCurrent = { isCurrentBeforeToken(identity, mode, expectedGeneration) },
                     isVisible = ::isPageVisible,
@@ -155,6 +194,7 @@ class ManyuePageBridge(
                                 priority = 100,
                                 expectedMode = mode,
                                 generation = expectedGeneration,
+                                onRejected = { enqueueRejection = it },
                             ) ?: return@withContext null
                             val requestCacheKey = ManyueAiUpscaler.cacheKeyForToken(requestToken)
                                 ?: return@withContext null
@@ -170,12 +210,12 @@ class ManyuePageBridge(
                     VisibleActionResult.Stale -> return@launch
                     is VisibleActionResult.Completed -> requestResult.value
                 } ?: run {
-                    val capability = withContext(Dispatchers.IO) { ManyueAiRuntime.probe(context) }
-                    val detail = if (capability == ManyueAiRuntime.Capability.READY) {
-                        "图片格式或所选模型的像素预算不适用"
-                    } else {
-                        capability.userMessage
+                    val rejection = enqueueRejection
+                    if (rejection?.reason == ManyueAiRequestFactory.RejectionReason.SESSION_EXPIRED) {
+                        return@launch
                     }
+                    val detail = rejection?.let { ManyuePageBridge.rejectionMessage(it) }
+                        ?: "AI 请求未能创建，已保留原图"
                     if (isCurrentBeforeToken(identity, mode, expectedGeneration)) {
                         onState(ManyueEnhancementState.SKIPPED, detail)
                     }

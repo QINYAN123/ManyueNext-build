@@ -57,6 +57,68 @@ class ManyueReadingCoverageTest {
         assertEquals("no_correct_ai_draw_before_exit", row.getString("reason"))
     }
 
+    @Test fun lateSourceIdentityUpgradeKeepsExposureEntryAndRequiresAnActualDraw() {
+        val unknown = source.copy(fingerprint = null)
+        expose(unknown)
+        now = 500_000_000L
+
+        assertTrue(ManyueReadingCoverage.upgradeActiveSource(owner, unknown, stamp()))
+        var row = ManyueReadingCoverage.snapshot().getJSONArray("exposures").getJSONObject(0)
+        assertEquals(0L, row.getLong("enteredNs"))
+        assertTrue(row.getInt("source") > 0)
+        assertFalse(row.getBoolean("displayedDuringExposure"))
+
+        now = 600_000_000L
+        ManyueReadingCoverage.drawn(owner, source, stamp())
+        row = ManyueReadingCoverage.snapshot().getJSONArray("exposures").getJSONObject(0)
+        assertTrue(row.getBoolean("displayedDuringExposure"))
+        assertEquals(600_000_000L, row.getLong("aiDrawNs"))
+        assertEquals(0L, row.getLong("enteredNs"))
+    }
+
+    @Test fun lateSourceIdentityRejectsKnownMismatchWrongPageWrongDimensionsAndOldGeneration() {
+        val unknown = source.copy(fingerprint = null)
+        expose(unknown)
+        val valid = stamp()
+        val invalid = listOf(
+            valid.copy(source = valid.source.copy(page = valid.source.page + 1)),
+            valid.copy(source = valid.source.copy(sourceWidth = valid.source.sourceWidth + 1)),
+            valid.copy(generation = valid.generation - 1),
+        )
+        invalid.forEach { assertFalse(ManyueReadingCoverage.upgradeActiveSource(owner, unknown, it)) }
+        assertFalse(ManyueReadingCoverage.upgradeActiveSource(owner, source.copy(fingerprint = "known-mismatch"), valid))
+        val priorKnownOwner = Any()
+        ManyueReadingCoverage.exposure(priorKnownOwner, source.copy(fingerprint = "known-mismatch"), 500, 400)
+        assertFalse(ManyueReadingCoverage.upgradeActiveSource(priorKnownOwner, unknown, valid))
+
+        val row = ManyueReadingCoverage.snapshot().getJSONArray("exposures").getJSONObject(0)
+        assertEquals(0, row.getInt("source"))
+        assertFalse(row.getBoolean("displayedDuringExposure"))
+    }
+
+    @Test fun clearDropsOldExposureAndAllowsVisiblePageToRegisterAgain() {
+        expose()
+        val oldEpoch = ManyueReadingCoverage.epoch
+        now = 400_000_000L
+
+        ManyuePerformanceDiagnostics.clear()
+
+        assertEquals(oldEpoch + 1, ManyueReadingCoverage.epoch)
+        assertEquals(0, ManyueReadingCoverage.snapshot().getJSONArray("exposures").length())
+        ManyueReadingCoverage.drawn(owner, source, stamp())
+        expose()
+        ManyueReadingCoverage.frameSubmitted(owner)
+        now = 500_000_000L
+        ManyueReadingCoverage.drawn(owner, source, stamp())
+        ManyueReadingCoverage.hidden(owner)
+
+        val row = ManyueReadingCoverage.snapshot().getJSONArray("exposures").getJSONObject(0)
+        assertEquals(1, ManyueReadingCoverage.snapshot().getJSONArray("exposures").length())
+        assertEquals(400_000_000L, row.getLong("enteredNs"))
+        assertTrue(row.getLong("firstDrawNs") >= row.getLong("enteredNs"))
+        assertTrue(row.getBoolean("displayedDuringExposure"))
+    }
+
     @Test fun placeholderOrStaleImageFramePreventsLateAiFromBeingCalledFirstFrame() {
         expose()
         now = 10_000_000

@@ -73,6 +73,7 @@ data object HistoryTab : Tab {
             onClickResume = viewModel::getNextChapterForManga,
             onDialogChange = viewModel::setDialog,
             onClickFavorite = viewModel::addFavorite,
+            onToggleAdultContent = viewModel::toggleAdultContent,
         )
 
         val onDismissRequest = { viewModel.setDialog(null) }
@@ -139,20 +140,25 @@ data object HistoryTab : Tab {
                         snackbarHostState.showSnackbar(context.stringResource(MR.strings.internal_error))
                     HistoryViewModel.Event.HistoryCleared ->
                         snackbarHostState.showSnackbar(context.stringResource(MR.strings.clear_history_completed))
-                    is HistoryViewModel.Event.OpenChapter -> openChapter(context, e.chapter)
+                    is HistoryViewModel.Event.OpenChapter -> openChapter(context, e.chapter, viewModel)
                 }
             }
         }
 
         LaunchedEffect(Unit) {
             resumeLastChapterReadEvent.receiveAsFlow().collectLatest {
-                openChapter(context, viewModel.getNextChapter())
+                openChapter(context, viewModel.getNextChapter(), viewModel)
             }
         }
     }
 
-    private suspend fun openChapter(context: Context, chapter: Chapter?) {
+    private suspend fun openChapter(
+        context: Context,
+        chapter: Chapter?,
+        viewModel: HistoryViewModel,
+    ) {
         if (chapter != null) {
+            if (!viewModel.isChapterVisibleNow(chapter)) return
             val intent = ReaderActivity.newIntent(context, chapter.mangaId, chapter.id)
             context.startActivity(intent)
         } else {

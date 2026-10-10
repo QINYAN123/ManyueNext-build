@@ -959,4 +959,10 @@
     <string name="reader_source_image_unavailable">原圖未知</string>
     <string name="show_r18_content_session">本次執行顯示 R18 內容（重新啟動後自動隱藏）</string>
     <string name="reader_enhancement_interpolated_ready">一般插值</string>
+    <string name="history_r18_show">展開R18歷史記錄</string>
+    <string name="history_r18_hide">收起R18歷史記錄</string>
+    <string name="history_r18_hidden">成人歷史記錄已隱藏</string>
+    <string name="history_adult_content_group">成人內容</string>
+    <string name="library_r18_show">本次執行顯示R18內容</string>
+    <string name="library_r18_hide">本次執行隱藏R18內容</string>
 </resources>
