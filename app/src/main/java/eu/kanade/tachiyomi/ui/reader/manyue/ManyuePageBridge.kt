@@ -88,6 +88,11 @@ class ManyuePageBridge(
         this.identity = identity
         if (mode != ManyueEnhancementMode.AUTO.value) onState(ManyueEnhancementState.AI_QUEUED, null)
         startJob = scope.launch {
+            val decisionRelease = PageDecisionReleaseGuard(
+                identity.chapterId,
+                identity.pageIndex,
+                expectedGeneration,
+            )
             try {
                 if (mode == ManyueEnhancementMode.AUTO.value) {
                     val decision = withContext(Dispatchers.IO) {
@@ -102,27 +107,46 @@ class ManyuePageBridge(
                     }
                     if (!isCurrentBeforeToken(identity, mode, expectedGeneration)) return@launch
                     if (decision.path == ManyueAutoEnhancementPolicy.Path.ORIGINAL_SIZE) {
+                        decisionRelease.markDecisionReached()
                         onState(ManyueEnhancementState.SKIPPED, "智能模式当前选择原尺寸，未运行 AI")
                         return@launch
                     }
                     if (decision.path == ManyueAutoEnhancementPolicy.Path.WAIT_FOR_WIDTH) {
+                        decisionRelease.markDecisionReached()
                         onState(ManyueEnhancementState.SKIPPED, "阅读区宽度尚未确定，暂时保留原图")
                         return@launch
                     }
                     onState(ManyueEnhancementState.AI_QUEUED, null)
                 }
-                val request = withContext(Dispatchers.IO) {
-                    val requestToken = ManyueAiRequestFactory.enqueue(
-                        context = context,
-                        identity = identity,
-                        originalBytes = originalBytes,
-                        priority = 100,
-                        expectedMode = mode,
-                        generation = expectedGeneration,
-                    ) ?: return@withContext null
-                    val requestCacheKey = ManyueAiUpscaler.cacheKeyForToken(requestToken)
-                        ?: return@withContext null
-                    requestToken to requestCacheKey
+                // Only the visible holder submits direct work. Offscreen pages are covered by
+                // the bounded reader prefetch cursor and can reuse that request when they appear.
+                val requestResult = awaitVisiblePageAction(
+                    isCurrent = { isCurrentBeforeToken(identity, mode, expectedGeneration) },
+                    isVisible = ::isPageVisible,
+                ) {
+                    withContext(Dispatchers.IO) {
+                        try {
+                            val requestToken = ManyueAiRequestFactory.enqueue(
+                                context = context,
+                                identity = identity,
+                                originalBytes = originalBytes,
+                                priority = 100,
+                                expectedMode = mode,
+                                generation = expectedGeneration,
+                            ) ?: return@withContext null
+                            val requestCacheKey = ManyueAiUpscaler.cacheKeyForToken(requestToken)
+                                ?: return@withContext null
+                            requestToken to requestCacheKey
+                        } finally {
+                            // Mark only from inside the IO block, after it actually ran. A
+                            // cancellation before dispatch must not open the current-page gate.
+                            decisionRelease.markDecisionReached()
+                        }
+                    }
+                }
+                val request = when (requestResult) {
+                    VisibleActionResult.Stale -> return@launch
+                    is VisibleActionResult.Completed -> requestResult.value
                 } ?: run {
                     val capability = withContext(Dispatchers.IO) { ManyueAiRuntime.probe(context) }
                     val detail = if (capability == ManyueAiRuntime.Capability.READY) {
@@ -387,10 +411,11 @@ class ManyuePageBridge(
             } catch (error: Throwable) {
                 logcat(LogPriority.WARN, error) { "Manyue AI request failed; original retained" }
                 if (isCurrentBeforeToken(identity, mode, expectedGeneration)) {
+                    decisionRelease.markDecisionReached()
                     onState(ManyueEnhancementState.FAILED, "AI 任务创建失败，已保留原图")
                 }
             } finally {
-                ManyuePrefetchManager.releaseCurrent(identity.chapterId, identity.pageIndex, expectedGeneration)
+                decisionRelease.releaseIfReached()
             }
         }
     }
@@ -728,6 +753,40 @@ internal suspend fun awaitPageVisibility(
         delay(64L)
     }
     return false
+}
+
+internal sealed class VisibleActionResult<out T> {
+    data object Stale : VisibleActionResult<Nothing>()
+    data class Completed<T>(val value: T) : VisibleActionResult<T>()
+}
+
+/** Runs a direct page request only after its holder is visible. */
+internal suspend fun <T> awaitVisiblePageAction(
+    isCurrent: () -> Boolean,
+    isVisible: () -> Boolean,
+    action: suspend () -> T,
+): VisibleActionResult<T> {
+    if (!awaitPageVisibility(isCurrent, isVisible)) return VisibleActionResult.Stale
+    return VisibleActionResult.Completed(action())
+}
+
+/** Opens the coordinator gate only after this holder actually decided whether to enqueue. */
+internal class PageDecisionReleaseGuard(
+    private val chapterId: Long,
+    private val pageIndex: Int,
+    private val generation: Long,
+) {
+    @Volatile private var decisionReached = false
+
+    fun markDecisionReached() {
+        decisionReached = true
+    }
+
+    fun releaseIfReached() {
+        if (decisionReached) {
+            ManyuePrefetchManager.releaseCurrent(chapterId, pageIndex, generation)
+        }
+    }
 }
 
 internal sealed class VisibleRenderResult<out T> {

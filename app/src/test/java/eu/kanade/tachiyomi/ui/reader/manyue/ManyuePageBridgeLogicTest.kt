@@ -2,6 +2,7 @@ package eu.kanade.tachiyomi.ui.reader.manyue
 
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withTimeout
@@ -63,33 +64,114 @@ class ManyuePageBridgeLogicTest {
         assertNull(ManyuePageBridge.mergeDisplayDetails(null, " "))
     }
 
-    @Test fun `offscreen result waits for visibility and stale holder does not continue staging`() = runBlocking {
+    @Test fun `offscreen holder waits before request enqueue and stale binding does not submit`() = runBlocking {
+        val chapterId = 9_101L
+        val pageIndex = 3
+        val generation = ManyueRuntimeState.generation
+        ManyuePrefetchManager.reset()
+        ManyuePrefetchManager.onPageChanged(chapterId, pageIndex)
+        val currentDecision = async(start = CoroutineStart.UNDISPATCHED) {
+            ManyuePrefetchManager.awaitCurrentDecision(chapterId, pageIndex, generation)
+        }
+        val releaseGuard = PageDecisionReleaseGuard(chapterId, pageIndex, generation)
         var current = true
         var visible = false
-        val waiter = async {
-            val mayStage = awaitPageVisibility(
-                isCurrent = { current },
-                isVisible = { visible },
-            )
-            mayStage && current
-        }
+        var enqueuedRequests = 0
+        try {
+            val reboundWaiter = async {
+                awaitVisiblePageAction(
+                    isCurrent = { current },
+                    isVisible = { visible },
+                ) {
+                    try {
+                        enqueuedRequests++
+                        "stale-token"
+                    } finally {
+                        releaseGuard.markDecisionReached()
+                    }
+                }
+            }
+            yield()
+            assertFalse(reboundWaiter.isCompleted)
+            current = false
+            assertEquals(VisibleActionResult.Stale, withTimeout(1_000L) { reboundWaiter.await() })
+            releaseGuard.releaseIfReached()
+            assertFalse(currentDecision.isCompleted, "rebind before submission must not release the page gate")
+            assertEquals(0, enqueuedRequests)
 
-        yield()
-        assertFalse(waiter.isCompleted, "an attached but offscreen page must not start tile decoding")
-        visible = true
-        assertTrue(withTimeout(1_000L) { waiter.await() }, "the cached result can stage after the page enters view")
+            current = true
+            val cancelledWaiter = async {
+                awaitVisiblePageAction(
+                    isCurrent = { current },
+                    isVisible = { visible },
+                ) {
+                    try {
+                        enqueuedRequests++
+                        "cancelled-token"
+                    } finally {
+                        releaseGuard.markDecisionReached()
+                    }
+                }
+            }
+            yield()
+            assertFalse(cancelledWaiter.isCompleted)
+            cancelledWaiter.cancelAndJoin()
+            releaseGuard.releaseIfReached()
+            assertFalse(currentDecision.isCompleted, "cancelling before submission must not release the page gate")
+            assertEquals(0, enqueuedRequests)
 
-        visible = false
-        val staleWaiter = async {
-            val mayStage = awaitPageVisibility(
-                isCurrent = { current },
-                isVisible = { visible },
+            val visibleWaiter = async {
+                awaitVisiblePageAction(
+                    isCurrent = { current },
+                    isVisible = { visible },
+                ) {
+                    try {
+                        enqueuedRequests++
+                        "token"
+                    } finally {
+                        releaseGuard.markDecisionReached()
+                    }
+                }
+            }
+            yield()
+            assertFalse(visibleWaiter.isCompleted, "an offscreen holder must not submit direct AI work")
+            assertEquals(0, enqueuedRequests)
+            visible = true
+            assertEquals(
+                VisibleActionResult.Completed("token"),
+                withTimeout(1_000L) { visibleWaiter.await() },
+                "a holder can submit after entering view",
             )
-            mayStage && current
+            assertEquals(1, enqueuedRequests)
+            releaseGuard.releaseIfReached()
+            withTimeout(1_000L) { currentDecision.await() }
+
+            val nullChapterId = chapterId + 1
+            val nullPageIndex = pageIndex + 1
+            ManyuePrefetchManager.onPageChanged(nullChapterId, nullPageIndex)
+            val nullResultDecision = async(start = CoroutineStart.UNDISPATCHED) {
+                ManyuePrefetchManager.awaitCurrentDecision(nullChapterId, nullPageIndex, generation)
+            }
+            val nullResultGuard = PageDecisionReleaseGuard(nullChapterId, nullPageIndex, generation)
+            val nullFactoryResult: VisibleActionResult<String?> = awaitVisiblePageAction(
+                isCurrent = { current },
+                isVisible = { true },
+            ) {
+                try {
+                    enqueuedRequests++
+                    null
+                } finally {
+                    nullResultGuard.markDecisionReached()
+                }
+            }
+            assertEquals(VisibleActionResult.Completed<String?>(null), nullFactoryResult)
+            nullResultGuard.releaseIfReached()
+            withTimeout(1_000L) { nullResultDecision.await() }
+            assertEquals(2, enqueuedRequests, "a completed null/skip result still counts as a decision")
+        } finally {
+            currentDecision.cancelAndJoin()
+            ManyuePrefetchManager.reset()
         }
-        yield()
-        current = false
-        assertFalse(withTimeout(1_000L) { staleWaiter.await() }, "a rebound holder must abandon its old result")
     }
 
     @Test fun `classic render rechecks visibility after waiting for the shared lock`() = runBlocking {
