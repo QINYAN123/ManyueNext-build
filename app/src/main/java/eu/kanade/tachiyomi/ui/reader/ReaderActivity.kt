@@ -485,6 +485,20 @@ class ReaderActivity : BaseActivity() {
                 readerPreferences.dualPageRotateToFitWebtoon.set(false)
                 viewModel.state.value.viewer?.refreshManyue()
             }
+            "filters" -> {
+                // Change only requested display settings for a same-page composition check.
+                // Unlike configure, this never refreshes the reader or resets AI/crop options.
+                val gpu = if (intent.hasExtra("gpu")) intent.getIntExtra("gpu", -1) else null
+                if (gpu != null && gpu !in 0..100) return false
+                if (gpu != null) {
+                    readerPreferences.manyueGpuDisplayFilter.set(gpu > 0)
+                    readerPreferences.manyueGpuDisplayStrength.set(gpu)
+                    onManyueGpuDisplayChanged(gpu > 0, gpu)
+                }
+                if (intent.hasExtra("grayscale")) {
+                    readerPreferences.grayscale.set(intent.getBooleanExtra("grayscale", false))
+                }
+            }
             "jump" -> {
                 val pages = viewModel.state.value.viewerChapters?.currChapter?.pages ?: return false
                 val page = pages.getOrNull(intent.getIntExtra("page", -1)) ?: return false
@@ -534,6 +548,22 @@ class ReaderActivity : BaseActivity() {
             put("model", eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.aiModel.id)
             put("scalePercent", eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.aiScalePercent)
             put("generation", eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.generation)
+            put("mode", readerPreferences.manyueEnhancementMode.get())
+            put("gpuEnabled", readerPreferences.manyueGpuDisplayFilter.get())
+            put("gpuStrength", readerPreferences.manyueGpuDisplayStrength.get())
+            put("grayscale", readerPreferences.grayscale.get())
+            put("invertedColors", readerPreferences.invertedColors.get())
+            put("colorFilter", readerPreferences.colorFilter.get())
+            put("customBrightness", readerPreferences.customBrightness.get())
+            put(
+                "cropBorders",
+                if (webtoon != null) readerPreferences.cropBordersWebtoon.get() else readerPreferences.cropBorders.get(),
+            )
+            put("flashOnPageChange", readerPreferences.flashOnPageChange.get())
+            put("classicStrength", readerPreferences.manyueClassicStrength.get())
+            put("anime4kOverlay", readerPreferences.manyueAnime4kOverlay.get())
+            put("width", binding.viewerContainer.width)
+            put("height", binding.viewerContainer.height)
         }.toString()
     }
 

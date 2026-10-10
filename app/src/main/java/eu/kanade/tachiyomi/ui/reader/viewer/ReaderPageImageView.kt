@@ -32,6 +32,7 @@ import coil3.request.ImageRequest
 import coil3.request.crossfade
 import coil3.size.Precision
 import coil3.size.ViewSizeResolver
+import com.davemorrissey.labs.subscaleview.ImageRotation
 import com.davemorrissey.labs.subscaleview.ImageSource
 import com.davemorrissey.labs.subscaleview.SubsamplingScaleImageView
 import com.davemorrissey.labs.subscaleview.SubsamplingScaleImageView.EASE_IN_OUT_QUAD
@@ -585,11 +586,19 @@ open class ReaderPageImageView @JvmOverloads constructor(
         }
         stagedCacheLease = stagedLease
         try {
-            if (isWebtoon && height > 0) {
-                // Keep the same RecyclerView item geometry while both views are measured and
-                // after the swap. Tiny aspect-ratio rounding differences must not move the strip.
-                replacementHeight = height
-                replacementWidth = width
+            if (isWebtoon) {
+                // The current measured frame can temporarily be as tall as the viewport while a
+                // webtoon page is relaid out. Preserve its image-fit height, not that transient
+                // viewport height, while the tiled replacement is staged and committed.
+                val fitHeight = webtoonFitWidthHeight(width)
+                if (fitHeight != null && height > 0) {
+                    // Preserve the current row height when it only differs by FIT_WIDTH rounding.
+                    replacementHeight = if (kotlin.math.abs(height - fitHeight) <= 1) height else fitHeight
+                    replacementWidth = width
+                } else {
+                    replacementHeight = 0
+                    replacementWidth = 0
+                }
             }
             val nextView = createSubsamplingImageView().apply {
                 var committedGeneration: Long? = null
@@ -759,6 +768,22 @@ open class ReaderPageImageView @JvmOverloads constructor(
             onError(error)
         }
         return requestId
+    }
+
+    /** Return the active webtoon page's natural FIT_WIDTH frame height for [width]. */
+    private fun webtoonFitWidthHeight(width: Int): Int? {
+        if (!isWebtoon || width <= 0) return null
+        val activeImage = pageView as? SubsamplingScaleImageView ?: return null
+        if (!activeImage.isReady || activeImage.sWidth <= 0 || activeImage.sHeight <= 0) return null
+
+        val contentWidth = width - paddingLeft - paddingRight
+        if (contentWidth <= 0) return null
+        val rotated = activeImage.imageRotation == ImageRotation.ROTATION_90 ||
+            activeImage.imageRotation == ImageRotation.ROTATION_270
+        val sourceWidth = if (rotated) activeImage.sHeight else activeImage.sWidth
+        val sourceHeight = if (rotated) activeImage.sWidth else activeImage.sHeight
+        val imageHeight = (sourceHeight.toDouble() / sourceWidth * contentWidth).toInt()
+        return imageHeight + paddingTop + paddingBottom
     }
 
     fun cancelStagedImage(requestId: Long? = null) {
