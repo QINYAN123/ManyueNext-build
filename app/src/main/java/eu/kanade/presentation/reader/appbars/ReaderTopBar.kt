@@ -2,8 +2,12 @@ package eu.kanade.presentation.reader.appbars
 
 import androidx.compose.runtime.Composable
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
 import eu.kanade.presentation.components.AppBar
 import eu.kanade.presentation.components.AppBarActions
 import eu.kanade.presentation.components.AppBarTitle
@@ -28,69 +32,72 @@ fun ReaderTopBar(
     pageMetadata: @Composable () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
-    AppBar(
-        modifier = modifier,
-        backgroundColor = Color.Transparent,
-        titleContent = {
-            Column {
+    Column(modifier = modifier) {
+        AppBar(
+            backgroundColor = Color.Transparent,
+            titleContent = {
                 AppBarTitle(mangaTitle, subtitle = chapterTitle)
-                pageMetadata()
-            }
-        },
-        navigateUp = navigateUp,
-        actions = {
-            AppBarActions(
-                actions = buildList {
-                    add(
-                        AppBar.Action(
-                            title = stringResource(MR.strings.action_open_manga_directory),
-                            icon = MaterialSymbols.Rounded.CollectionsBookmark,
-                            onClick = onOpenMangaDirectory,
-                        ),
-                    )
-                    add(
-                        AppBar.Action(
-                            title = stringResource(
-                                if (bookmarked) {
-                                    MR.strings.action_remove_bookmark
+            },
+            navigateUp = navigateUp,
+            actions = {
+                AppBarActions(
+                    actions = buildList {
+                        add(
+                            AppBar.Action(
+                                title = stringResource(MR.strings.action_open_manga_directory),
+                                icon = MaterialSymbols.Rounded.CollectionsBookmark,
+                                onClick = onOpenMangaDirectory,
+                            ),
+                        )
+                        add(
+                            AppBar.Action(
+                                title = stringResource(
+                                    if (bookmarked) {
+                                        MR.strings.action_remove_bookmark
+                                    } else {
+                                        MR.strings.action_bookmark
+                                    },
+                                ),
+                                icon = if (bookmarked) {
+                                    MaterialSymbols.RoundedFilled.Bookmark
                                 } else {
-                                    MR.strings.action_bookmark
+                                    MaterialSymbols.Rounded.Bookmark
                                 },
-                            ),
-                            icon = if (bookmarked) {
-                                MaterialSymbols.RoundedFilled.Bookmark
-                            } else {
-                                MaterialSymbols.Rounded.Bookmark
-                            },
-                            onClick = onToggleBookmarked,
-                        ),
-                    )
-                    onOpenInWebView?.let {
-                        add(
-                            AppBar.OverflowAction(
-                                title = stringResource(MR.strings.action_open_in_web_view),
-                                onClick = it,
+                                onClick = onToggleBookmarked,
                             ),
                         )
-                    }
-                    onOpenInBrowser?.let {
-                        add(
-                            AppBar.OverflowAction(
-                                title = stringResource(MR.strings.action_open_in_browser),
-                                onClick = it,
-                            ),
-                        )
-                    }
-                    onShare?.let {
-                        add(
-                            AppBar.OverflowAction(
-                                title = stringResource(MR.strings.action_share),
-                                onClick = it,
-                            ),
-                        )
-                    }
-                },
-            )
-        },
-    )
+                        onOpenInWebView?.let {
+                            add(
+                                AppBar.OverflowAction(
+                                    title = stringResource(MR.strings.action_open_in_web_view),
+                                    onClick = it,
+                                ),
+                            )
+                        }
+                        onOpenInBrowser?.let {
+                            add(
+                                AppBar.OverflowAction(
+                                    title = stringResource(MR.strings.action_open_in_browser),
+                                    onClick = it,
+                                ),
+                            )
+                        }
+                        onShare?.let {
+                            add(
+                                AppBar.OverflowAction(
+                                    title = stringResource(MR.strings.action_share),
+                                    onClick = it,
+                                ),
+                            )
+                        }
+                    },
+                )
+            },
+        )
+        // Metadata needs the reader width on a narrow outer screen. Sharing the title's
+        // remaining width with three toolbar buttons made this status wrap over the artwork.
+        Box(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+            pageMetadata()
+        }
+    }
 }
