@@ -148,35 +148,88 @@ class ManyueEnhancementCacheBehaviorTest {
         }
     }
 
-    @Test fun `far future cache can be evicted while the nearby backward result remains protected`() = runBlocking {
-        val root = Files.createTempDirectory("manyue-cache-bounded-protection-test").toFile()
+    @Test fun `prefetch reservation waits instead of evicting unread forward result and resumes after head passes it`() = runBlocking {
+        val root = Files.createTempDirectory("manyue-cache-forward-retention-test").toFile()
         val context = IsolatedCacheContext(RuntimeEnvironment.getApplication(), root)
-        val identity = ManyueEnhancementCache.ReadingIdentity(708L, 808L, 16)
-        ManyueEnhancementCache.updateReadingPosition(identity.mangaId, identity.chapterId, 10)
+        val future = ManyueEnhancementCache.ReadingIdentity(708L, 808L, 20)
+        ManyueEnhancementCache.updateReadingPosition(future.mangaId, future.chapterId, 10)
         try {
-            val key = putImage(context, identity, "far-future")
-            val padding = File(ManyueEnhancementCache.cacheDir(context).resolve(key), "budget-padding.bin")
+            val oldChapterKey = putImage(context, future.copy(chapterId = 807L, pageIndex = 3), "old-chapter")
+            val futureKey = putImage(context, future, "future-forward")
+            val padding = File(ManyueEnhancementCache.cacheDir(context).resolve(futureKey), "budget-padding.bin")
             RandomAccessFile(padding, "rw").use { it.setLength(MAX_CACHE_BYTES - ManyueEnhancementCache.cacheSizeBytes(context)) }
-            withTimeout(5_000L) {
-                ManyueEnhancementCache.awaitPrefetchBudget(context, identity.mangaId, identity.chapterId, 11, 1L).close()
-            }
-            assertNull(ManyueEnhancementCache.getImage(context, key))
 
-            val backward = identity.copy(pageIndex = 5)
-            val backwardKey = putImage(context, backward, "backward-five")
-            val backwardPadding = File(ManyueEnhancementCache.cacheDir(context).resolve(backwardKey), "budget-padding.bin")
-            RandomAccessFile(backwardPadding, "rw").use { it.setLength(MAX_CACHE_BYTES - ManyueEnhancementCache.cacheSizeBytes(context)) }
             val waiter = async(start = CoroutineStart.UNDISPATCHED) {
-                ManyueEnhancementCache.awaitPrefetchBudget(context, identity.mangaId, identity.chapterId, 9, 1L)
+                ManyueEnhancementCache.awaitPrefetchBudget(context, future.mangaId, future.chapterId, 11, 1_000_000L)
             }
             awaitCondition { ManyueEnhancementCache.pendingBudgetWaiterCountForTest() == 1 }
             assertFalse(waiter.isCompleted)
-            assertNotNull(ManyueEnhancementCache.getImage(context, backwardKey))
-            ManyueEnhancementCache.updateReadingPosition(identity.mangaId, identity.chapterId, 11)
+            assertNull("old chapters remain eligible for eviction", ManyueEnhancementCache.getImage(context, oldChapterKey))
+            assertNotNull("a fixed forward head keeps its unread future result", ManyueEnhancementCache.getImage(context, futureKey))
+
+            ManyueEnhancementCache.updateReadingPosition(future.mangaId, future.chapterId, 26)
             withTimeout(5_000L) { waiter.await() }.close()
-            assertNull(ManyueEnhancementCache.getImage(context, backwardKey))
+            assertNull("the passed result can be evicted after the head moves", ManyueEnhancementCache.getImage(context, futureKey))
         } finally {
-            ManyueEnhancementCache.clearReadingPosition(identity.mangaId, identity.chapterId)
+            ManyueEnhancementCache.clearReadingPosition(future.mangaId, future.chapterId)
+            root.deleteRecursively()
+        }
+    }
+
+    @Test fun `visible page write can evict unread far future cache under pressure`() {
+        val root = Files.createTempDirectory("manyue-cache-visible-write-eviction-test").toFile()
+        val context = IsolatedCacheContext(RuntimeEnvironment.getApplication(), root)
+        val visible = ManyueEnhancementCache.ReadingIdentity(709L, 809L, 10)
+        val future = visible.copy(pageIndex = 20)
+        ManyueEnhancementCache.updateReadingPosition(visible.mangaId, visible.chapterId, visible.pageIndex)
+        try {
+            val futureKey = putImage(context, future, "future-visible-write")
+            val padding = File(ManyueEnhancementCache.cacheDir(context).resolve(futureKey), "budget-padding.bin")
+            RandomAccessFile(padding, "rw").use { it.setLength(MAX_CACHE_BYTES - ManyueEnhancementCache.cacheSizeBytes(context)) }
+
+            val visibleSource = File(root, "visible-page.webp").apply { writeBytes(byteArrayOf(4, 5, 6)) }
+            val visibleKey = cacheKey(visible)
+            assertTrue(
+                ManyueEnhancementCache.putImage(
+                    context,
+                    visibleKey,
+                    visibleSource,
+                    2,
+                    2,
+                    readingIdentity = visible,
+                ),
+            )
+            assertNotNull(ManyueEnhancementCache.getImage(context, visibleKey))
+            assertNull("visible output can reclaim speculative future cache", ManyueEnhancementCache.getImage(context, futureKey))
+        } finally {
+            ManyueEnhancementCache.clearReadingPosition(visible.mangaId, visible.chapterId)
+            root.deleteRecursively()
+        }
+    }
+
+    @Test fun `backward prefetch reservation retains unread pages in reverse direction`() = runBlocking {
+        val root = Files.createTempDirectory("manyue-cache-backward-retention-test").toFile()
+        val context = IsolatedCacheContext(RuntimeEnvironment.getApplication(), root)
+        val upcoming = ManyueEnhancementCache.ReadingIdentity(710L, 810L, 10)
+        ManyueEnhancementCache.updateReadingPosition(upcoming.mangaId, upcoming.chapterId, 20)
+        ManyueEnhancementCache.updateReadingPosition(upcoming.mangaId, upcoming.chapterId, 19)
+        try {
+            val upcomingKey = putImage(context, upcoming, "future-backward")
+            val padding = File(ManyueEnhancementCache.cacheDir(context).resolve(upcomingKey), "budget-padding.bin")
+            RandomAccessFile(padding, "rw").use { it.setLength(MAX_CACHE_BYTES - ManyueEnhancementCache.cacheSizeBytes(context)) }
+
+            val waiter = async(start = CoroutineStart.UNDISPATCHED) {
+                ManyueEnhancementCache.awaitPrefetchBudget(context, upcoming.mangaId, upcoming.chapterId, 18, 1L)
+            }
+            awaitCondition { ManyueEnhancementCache.pendingBudgetWaiterCountForTest() == 1 }
+            assertFalse(waiter.isCompleted)
+            assertNotNull(ManyueEnhancementCache.getImage(context, upcomingKey))
+
+            ManyueEnhancementCache.updateReadingPosition(upcoming.mangaId, upcoming.chapterId, 4)
+            withTimeout(5_000L) { waiter.await() }.close()
+            assertNull(ManyueEnhancementCache.getImage(context, upcomingKey))
+        } finally {
+            ManyueEnhancementCache.clearReadingPosition(upcoming.mangaId, upcoming.chapterId)
             root.deleteRecursively()
         }
     }

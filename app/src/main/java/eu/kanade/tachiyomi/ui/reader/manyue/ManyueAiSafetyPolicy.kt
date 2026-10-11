@@ -13,6 +13,7 @@ object ManyueAiSafetyPolicy {
     const val MAX_WEBP_DIMENSION = 16_383
 
     const val ACTIVE_COMPLETION_LOOK_BACK_PAGES = 5
+    // Nearby priority/predictive-display range, not the chapter cursor's admission horizon.
     const val PREFETCH_WINDOW_PAGES = 5
     const val CONTINUOUS_PREFETCH_PRIORITY = 1
 
@@ -38,6 +39,16 @@ object ManyueAiSafetyPolicy {
         val distance = relativeDistance(pageIndex, currentIndex, direction)
         if (pageIndex < 0 || distance !in 1..PREFETCH_WINDOW_PAGES) return null
         return 60 - distance * 10
+    }
+
+    /** Future encoded work can continue throughout the chapter; passed work is not admitted. */
+    fun futureRequestPriority(
+        pageIndex: Int,
+        currentIndex: Int,
+        direction: PrefetchDirection,
+    ): Int? {
+        if (pageIndex < 0 || relativeDistance(pageIndex, currentIndex, direction) <= 0) return null
+        return prefetchPriority(pageIndex, currentIndex, direction) ?: CONTINUOUS_PREFETCH_PRIORITY
     }
 
     fun shouldFinishActiveRequest(pageIndex: Int, currentIndex: Int, isProcessing: Boolean): Boolean =

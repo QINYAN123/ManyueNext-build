@@ -48,6 +48,22 @@ class ManyuePrefetchPolicyTest {
         ManyuePrefetchManager.reset()
     }
 
+    @Test fun `continuous admission keeps future work but drops passed invisible requests`() {
+        val forward = ManyueAiSafetyPolicy.PrefetchDirection.FORWARD
+        val backward = ManyueAiSafetyPolicy.PrefetchDirection.BACKWARD
+        assertEquals(50, ManyueAiSafetyPolicy.futureRequestPriority(11, 10, forward))
+        assertEquals(1, ManyueAiSafetyPolicy.futureRequestPriority(30, 10, forward))
+        assertEquals(1, ManyueAiSafetyPolicy.futureRequestPriority(0, 20, backward))
+        assertNull(ManyueAiSafetyPolicy.futureRequestPriority(9, 10, forward))
+        assertNull(ManyueAiSafetyPolicy.futureRequestPriority(21, 20, backward))
+        assertNull(ManyueAiSafetyPolicy.futureRequestPriority(-1, 20, backward))
+        assertNull(ManyueAiSafetyPolicy.futureRequestPriority(10, 10, forward))
+        assertEquals(100, ManyueAiSafetyPolicy.managedRequestPriority(false, true, null, false),
+            "a partially visible previous page is still needed")
+        assertNull(ManyueAiSafetyPolicy.managedRequestPriority(false, false, null, false),
+            "a completely passed page cannot use the active-work escape hatch")
+    }
+
     @Test fun `directional window and active completion are symmetric`() {
         val forward = ManyueAiSafetyPolicy.PrefetchDirection.FORWARD
         val backward = ManyueAiSafetyPolicy.PrefetchDirection.BACKWARD

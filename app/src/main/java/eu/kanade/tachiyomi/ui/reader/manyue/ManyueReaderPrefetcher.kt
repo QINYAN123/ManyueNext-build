@@ -437,7 +437,8 @@ internal class ManyuePrefetchJobCoordinator(private val scope: CoroutineScope) {
                 nextPageIndex += direction.step
                 continue
             }
-            if (distance > ManyueAiSafetyPolicy.PREFETCH_WINDOW_PAGES) return null
+            // The chapter bounds terminate the logical cursor. Five outstanding reservations
+            // supply backpressure while completed future results stay encoded in the cache.
             if (candidate in failedPages) {
                 nextPageIndex += direction.step
                 continue
@@ -495,7 +496,7 @@ internal class ManyuePrefetchJobCoordinator(private val scope: CoroutineScope) {
             activeKey?.takeIf { it.chapterId == chapterId && it.generation == generation }?.let { direction }
         }
 
-    /** A page may keep preparing only while it remains current, visible, or inside the read-ahead window. */
+    /** Keep chapter work only while it is current, visible, or still ahead of the reading head. */
     fun isPreparationCurrent(chapterId: Long, generation: Long, mode: Int, pageIndex: Int): Boolean {
         val key = CursorKey(chapterId, generation, mode)
         if (!isCurrent(chapterId, generation, mode)) return false
@@ -504,9 +505,10 @@ internal class ManyuePrefetchJobCoordinator(private val scope: CoroutineScope) {
             if (activeKey != key || !isCurrent(chapterId, generation, mode)) {
                 false
             } else {
-                pageIndex == selectedPage || isVisible ||
-                    ManyueAiSafetyPolicy.relativeDistance(pageIndex, selectedPage, direction) in
-                    1..ManyueAiSafetyPolicy.PREFETCH_WINDOW_PAGES
+                pageIndex in 0 until pageCount && (
+                    pageIndex == selectedPage || isVisible ||
+                        ManyueAiSafetyPolicy.relativeDistance(pageIndex, selectedPage, direction) > 0
+                    )
             }
         }
     }

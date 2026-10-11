@@ -48,6 +48,7 @@ object ManyueEnhancementCache {
     private var nextReservationId = 1L
     private var budgetEventVersion = 0L
     private var readingPosition: ReadingPosition? = null
+    private var readingDirection = ReadingDirection.FORWARD
     private var protectedPageSnapshot: Set<Pair<Long, Int>> = emptySet()
     private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var nextInvalidationId = 1L
@@ -55,6 +56,8 @@ object ManyueEnhancementCache {
     data class ReadingIdentity(val mangaId: Long, val chapterId: Long, val pageIndex: Int)
 
     private data class ReadingPosition(val mangaId: Long, val chapterId: Long, val pageIndex: Int)
+
+    private enum class ReadingDirection { FORWARD, BACKWARD }
 
     private data class ReservationRecord(val identity: ReadingIdentity, val bytes: Long)
 
@@ -105,7 +108,16 @@ object ManyueEnhancementCache {
     /** Small in-memory reader snapshot; safe to call from the reader thread. */
     fun updateReadingPosition(mangaId: Long, chapterId: Long, pageIndex: Int) {
         synchronized(cacheLock) {
-            readingPosition = ReadingPosition(mangaId, chapterId, pageIndex.coerceAtLeast(0))
+            val next = ReadingPosition(mangaId, chapterId, pageIndex.coerceAtLeast(0))
+            val previous = readingPosition
+            readingDirection = when {
+                previous == null || previous.mangaId != mangaId || previous.chapterId != chapterId ->
+                    ReadingDirection.FORWARD
+                next.pageIndex > previous.pageIndex -> ReadingDirection.FORWARD
+                next.pageIndex < previous.pageIndex -> ReadingDirection.BACKWARD
+                else -> readingDirection
+            }
+            readingPosition = next
         }
         signalBudgetWaiters()
     }
@@ -116,6 +128,7 @@ object ManyueEnhancementCache {
             if (mangaId != null && current.mangaId != mangaId) return
             if (chapterId != null && current.chapterId != chapterId) return
             readingPosition = null
+            readingDirection = ReadingDirection.FORWARD
             protectedPageSnapshot = emptySet()
         }
         signalBudgetWaiters()
@@ -249,7 +262,7 @@ object ManyueEnhancementCache {
         while (true) {
             val observedVersion = synchronized(waitersLock) { budgetEventVersion }
             val reservation = synchronized(diskLock) {
-                if (!ensureCapacity(context, estimatedBytes, identity)) {
+                if (!ensureCapacity(context, estimatedBytes, identity, preserveUpcoming = true)) {
                     null
                 } else {
                     synchronized(cacheLock) {
@@ -748,6 +761,7 @@ object ManyueEnhancementCache {
         incomingBytes: Long,
         incomingIdentity: ReadingIdentity?,
         ownReservationBytes: Long = 0L,
+        preserveUpcoming: Boolean = false,
     ): Boolean {
         if (incomingBytes < 0L || incomingBytes > MAX_CACHE_BYTES) return false
         val currentSize = cacheSizeBytes(context)
@@ -758,6 +772,7 @@ object ManyueEnhancementCache {
             roots = listOf(cacheDir(context), File(context.cacheDir, LEGACY_CACHE_DIR_NAME)),
             startingBytes = currentSize,
             targetBytes = target,
+            preserveUpcoming = preserveUpcoming,
         )
         return cacheSizeBytes(context) + reserved + incomingBytes <= MAX_CACHE_BYTES
     }
@@ -776,6 +791,7 @@ object ManyueEnhancementCache {
         roots: List<File>,
         startingBytes: Long,
         targetBytes: Long,
+        preserveUpcoming: Boolean = false,
     ) {
         val state = readingSnapshot()
         val candidates = roots.flatMap { root ->
@@ -784,7 +800,7 @@ object ManyueEnhancementCache {
                     entry.name.matches(Regex("[0-9a-f]{32}"))
                 val image = if (isCurrentBundle) cachedImage(entry) else null
                 val identity = image?.readingIdentity
-                val rank = evictionRank(identity, state.first, state.second)
+                val rank = evictionRank(identity, state.first, state.second, state.third, preserveUpcoming)
                 EvictionCandidate(
                     file = entry,
                     key = entry.name.takeIf { isCurrentBundle },
@@ -799,7 +815,7 @@ object ManyueEnhancementCache {
         var size = startingBytes
         for (candidate in candidates) {
             if (size <= targetBytes) break
-            if (deleteCandidate(candidate)) size -= candidate.bytes
+            if (deleteCandidate(candidate, preserveUpcoming = preserveUpcoming)) size -= candidate.bytes
         }
     }
 
@@ -807,12 +823,28 @@ object ManyueEnhancementCache {
         identity: ReadingIdentity?,
         position: ReadingPosition?,
         visiblePages: Set<Pair<Long, Int>>,
+        direction: ReadingDirection,
+        preserveUpcoming: Boolean,
     ): Pair<Int, Int> {
         if (identity == null) return 0 to 0 // old manifests and interrupted temp entries first
         if (position == null || identity.mangaId != position.mangaId) return 1 to 0
         if (identity.chapterId != position.chapterId) return 1 to 0
         if (isIdentityProtected(identity, position, visiblePages)) return 5 to 0
+        if (preserveUpcoming && isIdentityUpcoming(identity, position, direction)) return 6 to 0
         return 2 to identity.pageIndex // farthest-read (smallest page index) first
+    }
+
+    private fun isIdentityUpcoming(
+        identity: ReadingIdentity?,
+        position: ReadingPosition?,
+        direction: ReadingDirection,
+    ): Boolean {
+        if (identity == null || position == null) return false
+        if (identity.mangaId != position.mangaId || identity.chapterId != position.chapterId) return false
+        return when (direction) {
+            ReadingDirection.FORWARD -> identity.pageIndex > position.pageIndex
+            ReadingDirection.BACKWARD -> identity.pageIndex < position.pageIndex
+        }
     }
 
     private fun isIdentityProtected(
@@ -834,6 +866,7 @@ object ManyueEnhancementCache {
     private fun deleteCandidate(
         candidate: EvictionCandidate,
         respectReadingProtection: Boolean = true,
+        preserveUpcoming: Boolean = false,
     ): Boolean {
         val key = candidate.key
         if (key == null) {
@@ -844,7 +877,8 @@ object ManyueEnhancementCache {
         synchronized(cacheLock) {
             if (key in deletingBundles || (leasesByBundle[key] ?: 0) > 0) return false
             if (respectReadingProtection &&
-                isIdentityProtected(candidate.identity, readingPosition, protectedPageSnapshot)
+                (isIdentityProtected(candidate.identity, readingPosition, protectedPageSnapshot) ||
+                    (preserveUpcoming && isIdentityUpcoming(candidate.identity, readingPosition, readingDirection)))
             ) {
                 return false
             }
@@ -879,8 +913,8 @@ object ManyueEnhancementCache {
 
     private fun isBundleDeleting(key: String): Boolean = synchronized(cacheLock) { key in deletingBundles }
 
-    private fun readingSnapshot(): Pair<ReadingPosition?, Set<Pair<Long, Int>>> = synchronized(cacheLock) {
-        readingPosition to protectedPageSnapshot
+    private fun readingSnapshot(): Triple<ReadingPosition?, Set<Pair<Long, Int>>, ReadingDirection> = synchronized(cacheLock) {
+        Triple(readingPosition, protectedPageSnapshot, readingDirection)
     }
 
     private fun reservedBytes(): Long = synchronized(cacheLock) { reservations.values.sumOf { it.bytes } }

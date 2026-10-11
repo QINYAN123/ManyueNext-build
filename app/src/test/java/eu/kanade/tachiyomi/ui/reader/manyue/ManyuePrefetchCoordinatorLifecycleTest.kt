@@ -90,11 +90,10 @@ class ManyuePrefetchCoordinatorLifecycleTest {
 
     @Test
     @OptIn(ExperimentalCoroutinesApi::class)
-    fun `fixed head enqueues only five candidates without waiting for worker terminals`() = runBlocking {
+    fun `fixed head continues past five completed candidates and stops at chapter end`() = runBlocking {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default.limitedParallelism(1))
         val coordinator = ManyuePrefetchJobCoordinator(scope)
-        val startedByPage = (1..6).associateWith { CompletableDeferred<Unit>() }
-        val terminalByPage = (1..5).associateWith { CompletableDeferred<Unit>() }
+        val startedByPage = (1..19).associateWith { CompletableDeferred<Unit>() }
         val enqueued = Collections.synchronizedList(mutableListOf<Int>())
         val sourceActive = AtomicInteger()
         val maxSourceActive = AtomicInteger()
@@ -117,21 +116,20 @@ class ManyuePrefetchCoordinatorLifecycleTest {
         try {
             ManyuePrefetchManager.reset()
             coordinator.reconcileAfterDecision(92, 0, generation, 20, ManyueEnhancementMode.AI_2X.value, work)
-            for (pageIndex in 1..5) {
+            for (pageIndex in 1..19) {
                 withTimeout(5_000) { startedByPage.getValue(pageIndex).await() }
             }
             coordinator.awaitCursorIdle()
-            assertEquals((1..5).toList(), enqueued.toList())
-            assertTrue(!startedByPage.getValue(6).isCompleted, "page 6 is outside the fixed-head window")
-            assertEquals(1, maxSourceActive.get(), "five enqueues do not run five source cursors")
-            assertEquals(5, terminalByPage.count { !it.value.isCompleted },
-                "worker completion is independent from the five-page input window")
+            assertEquals((1..19).toList(), enqueued.toList())
+            assertEquals(1, maxSourceActive.get(), "the logical chapter horizon does not multiply source cursors")
+            assertTrue(coordinator.isPreparationCurrent(92, generation, ManyueEnhancementMode.AI_2X.value, 19))
+            assertTrue(!coordinator.isPreparationCurrent(92, generation, ManyueEnhancementMode.AI_2X.value, 20),
+                "chapter bounds still reject nonexistent pages")
 
-            // Reconcile with the same head leaves the cursor at the edge instead of replaying
-            // already-enqueued pages 1..5 forever.
+            // Reconcile at the same head never replays completed chapter work.
             coordinator.reconcileAfterDecision(92, 0, generation, 20, ManyueEnhancementMode.AI_2X.value, work)
             coordinator.awaitCursorIdle()
-            assertEquals((1..5).toList(), enqueued.toList())
+            assertEquals((1..19).toList(), enqueued.toList())
         } finally {
             coordinator.cancelAll()
             scope.cancel()
@@ -210,7 +208,7 @@ class ManyuePrefetchCoordinatorLifecycleTest {
 
     @Test
     @OptIn(ExperimentalCoroutinesApi::class)
-    fun `same generation reversal opens backward window and lets nearby active work finish`() = runBlocking {
+    fun `same generation reversal traverses remaining backward chapter with one cursor`() = runBlocking {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default.limitedParallelism(1))
         val coordinator = ManyuePrefetchJobCoordinator(scope)
         val page11Started = CompletableDeferred<Unit>()
@@ -238,8 +236,9 @@ class ManyuePrefetchCoordinatorLifecycleTest {
             releasePage11.complete(Unit)
             coordinator.awaitCursorIdle()
 
-            assertEquals(listOf(11, 8, 7, 6, 5, 4), completed.toList())
-            assertTrue(3 !in completed, "page 3 is outside the five-page backward window")
+            assertEquals(listOf(11) + (8 downTo 0).toList(), completed.toList())
+            assertTrue(!coordinator.isPreparationCurrent(97, generation, ManyueEnhancementMode.AI_2X.value, 11),
+                "after reversal an invisible page behind the directional head is stale")
         } finally {
             coordinator.cancelAll()
             scope.cancel()
@@ -276,7 +275,7 @@ class ManyuePrefetchCoordinatorLifecycleTest {
             releaseFirstAttempt.complete(Unit)
             coordinator.awaitCursorIdle()
 
-            // Backward traversal ends at page 4. Returning to head 10 opens page 11 again because
+            // Backward traversal ends at page 0. Returning to head 10 opens page 11 again because
             // the cancelled request was advanced for this pass but never added to failedPages.
             coordinator.reconcileAfterDecision(100, 10, generation, 20, ManyueEnhancementMode.AI_2X.value, work)
             coordinator.awaitCursorIdle()
@@ -470,18 +469,19 @@ class ManyuePrefetchCoordinatorLifecycleTest {
 
         try {
             coordinator.reconcileAfterDecision(chapterId, 0, generation, 20, mode, work)
-            coordinator.awaitCursorIdle()
+            withTimeout(5_000) {
+                while (enqueued.size < 5) delay(10)
+            }
             assertEquals((1..5).toList(), enqueued.toList())
             assertEquals(5, coordinator.activeWorkerReservationCount)
             assertEquals(0, reservationCloseCount.get())
 
-            // Advancing one page opens a sixth candidate, but it cannot reserve cache budget until
-            // one of the five terminal watchers releases its lease.
-            ManyuePrefetchManager.onPageChanged(chapterId, 1)
-            coordinator.reconcileAfterDecision(chapterId, 1, generation, 20, mode, work)
+            // Head stays fixed. Page 6 waits only for capacity, then advances without a new
+            // selection/reconcile event when a Native terminal watcher releases its slot.
             delay(150)
             assertTrue(!page6Enqueued.isCompleted, "the five reservation slots bound future enqueues")
             assertEquals(5, coordinator.activeWorkerReservationCount)
+            assertEquals(1, coordinator.activeCursorCount)
 
             terminalByPage.getValue(1).complete(Unit)
             withTimeout(5_000) { page6Enqueued.await() }
@@ -604,7 +604,7 @@ class ManyuePrefetchCoordinatorLifecycleTest {
             }
             coordinator.awaitCursorIdle()
 
-            assertEquals((1..5).toList(), newPass.toList())
+            assertEquals((1..39).toList(), newPass.toList())
             assertEquals(
                 ManyueAiSafetyPolicy.PrefetchDirection.FORWARD,
                 coordinator.selectedDirection(98, nextGeneration),
@@ -619,7 +619,7 @@ class ManyuePrefetchCoordinatorLifecycleTest {
 
     @Test
     @OptIn(ExperimentalCoroutinesApi::class)
-    fun `head update racing with cursor shutdown cannot lose the newly opened window`() = runBlocking {
+    fun `head update racing with preparation completion cannot lose the next chapter candidate`() = runBlocking {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default.limitedParallelism(1))
         val coordinator = ManyuePrefetchJobCoordinator(scope)
         val page5Started = CompletableDeferred<Unit>()
@@ -659,7 +659,7 @@ class ManyuePrefetchCoordinatorLifecycleTest {
 
             withTimeout(5_000) { page6Started.await() }
             coordinator.awaitCursorIdle()
-            assertEquals(listOf(1, 2, 3, 4, 5, 6), completed.toList())
+            assertEquals((1..19).toList(), completed.toList())
             assertEquals(1, completed.count { it == 6 })
         } finally {
             coordinator.cancelAll()

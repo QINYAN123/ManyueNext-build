@@ -248,7 +248,7 @@ object ManyuePrefetchManager {
                 continue
             }
 
-            val candidatePriority = ManyueAiSafetyPolicy.prefetchPriority(
+            val candidatePriority = ManyueAiSafetyPolicy.futureRequestPriority(
                 pageIndex = key.pageIndex,
                 currentIndex = currentPage,
                 direction = prefetchDirection,
