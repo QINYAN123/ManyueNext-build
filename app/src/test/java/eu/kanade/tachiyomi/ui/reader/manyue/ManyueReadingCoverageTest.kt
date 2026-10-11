@@ -43,6 +43,20 @@ class ManyueReadingCoverageTest {
     private fun expose(source: ManyueReadingCoverage.Source = this.source) =
         ManyueReadingCoverage.exposure(owner, source, 500, 400)
 
+    @Test fun webGpuPlaceholderFrameCannotBecomeFirstFrameAiCoverage() {
+        expose()
+        ManyueReadingCoverage.frameSubmitted(owner, ManyueReadingCoverage.DrawBackend.WEBGPU_SUBMISSION)
+        now = 100_000_000
+        ManyueReadingCoverage.drawn(owner, source, stamp(), ManyueReadingCoverage.DrawBackend.WEBGPU_SUBMISSION)
+        now = 300_000_000
+        ManyueReadingCoverage.hidden(owner)
+        val row = ManyueReadingCoverage.snapshot().getJSONArray("exposures").getJSONObject(0)
+        assertTrue(row.getBoolean("displayedDuringExposure"))
+        assertFalse(row.getBoolean("firstFrame"))
+        assertEquals("WEBGPU_SUBMISSION", row.getString("firstDrawBackend"))
+        assertEquals("WEBGPU_SUBMISSION", row.getString("aiDrawBackend"))
+    }
+
     @Test fun loadingEntryIsRetainedAndReadyAloneDoesNotCountAsDisplayed() {
         expose(source.copy(fingerprint = null, sourceWidth = 0, sourceHeight = 0))
         now = 1_000_000_000

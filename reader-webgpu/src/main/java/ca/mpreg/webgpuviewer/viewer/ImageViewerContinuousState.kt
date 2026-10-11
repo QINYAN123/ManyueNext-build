@@ -188,12 +188,17 @@ class ImageViewerContinuousState : ImageViewerState(isVertical = true) {
      */
     var onViewport: ((readThrough: ImagePage?) -> Unit)? = null
 
-    data class VisibleImage(val page: ImagePage, val pageFraction: Float, val viewportFraction: Float)
+    data class VisibleImage(
+        val page: ImagePage,
+        val pageFraction: Float,
+        val viewportFraction: Float,
+        val contentSubmitted: Boolean = false,
+    )
 
     /** Main-thread geometry observation, separate from read-through progress. */
     var onVisibleImages: ((List<VisibleImage>) -> Unit)? = null
 
-    /** GPU-thread feedback: only images actually encoded in a successfully submitted frame. */
+    /** GPU-thread frame feedback; contentSubmitted distinguishes image draws from placeholders. */
     var onSubmittedImages: ((List<VisibleImage>, Long) -> Unit)? = null
 
     /**
@@ -573,7 +578,7 @@ class ImageViewerContinuousState : ImageViewerState(isVertical = true) {
     override fun onFrameSubmitted(snapshot: Any) {
         val frame = snapshot as ContinuousRenderSnapshot
         onSubmittedImages?.invoke(
-            visibleImages(frame).filter { it.page in frame.drawnImages },
+            visibleImages(frame).map { it.copy(contentSubmitted = it.page in frame.drawnImages) },
             System.nanoTime(),
         )
     }

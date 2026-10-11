@@ -9,6 +9,8 @@ import java.util.IdentityHashMap
  * Source fingerprints/real database IDs stay in memory and are never exported.
  */
 object ManyueReadingCoverage {
+    enum class DrawBackend { ANDROID_CANVAS, WEBGPU_SUBMISSION }
+
     data class Source(
         val mangaId: Long,
         val chapterId: Long,
@@ -39,6 +41,8 @@ object ManyueReadingCoverage {
         var exitedNs: Long? = null,
         var firstDrawNs: Long? = null,
         var firstAiDrawNs: Long? = null,
+        var firstDrawBackend: DrawBackend? = null,
+        var aiDrawBackend: DrawBackend? = null,
         var result: Int? = null,
         var outputWidth: Int = 0,
         var outputHeight: Int = 0,
@@ -209,10 +213,15 @@ object ManyueReadingCoverage {
     }
 
     /** First submitted reader frame includes placeholders and rejected stale active images. */
-    fun frameSubmitted(owner: Any) {
+    fun frameSubmitted(owner: Any, backend: DrawBackend = DrawBackend.ANDROID_CANVAS) {
         if (!enabled) return
         synchronized(lock) {
-            active[owner]?.let { if (it.firstDrawNs == null) it.firstDrawNs = now() }
+            active[owner]?.let {
+                if (it.firstDrawNs == null) {
+                    it.firstDrawNs = now()
+                    it.firstDrawBackend = backend
+                }
+            }
         }
     }
 
@@ -252,14 +261,17 @@ object ManyueReadingCoverage {
         }
     }
 
-    /** Called synchronously after the current, loaded child submits its draw pass. */
-    fun drawn(owner: Any, source: Source, result: Result?) {
+    /** Called after a matching active image submits its draw pass; submission is not scanout. */
+    fun drawn(owner: Any, source: Source, result: Result?, backend: DrawBackend = DrawBackend.ANDROID_CANVAS) {
         if (!enabled) return
         synchronized(lock) {
             val current = active[owner] ?: return
             if (!samePage(current.source, source)) return
             val time = now()
-            if (current.firstDrawNs == null) current.firstDrawNs = time
+            if (current.firstDrawNs == null) {
+                current.firstDrawNs = time
+                current.firstDrawBackend = backend
+            }
             if (result == null) return
             val config = current.configuration
             val expected = current.source
@@ -293,6 +305,7 @@ object ManyueReadingCoverage {
             if (observedLoadedResult) observedLoadedResults.add(id)
             current.result = id
             current.firstAiDrawNs = time
+            current.aiDrawBackend = backend
             current.outputWidth = result.outputWidth
             current.outputHeight = result.outputHeight
         }
@@ -346,6 +359,8 @@ object ManyueReadingCoverage {
                 put("late", drew && !timely)
                 put("firstDrawNs", item.firstDrawNs ?: JSONObject.NULL)
                 put("aiDrawNs", item.firstAiDrawNs ?: JSONObject.NULL)
+                put("firstDrawBackend", item.firstDrawBackend?.name ?: JSONObject.NULL)
+                put("aiDrawBackend", item.aiDrawBackend?.name ?: JSONObject.NULL)
                 put("aiReadyNs", readyTime ?: JSONObject.NULL)
                 put("result", item.result ?: JSONObject.NULL)
                 put("drawFailureCount", item.failureCount)
@@ -371,7 +386,7 @@ object ManyueReadingCoverage {
         val prefetched = ready.filterValues { it.second }.keys
         JSONObject().apply {
             put("unit", "qualifying visible-region exposure of a whole-page AI output")
-            put("drawEvidence", "Loaded active image child submitted an Android Canvas draw; not SurfaceFlinger scanout or all high-resolution region tiles.")
+            put("drawEvidence", "Per-exposure backend identifies Android Canvas draw submission or WebGPU image-command submission and presentation request; neither proves SurfaceFlinger scanout or all high-resolution region tiles.")
             put("sourceDimensionMeaning", "AI input bytes after any reader transformation; original source dimensions remain in reader metadata.")
             put("deltaNs", TIMELY_NS)
             put("minimumDwellNs", MIN_DWELL_NS)

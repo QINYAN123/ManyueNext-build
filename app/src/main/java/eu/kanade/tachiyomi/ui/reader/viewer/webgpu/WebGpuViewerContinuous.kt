@@ -94,8 +94,12 @@ class WebGpuViewerContinuous(activity: ReaderActivity, val useGap: Boolean = fal
                 submitted.forEach { image ->
                     val owner = viewerPageFor(image.page) as? ViewerReaderPage ?: return@forEach
                     if (owner !in visibleManyueOwners) return@forEach
+                    ManyueReadingCoverage.frameSubmitted(owner, ManyueReadingCoverage.DrawBackend.WEBGPU_SUBMISSION)
+                    if (!image.contentSubmitted) return@forEach
                     val result = owner.aiResult?.takeIf { owner.aiBridge.current(it) }
-                    ManyueReadingCoverage.drawn(owner, owner.aiBridge.source, result)
+                    ManyueReadingCoverage.drawn(
+                        owner, owner.aiBridge.source, result, ManyueReadingCoverage.DrawBackend.WEBGPU_SUBMISSION,
+                    )
                     if (result != null && owner.submittedAiToken != result.token) {
                         owner.submittedAiToken = result.token
                         owner.page.updateEnhancementState(ManyueEnhancementState.AI_READY)
