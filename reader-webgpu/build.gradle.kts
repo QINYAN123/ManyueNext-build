@@ -21,7 +21,8 @@ plugins {
 }
 
 android {
-    namespace = "ca.mpreg.webgpuviewer"
+    // JNI Kotlin packages stay upstream-compatible; Android manifest namespaces must be unique.
+    namespace = "app.mihon.reader.webgpu"
     defaultConfig { consumerProguardFiles("proguard-rules.txt") }
 }
 
