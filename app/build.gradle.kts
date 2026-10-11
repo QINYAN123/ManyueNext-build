@@ -228,6 +228,12 @@ baselineProfile {
     mergeIntoMain = true
 }
 
+// Resolve the producer while configuring the graph; a late cross-project task path can
+// deadlock configuration-on-demand when AGP visits file dependencies during shrinking.
+evaluationDependsOn(":reader-webgpu")
+val verifiedWebGpuRuntime = rootProject.project(":reader-webgpu")
+val prepareWebGpuRuntime = verifiedWebGpuRuntime.tasks.named("prepareVerifiedRuntime")
+
 dependencies {
     baselineProfile(projects.baselineProfile)
 
@@ -322,8 +328,8 @@ dependencies {
 
     implementation(projects.readerWebgpu)
     implementation(
-        files(rootProject.project(":reader-webgpu").layout.buildDirectory.file("verified-runtime/webgpuviewer-47-runtime.aar"))
-            .builtBy(":reader-webgpu:prepareVerifiedRuntime"),
+        files(verifiedWebGpuRuntime.layout.buildDirectory.file("verified-runtime/webgpuviewer-47-runtime.aar"))
+            .builtBy(prepareWebGpuRuntime),
     )
 
     // UI libraries
