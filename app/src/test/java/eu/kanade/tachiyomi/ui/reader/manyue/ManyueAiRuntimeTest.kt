@@ -46,6 +46,32 @@ class ManyueAiRuntimeTest {
         assertFalse(pacer.isBlocked())
     }
 
+    @Test fun `pressure pacing polls stop at deadline without an extra eighty milliseconds`() {
+        var now = -1_000_000_000L
+        val pacer = ManyueWorkPacer { now }
+        pacer.afterWork(now - 1_000_000_000L, pressureActive = true)
+        var waitedMillis = 0L
+        while (pacer.isBlocked()) {
+            val delayMillis = pacer.pollDelayMillis(readerGateBlocked = false)
+            waitedMillis += delayMillis
+            now += TimeUnit.MILLISECONDS.toNanos(delayMillis)
+        }
+        assertEquals(100L, waitedMillis, "the configured100ms deadline must not turn into160ms")
+    }
+
+    @Test fun `pressure deadline rounds up tiny remainder and preserves independent reader gate`() {
+        var now = 0L
+        val pacer = ManyueWorkPacer { now }
+        pacer.afterWork(now - 4_000_000L, pressureActive = true)
+        now += 7_999_999L
+        assertTrue(pacer.isBlocked())
+        assertEquals(1L, pacer.pollDelayMillis(readerGateBlocked = false))
+        assertEquals(80L, pacer.pollDelayMillis(readerGateBlocked = true))
+        now += 1L
+        assertFalse(pacer.isBlocked())
+        assertEquals(80L, pacer.pollDelayMillis(readerGateBlocked = true))
+    }
+
     // isSupported() depends on Build.SUPPORTED_64_BIT_ABIS; on a JVM unit test it returns false.
     // The class loads and constants are reachable.
     @Test fun `runtime constants exposed`() {

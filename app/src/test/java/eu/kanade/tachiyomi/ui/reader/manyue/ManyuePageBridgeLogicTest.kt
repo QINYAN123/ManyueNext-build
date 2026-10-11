@@ -192,6 +192,62 @@ class ManyuePageBridgeLogicTest {
         }
     }
 
+    @Test fun `chapter handoff waits before creating requests then admits an unselected visible neighbor`() = runBlocking {
+        val oldChapter = 9_108L
+        val newChapter = oldChapter + 1
+        ManyuePrefetchManager.reset()
+        ManyuePrefetchManager.onPageChanged(oldChapter, 21)
+        var created = 0
+        val waiter = async(start = CoroutineStart.UNDISPATCHED) {
+            awaitVisiblePageAction(
+                isCurrent = { true },
+                isVisible = { true },
+                isAdmitted = { ManyuePrefetchManager.isVisiblePage(newChapter, 1) },
+            ) {
+                created++
+                "visible-neighbor"
+            }
+        }
+        try {
+            assertFalse(waiter.isCompleted)
+            assertEquals(0, created, "geometry alone must not enter factory/write/register during handoff")
+            ManyuePrefetchManager.onChapterChanged(newChapter, 0, setOf(newChapter to 0, newChapter to 1))
+            assertFalse(ManyuePrefetchManager.isSelectedPage(newChapter, 1))
+            assertEquals(VisibleActionResult.Completed("visible-neighbor"), withTimeout(1_000L) { waiter.await() })
+            assertEquals(1, created, "a real visible neighbor must work without becoming selected")
+        } finally {
+            waiter.cancelAndJoin()
+            ManyuePrefetchManager.reset()
+        }
+    }
+
+    @Test fun `manager admission cannot submit hidden or rebound holders`() = runBlocking {
+        val chapter = 9_110L
+        ManyuePrefetchManager.reset()
+        ManyuePrefetchManager.onPageChanged(chapter, 2)
+        var current = true
+        var visible = false
+        var created = 0
+        val waiter = async(start = CoroutineStart.UNDISPATCHED) {
+            awaitVisiblePageAction(
+                isCurrent = { current },
+                isVisible = { visible },
+                isAdmitted = { ManyuePrefetchManager.isVisiblePage(chapter, 2) },
+            ) { created++; "wrong-holder" }
+        }
+        try {
+            assertFalse(waiter.isCompleted)
+            assertEquals(0, created)
+            current = false
+            visible = true
+            assertEquals(VisibleActionResult.Stale, withTimeout(1_000L) { waiter.await() })
+            assertEquals(0, created, "rebind while waiting must abandon submission")
+        } finally {
+            waiter.cancelAndJoin()
+            ManyuePrefetchManager.reset()
+        }
+    }
+
     @Test fun `visible action reports one wait outcome for visible stale and cancelled paths`() = runBlocking {
         val outcomes = mutableListOf<VisibleActionWaitOutcome>()
         var current = true

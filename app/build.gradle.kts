@@ -46,7 +46,7 @@ android {
     defaultConfig {
         applicationId = "app.mihon"
 
-        versionCode = 53
+        versionCode = 54
         versionName = "0.20.12"
 
         buildConfigField("String", "COMMIT_COUNT", "\"${getLatestCommitCount()}\"")
@@ -127,7 +127,7 @@ android {
         create("benchmark") {
             initWith(release)
 
-            versionNameSuffix = "-quality2-bw-layer-benchmark"
+            versionNameSuffix = "-quality2-reading1-benchmark"
             applicationIdSuffix = ".benchmark"
 
             matchingFallbacks.addAll(commonMatchingFallbacks)

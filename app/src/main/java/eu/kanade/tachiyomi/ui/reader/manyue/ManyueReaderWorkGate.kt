@@ -72,6 +72,14 @@ internal class ManyueWorkPacer(private val nanoTime: () -> Long = System::nanoTi
 
     fun isBlocked(): Boolean = readyAtNanos?.let { nanoTime() - it < 0L } ?: false
 
+    /** Poll the independent reader gate normally; otherwise stop at the actual pacing deadline. */
+    fun pollDelayMillis(readerGateBlocked: Boolean): Long {
+        if (readerGateBlocked) return 80L
+        val remaining = readyAtNanos?.let { (it - nanoTime()).coerceAtLeast(0L) } ?: 0L
+        // Round up so the configured pressure gap is never shortened, including <1ms tails.
+        return ((remaining + 999_999L) / 1_000_000L).coerceIn(1L, 80L)
+    }
+
     /** Normal reading continues immediately; pressure adds only a short, bounded gap. */
     fun afterWork(startedAtNanos: Long, pressureActive: Boolean = false) {
         val now = nanoTime()

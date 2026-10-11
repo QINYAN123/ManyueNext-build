@@ -171,7 +171,7 @@ object ManyueAiUpscaler {
                         synchronized(this@ManyueAiUpscaler) {
                             if (!req.cancelled && !req.completed) queue.offer(req)
                         }
-                        Thread.sleep(80L)
+                        Thread.sleep(workPacer.pollDelayMillis(readerGateBlocked))
                         continue
                     }
                     finishBlockedWork(req, cancelled = false)

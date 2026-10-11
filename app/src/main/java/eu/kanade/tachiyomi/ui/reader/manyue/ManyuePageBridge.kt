@@ -173,6 +173,12 @@ class ManyuePageBridge(
                 val requestResult = awaitVisiblePageAction(
                     isCurrent = { isCurrentBeforeToken(identity, mode, expectedGeneration) },
                     isVisible = ::isPageVisible,
+                    // During chapter/layout handoff geometry can precede the viewer's page
+                    // window. register() would cancel such a token before queue(), and the
+                    // retained holder would immediately recreate it. Wait before any IO.
+                    isAdmitted = {
+                        ManyuePrefetchManager.isVisiblePage(identity.chapterId, identity.pageIndex)
+                    },
                     onWaitFinished = { outcome ->
                         visibilityDiagnosticStartedAt?.let { startedAt ->
                             recordVisibilityWait(
@@ -859,12 +865,13 @@ internal enum class VisibleActionWaitOutcome(val metricValue: Long) {
 internal suspend fun <T> awaitVisiblePageAction(
     isCurrent: () -> Boolean,
     isVisible: () -> Boolean,
+    isAdmitted: () -> Boolean = { true },
     onWaitFinished: (VisibleActionWaitOutcome) -> Unit = {},
     action: suspend () -> T,
 ): VisibleActionResult<T> {
     var outcomeReported = false
     try {
-        if (!awaitPageVisibility(isCurrent, isVisible)) {
+        if (!awaitPageVisibility(isCurrent) { isVisible() && isAdmitted() }) {
             outcomeReported = true
             onWaitFinished(VisibleActionWaitOutcome.STALE)
             return VisibleActionResult.Stale
