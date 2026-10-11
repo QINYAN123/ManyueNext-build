@@ -145,6 +145,10 @@ object ManyuePrefetchManager {
             currentChapterId = chapterId
             currentPage = current
             ManyueReadAheadScheduler.policy.selected(chapterId, current, nextDirectionKey.generation)
+            ManyueReadAheadScheduler.policy.visible(
+                chapterId, visiblePages.filter { it.chapterId == chapterId }.mapTo(linkedSetOf()) { it.pageIndex },
+                nextDirectionKey.generation,
+            )
             val selectedKey = DecisionKey(chapterId, current, nextDirectionKey.generation)
             currentDecisions.keys.filter { it != selectedKey }
                 .forEach { key -> currentDecisions.remove(key)?.complete(Unit) }
@@ -191,6 +195,10 @@ object ManyuePrefetchManager {
             val next = visible.map { PageKey(it.first, it.second) }.toSet()
             if (next == visiblePages) return
             visiblePages = next
+            ManyueReadAheadScheduler.policy.visible(
+                currentChapterId, next.filter { it.chapterId == currentChapterId }.mapTo(linkedSetOf()) { it.pageIndex },
+                ManyueRuntimeState.generation,
+            )
             applyPriorities()
             updateCacheProtection()
         }

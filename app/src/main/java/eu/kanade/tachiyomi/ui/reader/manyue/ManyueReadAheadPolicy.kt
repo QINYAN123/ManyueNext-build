@@ -14,6 +14,7 @@ internal class ManyueReadAheadPolicy(private val nanoTime: () -> Long = System::
     private var selectedAt = 0L
     private var intervalMs = 0.0
     private var samples = 0
+    private var visibleFrontier = 0
     private var msPerPixel = .0025
 
     @Synchronized fun reset() {
@@ -24,6 +25,7 @@ internal class ManyueReadAheadPolicy(private val nanoTime: () -> Long = System::
         selectedAt = 0L
         intervalMs = 0.0
         samples = 0
+        visibleFrontier = 0
     }
 
     @Synchronized fun selected(chapterId: Long, page: Int, requestGeneration: Long) {
@@ -52,6 +54,11 @@ internal class ManyueReadAheadPolicy(private val nanoTime: () -> Long = System::
         selectedAt = now
     }
 
+    @Synchronized fun visible(chapterId: Long, pages: Set<Int>, requestGeneration: Long) {
+        if (chapter != chapterId || generation != requestGeneration) return
+        visibleFrontier = pages.maxOfOrNull { (it - head) * direction }?.coerceIn(0, 5) ?: 0
+    }
+
     @Synchronized fun completed(width: Int, height: Int, elapsedMs: Long) {
         val pixels = width.toLong() * height
         if (pixels <= 0 || elapsedMs !in 100L..30_000L) return
@@ -68,7 +75,10 @@ internal class ManyueReadAheadPolicy(private val nanoTime: () -> Long = System::
         ) return 0
         val costMs = 100 + width.toLong().coerceAtLeast(0) * height.coerceAtLeast(0) * msPerPixel
         if (costMs <= intervalMs * 1.1) return 0
-        return (ceil(costMs / intervalMs).toInt() - 1).coerceIn(1, ManyueAiSafetyPolicy.PREFETCH_WINDOW_PAGES)
+        // Selection is not viewport entry: short N+1/N+2 strips may already be visible.
+        // Reserve measured display preparation headroom as well as Native service time.
+        return (visibleFrontier + ceil((costMs + 200) / intervalMs).toInt())
+            .coerceIn(1, ManyueAiSafetyPolicy.PREFETCH_WINDOW_PAGES)
     }
 }
 

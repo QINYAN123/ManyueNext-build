@@ -14,13 +14,23 @@ class ManyueReadAheadPolicyTest {
 
     @Test fun `fast short strips gain lead while pause returns to visible priority`() {
         select(0); select(1); select(2)
-        assertEquals(2, policy.preferredLead(10, 1, 720, 562))
+        assertEquals(3, policy.preferredLead(10, 1, 720, 562))
         assertEquals(1, policy.distance(10, 3, 1))
         policy.completed(720, 562, 800)
         policy.completed(720, 562, 800)
-        assertEquals(1, policy.preferredLead(10, 1, 720, 562))
+        assertEquals(3, policy.preferredLead(10, 1, 720, 562))
         now += 1_500_000_000
         assertEquals(0, policy.preferredLead(10, 1, 720, 562))
+    }
+
+    @Test fun `lead includes already visible strips and display preparation before first entry`() {
+        select(0); select(1); select(2)
+        policy.visible(10, setOf(1, 2, 3, 4), 1)
+        assertEquals(5, policy.preferredLead(10, 1, 720, 562))
+        policy.visible(11, setOf(99), 1)
+        assertEquals(5, policy.preferredLead(10, 1, 720, 562))
+        policy.visible(10, setOf(1, 2), 1)
+        assertEquals(3, policy.preferredLead(10, 1, 720, 562))
     }
 
     @Test fun `reversal jump chapter and generation discard old speed`() {
