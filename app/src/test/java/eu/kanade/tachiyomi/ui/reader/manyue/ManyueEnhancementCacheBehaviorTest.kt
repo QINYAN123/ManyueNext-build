@@ -176,6 +176,34 @@ class ManyueEnhancementCacheBehaviorTest {
         }
     }
 
+    @Test fun `new request generation resets cache direction with the chapter cursor`() = runBlocking {
+        val root = Files.createTempDirectory("manyue-cache-generation-direction-test").toFile()
+        val context = IsolatedCacheContext(RuntimeEnvironment.getApplication(), root)
+        val identity = ManyueEnhancementCache.ReadingIdentity(711L, 811L, 10)
+        ManyueEnhancementCache.updateReadingPosition(identity.mangaId, identity.chapterId, 20)
+        ManyueEnhancementCache.updateReadingPosition(identity.mangaId, identity.chapterId, 19)
+        try {
+            val key = putImage(context, identity, "old-backward-generation")
+            val padding = File(ManyueEnhancementCache.cacheDir(context).resolve(key), "budget-padding.bin")
+            RandomAccessFile(padding, "rw").use { it.setLength(MAX_CACHE_BYTES - ManyueEnhancementCache.cacheSizeBytes(context)) }
+            val waiter = async(start = CoroutineStart.UNDISPATCHED) {
+                ManyueEnhancementCache.awaitPrefetchBudget(context, identity.mangaId, identity.chapterId, 18, 1L)
+            }
+            awaitCondition { ManyueEnhancementCache.pendingBudgetWaiterCountForTest() == 1 }
+            assertFalse(waiter.isCompleted)
+
+            ManyueRuntimeState.invalidateSession()
+            // Selection has not moved, but the new cursor defaults forward. Cache protection
+            // must not retain the previous generation's reverse-direction bank indefinitely.
+            ManyueEnhancementCache.updateReadingPosition(identity.mangaId, identity.chapterId, 19)
+            withTimeout(5_000L) { waiter.await() }.close()
+            assertNull(ManyueEnhancementCache.getImage(context, key))
+        } finally {
+            ManyueEnhancementCache.clearReadingPosition(identity.mangaId, identity.chapterId)
+            root.deleteRecursively()
+        }
+    }
+
     @Test fun `visible page write can evict unread far future cache under pressure`() {
         val root = Files.createTempDirectory("manyue-cache-visible-write-eviction-test").toFile()
         val context = IsolatedCacheContext(RuntimeEnvironment.getApplication(), root)

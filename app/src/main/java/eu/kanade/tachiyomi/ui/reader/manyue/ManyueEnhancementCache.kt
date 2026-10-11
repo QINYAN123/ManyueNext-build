@@ -55,7 +55,7 @@ object ManyueEnhancementCache {
 
     data class ReadingIdentity(val mangaId: Long, val chapterId: Long, val pageIndex: Int)
 
-    private data class ReadingPosition(val mangaId: Long, val chapterId: Long, val pageIndex: Int)
+    private data class ReadingPosition(val mangaId: Long, val chapterId: Long, val pageIndex: Int, val generation: Long)
 
     private enum class ReadingDirection { FORWARD, BACKWARD }
 
@@ -108,10 +108,11 @@ object ManyueEnhancementCache {
     /** Small in-memory reader snapshot; safe to call from the reader thread. */
     fun updateReadingPosition(mangaId: Long, chapterId: Long, pageIndex: Int) {
         synchronized(cacheLock) {
-            val next = ReadingPosition(mangaId, chapterId, pageIndex.coerceAtLeast(0))
+            val next = ReadingPosition(mangaId, chapterId, pageIndex.coerceAtLeast(0), ManyueRuntimeState.generation)
             val previous = readingPosition
             readingDirection = when {
-                previous == null || previous.mangaId != mangaId || previous.chapterId != chapterId ->
+                previous == null || previous.mangaId != mangaId || previous.chapterId != chapterId ||
+                    previous.generation != next.generation ->
                     ReadingDirection.FORWARD
                 next.pageIndex > previous.pageIndex -> ReadingDirection.FORWARD
                 next.pageIndex < previous.pageIndex -> ReadingDirection.BACKWARD

@@ -63,7 +63,12 @@ class ManyueReaderPrefetcher(context: Context) {
             return
         }
 
-        val pages = current.chapter.pages ?: return
+        val pages = current.chapter.pages ?: run {
+            // A newly selected chapter may not have its page table yet. The old cursor must
+            // stop even when mode/generation did not change, rather than feeding stale inputs.
+            coordinator.cancelAll()
+            return
+        }
         val generation = ManyueRuntimeState.generation
         coordinator.reconcile(chapterId, current.index, generation, pages.size) { pageIndex, taskGeneration ->
             val page = pages.getOrNull(pageIndex)
