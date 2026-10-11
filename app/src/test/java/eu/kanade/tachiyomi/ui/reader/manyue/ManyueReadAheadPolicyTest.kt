@@ -5,6 +5,12 @@ import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Test
 
 class ManyueReadAheadPolicyTest {
+    @Test fun `input shortage chooses furthest prepared future page without escaping window`() {
+        assertEquals(3, ManyueReadAheadPolicy.choosePreparedAhead(listOf(0 to 4, 2 to 4, 3 to 4)))
+        assertEquals(4, ManyueReadAheadPolicy.choosePreparedAhead(listOf(2 to 4, 4 to 4, 5 to 4)))
+        assertNull(ManyueReadAheadPolicy.choosePreparedAhead(listOf(0 to 4, 6 to 4, 2 to 0)))
+    }
+
     private var now = 0L
     private val policy = ManyueReadAheadPolicy { now }
     private fun select(page: Int, elapsedMs: Long = 500, chapter: Long = 10, generation: Long = 1) {

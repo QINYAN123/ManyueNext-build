@@ -23,6 +23,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import okio.Buffer
 import okio.buffer
 import okio.source
@@ -417,7 +418,7 @@ internal class ManyuePrefetchJobCoordinator(private val scope: CoroutineScope) {
         }
         while (!waiter.isCompleted) {
             ensureCurrent(key.chapterId, key.generation, key.mode)
-            delay(STATE_POLL_MS)
+            withTimeoutOrNull(STATE_POLL_MS) { waiter.join() }
         }
         waiter.await()
     }
@@ -656,7 +657,9 @@ internal class ManyuePrefetchJobCoordinator(private val scope: CoroutineScope) {
                 waiter.join()
                 throw moved
             }
-            delay(STATE_POLL_MS)
+            // Wake as soon as source/IO work completes; polling is only the cancellation
+            // deadline. Nested unconditional sleeps had added hundreds of ms per input.
+            withTimeoutOrNull(STATE_POLL_MS) { waiter.join() }
         }
         waiter.await()
     }

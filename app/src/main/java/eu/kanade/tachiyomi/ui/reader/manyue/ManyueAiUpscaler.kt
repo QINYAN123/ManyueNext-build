@@ -232,14 +232,16 @@ object ManyueAiUpscaler {
      */
     private fun predictiveCandidate(first: Request): Request? {
         val policy = ManyueReadAheadScheduler.policy
-        return (queue.toList() + first).asSequence()
+        val candidates = (queue.toList() + first).asSequence()
             .filter { !it.cancelled && !it.completed && requestIsCurrent(it) && it.model == ManyueAiModel.QUALITY_REAL_ESRGAN }
             .mapNotNull { req ->
                 val distance = policy.distance(req.chapterId, req.pageIndex, req.generation) ?: return@mapNotNull null
                 val lead = policy.preferredLead(req.chapterId, req.generation, req.sourceWidth, req.sourceHeight)
-                if (lead > 0 && distance in lead..ManyueAiSafetyPolicy.PREFETCH_WINDOW_PAGES) req to distance else null
+                if (lead > 0 && distance in 1..ManyueAiSafetyPolicy.PREFETCH_WINDOW_PAGES) Triple(req, distance, lead) else null
             }
-            .minByOrNull { it.second }?.first
+            .toList()
+        val selectedDistance = ManyueReadAheadPolicy.choosePreparedAhead(candidates.map { it.second to it.third })
+        return candidates.firstOrNull { it.second == selectedDistance }?.first
     }
 
     private fun effectiveWorkPriority(req: Request): Int =

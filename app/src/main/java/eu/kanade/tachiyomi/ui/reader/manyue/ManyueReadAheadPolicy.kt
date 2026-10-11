@@ -80,6 +80,15 @@ internal class ManyueReadAheadPolicy(private val nanoTime: () -> Long = System::
         return (visibleFrontier + ceil((costMs + 200) / intervalMs).toInt())
             .coerceIn(1, ManyueAiSafetyPolicy.PREFETCH_WINDOW_PAGES)
     }
+
+    companion object {
+        /** (available distance, desired lead); do not fall back to an old visible tail. */
+        fun choosePreparedAhead(candidates: List<Pair<Int, Int>>): Int? {
+            val valid = candidates.filter { it.first in 1..ManyueAiSafetyPolicy.PREFETCH_WINDOW_PAGES && it.second > 0 }
+            return valid.filter { it.first >= it.second }.minOfOrNull { it.first }
+                ?: valid.maxOfOrNull { it.first }
+        }
+    }
 }
 
 internal object ManyueReadAheadScheduler {
