@@ -1,13 +1,3 @@
-import org.gradle.api.artifacts.transform.TransformAction
-import org.gradle.api.artifacts.transform.TransformOutputs
-import org.gradle.api.artifacts.transform.TransformParameters
-import org.gradle.api.artifacts.transform.InputArtifact
-import org.gradle.api.attributes.Attribute
-import org.gradle.api.artifacts.type.ArtifactTypeDefinition
-import org.gradle.api.file.FileSystemLocation
-import org.gradle.api.provider.Provider
-import org.gradle.api.tasks.PathSensitive
-import org.gradle.api.tasks.PathSensitivity
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.security.MessageDigest
@@ -28,21 +18,25 @@ android {
 
 // Compile the pinned, reviewable Kotlin fork while retaining byte-identical upstream JNI and
 // embedded AndroidX WebGPU runtime. Never package two copies of ca.mpreg.webgpuviewer classes.
-val runtimeOnlyViewer = Attribute.of("manyue.webgpu.runtimeOnly", Boolean::class.javaObjectType)
-
-abstract class ViewerRuntimeTransform : TransformAction<TransformParameters.None> {
-    @get:InputArtifact
-    @get:PathSensitive(PathSensitivity.NAME_ONLY)
-    abstract val inputArtifact: Provider<FileSystemLocation>
-
-    override fun transform(outputs: TransformOutputs) {
-        val source = inputArtifact.get().asFile
+val pinnedUpstream by configurations.creating {
+    isCanBeConsumed = false
+    isCanBeResolved = true
+    isTransitive = false
+}
+val runtimeAar = layout.buildDirectory.file("verified-runtime/webgpuviewer-47-runtime.aar")
+val runtimeJar = layout.buildDirectory.file("verified-runtime/webgpuviewer-47-runtime.jar")
+val prepareVerifiedRuntime by tasks.registering {
+    inputs.files(pinnedUpstream)
+    outputs.files(runtimeAar, runtimeJar)
+    doLast {
+        val source = pinnedUpstream.singleFile
         val bytes = source.readBytes()
         val hash = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
         check(hash == "ed4c38d88c7251ff5440182c5aeff979c7785c5fc66ca41f8bfd95b6cd22d910") {
             "WebGPU 47 runtime does not match the verified upstream AAR"
         }
-        ZipOutputStream(outputs.file("webgpuviewer-47-runtime.aar").outputStream()).use { out ->
+        runtimeAar.get().asFile.parentFile.mkdirs()
+        ZipOutputStream(runtimeAar.get().asFile.outputStream()).use { out ->
             ZipInputStream(ByteArrayInputStream(bytes)).use { input ->
                 var entry = input.nextEntry
                 while (entry != null) {
@@ -66,7 +60,7 @@ abstract class ViewerRuntimeTransform : TransformAction<TransformParameters.None
                                 }
                             }
                         }
-                        jarBytes.toByteArray()
+                        jarBytes.toByteArray().also { runtimeJar.get().asFile.writeBytes(it) }
                     } else original
                     out.putNextEntry(ZipEntry(name).apply { time = 0 })
                     out.write(data)
@@ -80,12 +74,9 @@ abstract class ViewerRuntimeTransform : TransformAction<TransformParameters.None
 }
 
 dependencies {
-    artifactTypes.maybeCreate("aar").attributes.attribute(runtimeOnlyViewer, false)
-    registerTransform(ViewerRuntimeTransform::class) {
-        from.attribute(ArtifactTypeDefinition.ARTIFACT_TYPE_ATTRIBUTE, "aar").attribute(runtimeOnlyViewer, false)
-        to.attribute(ArtifactTypeDefinition.ARTIFACT_TYPE_ATTRIBUTE, "aar").attribute(runtimeOnlyViewer, true)
-    }
-    api(libs.webgpuviewer) { attributes { attribute(runtimeOnlyViewer, true) } }
+    pinnedUpstream("${libs.webgpuviewer.get().module}:47@aar")
+    // The app packages the verified AAR once. This module needs only its stripped classpath.
+    compileOnly(files(runtimeJar).builtBy(prepareVerifiedRuntime))
     implementation(libs.androidx.annotation)
     implementation(libs.androidx.core)
     implementation(libs.androidx.compose.foundation)

@@ -321,6 +321,10 @@ dependencies {
     implementation(libs.image.decoder)
 
     implementation(projects.readerWebgpu)
+    implementation(
+        files(project(":reader-webgpu").layout.buildDirectory.file("verified-runtime/webgpuviewer-47-runtime.aar"))
+            .builtBy(":reader-webgpu:prepareVerifiedRuntime"),
+    )
 
     // UI libraries
     implementation(libs.material)
