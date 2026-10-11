@@ -382,7 +382,10 @@ class ManyueEnhancementCacheBehaviorTest {
 
             ManyueAiUpscaler.invalidateClassicImageForKey(context, capturedKey, 25)
             awaitCondition { !variant.exists() }
-            assertNull(ManyueAiUpscaler.pinnedCachedImageForKey(context, capturedKey, 25))
+            val legacyStrengthPin = ManyueAiUpscaler.pinnedCachedImageForKey(context, capturedKey, 25)
+            assertNotNull("retired strength arguments must still select the base AI image", legacyStrengthPin)
+            assertEquals("image.webp", legacyStrengthPin?.image?.file?.name)
+            legacyStrengthPin?.lease?.close()
             val baseStillAvailable = ManyueAiUpscaler.pinnedCachedImageForKey(context, capturedKey)
             assertNotNull("invalidating a variant leaves the base cache entry usable", baseStillAvailable)
             baseStillAvailable?.lease?.close()

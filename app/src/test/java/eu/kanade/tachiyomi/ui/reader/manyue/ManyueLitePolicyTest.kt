@@ -23,7 +23,8 @@ class ManyueLitePolicyTest {
             continuousScale = ManyueAiModel.FAST_REAL_CUGAN.continuousScale,
         )
 
-        assertEquals(ManyueAiModel.MOBILE_LITE, ManyueAiModel.DEFAULT)
+        assertEquals(ManyueAiModel.QUALITY_REAL_ESRGAN, ManyueAiModel.DEFAULT)
+        assertEquals(ManyueAiModel.MOBILE_LITE, ManyueAiModel.fromId(ManyueAiModel.MOBILE_LITE.id))
         assertEquals(ManyueAutoEnhancementPolicy.Decision(ManyueAutoEnhancementPolicy.Path.AI, 1000), lite)
         assertEquals(ManyueAutoEnhancementPolicy.Decision(ManyueAutoEnhancementPolicy.Path.ORIGINAL_SIZE, 1000), legacy)
     }
