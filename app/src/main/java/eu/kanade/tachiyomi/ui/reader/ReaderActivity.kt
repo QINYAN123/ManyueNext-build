@@ -438,7 +438,14 @@ class ReaderActivity : BaseActivity() {
         readerPreferences.manyueEnhancementMode.set(canonicalMode)
         eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.updateMode(canonicalMode)
         recordManyueConfiguration()
-        if (preferences.highQualityRenderer.get()) {
+        if (preferences.highQualityRenderer.get() &&
+            (viewModel.state.value.viewer is WebGpuViewer) != !needsManyueCanvasViewer()
+        ) {
+            val state = viewModel.state.value
+            state.viewerChapters?.currChapter?.let { chapter ->
+                val index = state.currentPage - 1
+                if (index >= 0 && state.selectedPageKey == "${chapter.chapter.id}:$index") chapter.requestedPage = index
+            }
             updateViewer()
             binding.root.post { viewModel.state.value.viewerChapters?.let(::setChapters) }
         } else {
@@ -488,6 +495,7 @@ class ReaderActivity : BaseActivity() {
                 !viewer.config.dualPageSplit && !viewer.config.dualPageRotateToFit
             is PagerViewer -> !viewer.config.imageCropBorders &&
                 !viewer.config.dualPageSplit && !viewer.config.dualPageRotateToFit
+            is eu.kanade.tachiyomi.ui.reader.viewer.webgpu.WebGpuViewerContinuous -> !viewer.config.imageCropBorders
             else -> false
         }
         if (!transformsAreOff) return null
@@ -497,6 +505,9 @@ class ReaderActivity : BaseActivity() {
         val expected = ManyueReadingCoverage.Source(mangaId, chapterId, page.index)
         val matching = mutableListOf<ManyueReadingCoverage.Result>()
         collectVisibleBenchmarkResults(binding.viewerContainer, expected, matching)
+        (viewer as? eu.kanade.tachiyomi.ui.reader.viewer.webgpu.WebGpuViewerContinuous)
+            ?.benchmarkSubmittedResult(pageIndex)?.takeIf { it.source.chapterId == chapterId && it.source.mangaId == mangaId }
+            ?.let(matching::add)
         val result = matching.singleOrNull() ?: return null
         if (result.generation != runtime.generation || result.model != runtime.aiModel.ordinal ||
             result.mode != runtime.modeInt || result.scalePercent != runtime.aiScalePercent ||
@@ -639,10 +650,14 @@ class ReaderActivity : BaseActivity() {
                 if (intent.getBooleanExtra("reset", false)) resetManyuePerformanceDiagnostics()
             }
             "comfort" -> {
-                val webtoon = viewModel.state.value.viewer as? WebtoonViewer ?: return false
                 val permille = intent.getIntExtra("permille", 1000)
                 if (permille != 1000 && permille !in 500..999) return false
-                if (permille == 1000) webtoon.resetComfortScale() else webtoon.restoreComfortScale(permille / 1000f)
+                when (val viewer = viewModel.state.value.viewer) {
+                    is WebtoonViewer -> if (permille == 1000) viewer.resetComfortScale() else viewer.restoreComfortScale(permille / 1000f)
+                    is eu.kanade.tachiyomi.ui.reader.viewer.webgpu.WebGpuViewerContinuous ->
+                        if (permille == 1000) viewer.resetComfortScale() else viewer.restoreComfortScale(permille / 1000f)
+                    else -> return false
+                }
                 saveComfortScale()
             }
             "end" -> {
@@ -658,9 +673,10 @@ class ReaderActivity : BaseActivity() {
     fun manyueBenchmarkReaderSnapshot(): String {
         check(eu.kanade.tachiyomi.BuildConfig.BUILD_TYPE == "benchmark")
         val webtoon = viewModel.state.value.viewer as? WebtoonViewer
+        val webgpu = viewModel.state.value.viewer as? eu.kanade.tachiyomi.ui.reader.viewer.webgpu.WebGpuViewerContinuous
         return org.json.JSONObject().apply {
-            put("viewer", if (webtoon != null) "webtoon" else "other")
-            put("comfortScale", webtoon?.comfortScaleForPersistence() ?: 1f)
+            put("viewer", if (webtoon != null) "webtoon" else if (webgpu != null) "webgpu_continuous" else "other")
+            put("comfortScale", webtoon?.comfortScaleForPersistence() ?: webgpu?.comfortScaleForPersistence() ?: 1f)
             put("innerWindow", comfortInnerScreen)
             put("model", eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.aiModel.id)
             put("scalePercent", eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.aiScalePercent)
@@ -733,8 +749,14 @@ class ReaderActivity : BaseActivity() {
         eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.modeInt !=
             eu.kanade.tachiyomi.ui.reader.manyue.ManyueEnhancementMode.OFF.value
 
-    fun needsManyueCanvasViewer(): Boolean = isManyueEnhancementActive() ||
-        (Build.VERSION.SDK_INT >= 33 && readerPreferences.manyueGpuDisplayFilter.get())
+    fun needsManyueCanvasViewer(): Boolean {
+        val runtime = eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState
+        val continuous = ReadingMode.fromPreference(viewModel.getMangaReadingMode()).type is ReadingMode.ViewerType.Webtoon
+        val qualityContinuous = continuous && runtime.aiModel == eu.kanade.tachiyomi.ui.reader.manyue.ManyueAiModel.QUALITY_REAL_ESRGAN &&
+            runtime.modeInt == eu.kanade.tachiyomi.ui.reader.manyue.ManyueEnhancementMode.AI_2X.value
+        return (isManyueEnhancementActive() && !qualityContinuous) ||
+            (Build.VERSION.SDK_INT >= 33 && readerPreferences.manyueGpuDisplayFilter.get())
+    }
 
     fun onManyueGpuDisplayChanged(enabled: Boolean, strength: Int) {
         if (isFinishing || isDestroyed) return
@@ -797,8 +819,7 @@ class ReaderActivity : BaseActivity() {
         eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.updateAiScale(
             readerPreferences.manyueAiScalePercent.get(),
         )
-        recordManyueConfiguration()
-        viewModel.state.value.viewer?.refreshManyue()
+        onManyueModeChanged(readerPreferences.manyueEnhancementMode.get())
     }
 
     @Suppress("UNUSED_PARAMETER")
@@ -1049,15 +1070,23 @@ class ReaderActivity : BaseActivity() {
 
     private fun saveComfortScale() {
         val mangaId = comfortMangaId ?: return
-        val webtoon = viewModel.state.value.viewer as? WebtoonViewer ?: return
-        comfortScaleStore.save(mangaId, comfortInnerScreen, webtoon.comfortScaleForPersistence())
+        val scale = when (val viewer = viewModel.state.value.viewer) {
+            is WebtoonViewer -> viewer.comfortScaleForPersistence()
+            is eu.kanade.tachiyomi.ui.reader.viewer.webgpu.WebGpuViewerContinuous -> viewer.comfortScaleForPersistence()
+            else -> return
+        }
+        comfortScaleStore.save(mangaId, comfortInnerScreen, scale)
     }
 
     private fun restoreComfortScale() {
         val mangaId = comfortMangaId ?: return
-        val webtoon = viewModel.state.value.viewer as? WebtoonViewer ?: return
         val remembered = comfortScaleStore.get(mangaId, comfortInnerScreen)
-        if (remembered != null) webtoon.restoreComfortScale(remembered) else webtoon.resetComfortScale()
+        when (val viewer = viewModel.state.value.viewer) {
+            is WebtoonViewer -> if (remembered != null) viewer.restoreComfortScale(remembered) else viewer.resetComfortScale()
+            is eu.kanade.tachiyomi.ui.reader.viewer.webgpu.WebGpuViewerContinuous ->
+                if (remembered != null) viewer.restoreComfortScale(remembered) else viewer.resetComfortScale()
+            else -> Unit
+        }
     }
 
     private fun openMangaScreen() {

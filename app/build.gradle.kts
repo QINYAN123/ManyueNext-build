@@ -46,7 +46,7 @@ android {
     defaultConfig {
         applicationId = "app.mihon"
 
-        versionCode = 60
+        versionCode = 61
         versionName = "0.20.12"
 
         buildConfigField("String", "COMMIT_COUNT", "\"${getLatestCommitCount()}\"")
@@ -127,7 +127,7 @@ android {
         create("benchmark") {
             initWith(release)
 
-            versionNameSuffix = "-quality2-continuous1-benchmark"
+            versionNameSuffix = "-quality2-webgpu1-benchmark"
             applicationIdSuffix = ".benchmark"
 
             matchingFallbacks.addAll(commonMatchingFallbacks)
@@ -320,7 +320,7 @@ dependencies {
     implementation(projects.readerSsiv)
     implementation(libs.image.decoder)
 
-    implementation(libs.webgpuviewer)
+    implementation(projects.readerWebgpu)
 
     // UI libraries
     implementation(libs.material)

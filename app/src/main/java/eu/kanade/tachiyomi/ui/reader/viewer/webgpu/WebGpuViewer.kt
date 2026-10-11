@@ -38,6 +38,9 @@ import ca.mpreg.webgpuviewer.viewer.ImageViewerContinuousState
 import com.google.android.material.color.MaterialColors
 import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.ui.reader.ReaderActivity
+import eu.kanade.tachiyomi.ui.reader.manyue.ManyueWebGpuPageBridge
+import eu.kanade.tachiyomi.ui.reader.manyue.ManyueReadingCoverage
+import eu.kanade.tachiyomi.ui.reader.manyue.ManyueEnhancementCache
 import eu.kanade.tachiyomi.ui.reader.model.ReaderChapter
 import eu.kanade.tachiyomi.ui.reader.model.ReaderPage
 import eu.kanade.tachiyomi.ui.reader.metadata.SourceImageInfo
@@ -58,6 +61,8 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.takeWhile
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.NonCancellable
 import logcat.LogPriority
 import mihon.app.di.appGraph
 import tachiyomi.core.common.util.system.logcat
@@ -392,6 +397,7 @@ open class WebGpuViewer(
         pageCache.remove(pageKey(toRemove))
         decodeQueue.remove(toRemove)
         toRemove.state = PageState.IDLE
+        (toRemove as? ViewerReaderPage)?.releaseManyue()
         // Through the pin: a decode that swapped this page's image leaves its spread unguarded.
         (toRemove as? ViewerReaderPage)?.spreadPage?.let(::cleanupImage)
         cleanupImage(toRemove.imagePage)
@@ -662,6 +668,24 @@ open class WebGpuViewer(
     }
 
     inner class ViewerReaderPage(val page: ReaderPage) : ViewerPage() {
+        internal var originalImage: ImagePage.ImageSingle? = null
+        internal var aiResult: ManyueReadingCoverage.Result? = null
+        internal var submittedAiToken: String? = null
+        internal val aiBridge by lazy {
+            ManyueWebGpuPageBridge(
+                activity, page,
+                alive = { !destroyed && synchronized(lock) { pageInCache(this) } },
+                install = { image, result, valid -> installManyueImage(this, image, result, valid) },
+            )
+        }
+
+        internal fun releaseManyue() {
+            aiBridge.destroy()
+            originalImage?.takeIf { it !== imagePage }?.let(::cleanupImage)
+            originalImage = null
+            aiResult = null
+        }
+
         /** Cached spread ImagePage when this page is the anchor of a dual-page spread */
         var spreadPage: ImagePage.ImageSpread? = null
 
@@ -980,6 +1004,7 @@ open class WebGpuViewer(
             synchronized(lock) {
                 decodeQueue.clear()
                 pageCache.values.forEach {
+                    (it as? ViewerReaderPage)?.releaseManyue()
                     it.state = PageState.IDLE
                     (it as? ViewerReaderPage)?.spreadPage?.let(::cleanupImage)
                     cleanupImage(it.imagePage)
@@ -1017,6 +1042,7 @@ open class WebGpuViewer(
             // Nothing can still be animating, so the pin has nothing left to protect.
             pinnedFromPage = null
             pageCache.values.forEach {
+                (it as? ViewerReaderPage)?.releaseManyue()
                 it.state = PageState.IDLE
                 (it as? ViewerReaderPage)?.spreadPage?.cleanup()
                 it.imagePage.cleanup()
@@ -1031,6 +1057,77 @@ open class WebGpuViewer(
     }
 
     override fun getView(): View = pager
+
+    /** Same page slots and scroll state survive mode/generation changes. */
+    override fun refreshManyue() {
+        synchronized(lock) {
+            pageCache.values.filterIsInstance<ViewerReaderPage>().forEach { page ->
+                page.aiBridge.reset()
+                page.originalImage?.let { original ->
+                    val old = page.imagePage
+                    page.imagePage = original
+                    page.originalImage = null
+                    if (old !== original) cleanupImage(old)
+                }
+                page.aiResult = null
+                page.submittedAiToken = null
+            }
+        }
+        pager.state.invalidate()
+    }
+
+    private suspend fun installManyueImage(
+        page: ViewerReaderPage,
+        image: ManyueEnhancementCache.CachedImage,
+        result: ManyueReadingCoverage.Result,
+        valid: () -> Boolean,
+    ): Boolean {
+        if (!valid() || !page.isDecoded) return false
+        if (synchronized(lock) { page.aiResult?.token == result.token }) return true
+        var prepared: ImagePage.ImageSingle? = null
+        var installed = false
+        try {
+            withContext(ManyueWebGpuPageBridge.preparationDispatcher) {
+                image.file.inputStream().use { stream ->
+                    ImageDecoder.new(stream).use { decoder ->
+                        check(decoder.pages == 1) { "AI cache is not a still image" }
+                        val frame = decoder.decodeNext()
+                        check(frame.width == result.outputWidth && frame.height == result.outputHeight &&
+                            frame.width == image.width && frame.height == image.height) { "AI output dimension mismatch" }
+                        check(frame.width.toLong() == result.source.sourceWidth.toLong() * 2 &&
+                            frame.height.toLong() == result.source.sourceHeight.toLong() * 2) { "Quality output is not native 2x" }
+                        if (!valid()) return@withContext
+                        // Establish ownership inside the non-cancellable upload: cancellation
+                        // during dispatcher handoff must not lose a newly allocated GPU image.
+                        withContext(NonCancellable) {
+                            prepared = ImagePage.ImageSingle(Image(
+                                frame.image, frame.width, frame.height, createMipMaps = true,
+                                backgroundColor = readerBackgroundColor(),
+                            ))
+                        }
+                    }
+                }
+            }
+            val replacement = prepared ?: return false
+            withContext(Dispatchers.Main.immediate) {
+                synchronized(lock) {
+                    if (!valid() || !pageInCache(page) || !page.isDecoded) return@synchronized
+                    val old = page.imagePage
+                    if (page.originalImage == null) page.originalImage = old as? ImagePage.ImageSingle
+                    page.imagePage = replacement
+                    page.aiResult = result
+                    page.submittedAiToken = null
+                    if (old !== page.originalImage) cleanupImage(old)
+                    installed = true
+                    // No placeholder fade, viewer rebuild or read-head movement for an AI swap.
+                    pager.state.invalidate()
+                }
+            }
+        } finally {
+            if (!installed) prepared?.cleanup()
+        }
+        return installed
+    }
 
     /** Downloads [page] if needed, then re-queues it for decode once ready. */
     private fun startPageLoad(page: ViewerReaderPage) {

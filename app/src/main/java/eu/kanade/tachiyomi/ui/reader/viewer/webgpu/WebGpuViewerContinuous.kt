@@ -3,6 +3,14 @@ package eu.kanade.tachiyomi.ui.reader.viewer.webgpu
 import ca.mpreg.webgpuviewer.ImageViewContinuous
 import ca.mpreg.webgpuviewer.viewer.ImagePage
 import eu.kanade.tachiyomi.ui.reader.ReaderActivity
+import eu.kanade.tachiyomi.ui.reader.manyue.ManyueReaderPrefetcher
+import eu.kanade.tachiyomi.ui.reader.manyue.ManyuePrefetchManager
+import eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState
+import eu.kanade.tachiyomi.ui.reader.manyue.ManyueReadingCoverage
+import eu.kanade.tachiyomi.ui.reader.manyue.ManyuePerformanceDiagnostics
+import eu.kanade.tachiyomi.ui.reader.manyue.ManyuePerformanceRecorder
+import eu.kanade.tachiyomi.ui.reader.manyue.ManyueEnhancementState
+import androidx.lifecycle.Lifecycle
 import eu.kanade.tachiyomi.ui.reader.model.ReaderPage
 import kotlinx.coroutines.launch
 import kotlin.math.max
@@ -20,9 +28,83 @@ class WebGpuViewerContinuous(activity: ReaderActivity, val useGap: Boolean = fal
     override val cacheSize get() = 2 + 2 * max(4, state.pagesAbove + state.pagesBelow)
 
     private val state get() = (pager as ImageViewContinuous).state
+    private val manyuePrefetcher = ManyueReaderPrefetcher(activity)
+    private var manyueHead: Pair<Long, Int>? = null
+    private var manyueGeneration = -1L
+    private var visibleManyueOwners = emptySet<ViewerReaderPage>()
+
+    fun comfortScaleForPersistence(): Float? = state.scale.takeIf { it.isFinite() && it >= .5f && it < 1f }
+
+    fun restoreComfortScale(scale: Float) {
+        val safe = scale.takeIf { it.isFinite() && it >= .5f && it < 1f } ?: 1f
+        state.homeScale = safe
+        state.scale = safe
+        state.offsetX = 0f
+        state.invalidate()
+    }
+
+    fun resetComfortScale() = restoreComfortScale(1f)
+
+    internal fun benchmarkSubmittedResult(pageIndex: Int): ManyueReadingCoverage.Result? =
+        visibleManyueOwners.firstOrNull { it.page.index == pageIndex }?.let { owner ->
+            owner.aiResult?.takeIf { owner.submittedAiToken == it.token && owner.aiBridge.current(it) }
+        }
 
     init {
         state.backgroundColor = readerBackgroundColor()
+
+        state.onVisibleImages = { visible ->
+            val active = activity.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) && pager.isShown
+            val entries = if (active) visible.mapNotNull { image ->
+                (viewerPageFor(image.page) as? ViewerReaderPage)?.let { it to image }
+            } else emptyList()
+            val owners = entries.mapTo(linkedSetOf()) { it.first }
+            val pageKeys = owners.mapTo(linkedSetOf()) { (it.page.chapter.chapter.id ?: 0L) to it.page.index }
+            val head = (currentPage as? ViewerReaderPage)?.page
+            val headKey = head?.let { (it.chapter.chapter.id ?: 0L) to it.index }
+            if (head != null && (headKey != manyueHead || manyueGeneration != ManyueRuntimeState.generation)) {
+                manyueHead = headKey
+                manyueGeneration = ManyueRuntimeState.generation
+                ManyuePrefetchManager.onPageChanged(headKey!!.first, head.index, pageKeys)
+                // The AI head follows the viewport. This does not change read-through progress.
+                manyuePrefetcher.onPageSelected(head, managerAlreadyUpdated = true)
+            } else {
+                ManyuePrefetchManager.updateVisiblePages(pageKeys)
+            }
+            (visibleManyueOwners - owners).forEach {
+                it.aiBridge.updateVisibility(false)
+                ManyueReadingCoverage.hidden(it)
+            }
+            visibleManyueOwners = owners
+            entries.forEach { (owner, image) ->
+                owner.aiBridge.updateVisibility(true)
+                ManyueReadingCoverage.exposure(
+                    owner, owner.aiBridge.source,
+                    (image.viewportFraction * 1000).toInt(), (image.pageFraction * 1000).toInt(),
+                    image.page.height.toFloat() * state.width / image.page.width.coerceAtLeast(1) * state.scale <= state.height,
+                )
+            }
+        }
+
+        state.onSubmittedImages = { submitted, _ ->
+            // GPU feedback arrives after submission. Resolve the same image object on main:
+            // a newer page swap must never borrow an older frame's successful submission.
+            scope.launch {
+                if (!activity.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) || !pager.isShown) return@launch
+                submitted.forEach { image ->
+                    val owner = viewerPageFor(image.page) as? ViewerReaderPage ?: return@forEach
+                    if (owner !in visibleManyueOwners) return@forEach
+                    val result = owner.aiResult?.takeIf { owner.aiBridge.current(it) }
+                    ManyueReadingCoverage.drawn(owner, owner.aiBridge.source, result)
+                    if (result != null && owner.submittedAiToken != result.token) {
+                        owner.submittedAiToken = result.token
+                        owner.page.updateEnhancementState(ManyueEnhancementState.AI_READY)
+                        owner.page.updateEnhancedImageInfo(result.outputWidth, result.outputHeight)
+                        ManyuePerformanceDiagnostics.event(ManyuePerformanceRecorder.Stage.DISPLAYED, owner.page.index, result.token)
+                    }
+                }
+            }
+        }
 
         state.onViewport = { readThrough ->
             val pageChanged = readThrough !== lastReadThrough
@@ -74,10 +156,31 @@ class WebGpuViewerContinuous(activity: ReaderActivity, val useGap: Boolean = fal
     }
 
     override fun destroy() {
+        visibleManyueOwners.forEach { ManyueReadingCoverage.hidden(it) }
+        visibleManyueOwners = emptySet()
+        state.onVisibleImages = null
+        state.onSubmittedImages = null
+        manyuePrefetcher.destroy()
         state.onViewport = null
         lastReadThrough = null
         wasAtEdge = null
         super.destroy()
+    }
+
+    override fun refreshManyue() {
+        manyuePrefetcher.reset()
+        manyueHead = null
+        manyueGeneration = -1L
+        super.refreshManyue()
+    }
+
+    override fun refreshReadingCoverage() {
+        state.invalidate()
+    }
+
+    override fun reapplyManyueWidth() {
+        // Surface resize recalculates document-space geometry; no image cropping or reload.
+        state.invalidate()
     }
 
     private fun scrollByHalfPage(direction: Int) {
