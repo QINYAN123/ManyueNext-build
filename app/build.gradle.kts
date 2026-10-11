@@ -322,7 +322,7 @@ dependencies {
 
     implementation(projects.readerWebgpu)
     implementation(
-        files(project(":reader-webgpu").layout.buildDirectory.file("verified-runtime/webgpuviewer-47-runtime.aar"))
+        files(rootProject.project(":reader-webgpu").layout.buildDirectory.file("verified-runtime/webgpuviewer-47-runtime.aar"))
             .builtBy(":reader-webgpu:prepareVerifiedRuntime"),
     )
 
