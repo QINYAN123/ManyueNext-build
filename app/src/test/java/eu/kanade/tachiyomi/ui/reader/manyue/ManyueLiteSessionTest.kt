@@ -142,6 +142,26 @@ class ManyueLiteSessionTest {
         assertEquals(listOf("current", "first", "second"), generateSequence { queue.poll() }.map { it.token }.toList())
     }
 
+    @Test fun `predictive running quality survives binds ahead but never passed or cross chapter`() {
+        val policy = ManyueReadAheadScheduler.policy
+        policy.selected(2, 10, 1)
+        try {
+            val active = ManyueAiUpscaler.Request(
+                "future", 1, 2, 12, File("input"), 720, 562, 2, 1440,
+                priority = 40, model = ManyueAiModel.QUALITY_REAL_ESRGAN, generation = 1,
+                predictiveStart = true, processing = true,
+            )
+            val visible = active.copy(token = "visible", pageIndex = 10, priority = 120, predictiveStart = false)
+            assertFalse(ManyueAiUpscaler.shouldYieldToVisible(active, visible))
+            assertTrue(ManyueAiUpscaler.shouldYieldToVisible(active, visible.copy(chapterId = 3)))
+            assertTrue(ManyueAiUpscaler.shouldYieldToVisible(active, visible.copy(generation = 2)))
+            policy.selected(2, 13, 1)
+            assertTrue(ManyueAiUpscaler.shouldYieldToVisible(active, visible.copy(pageIndex = 13)))
+        } finally {
+            policy.reset()
+        }
+    }
+
     @Test fun `visible work preempts cooperative models and only nearby legacy CUGAN finishes`() {
         fun request(
             token: String,

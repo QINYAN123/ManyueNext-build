@@ -5,6 +5,19 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 class ManyueMovingReadPolicyTest {
+    @Test fun `short strips prepare first unseen page beyond visible frontier`() {
+        ManyuePrefetchManager.reset()
+        try {
+            ManyuePrefetchManager.onPageChanged(903L, 10, setOf(903L to 10, 903L to 11, 903L to 12))
+            assertFalse(ManyuePrefetchManager.isNextDisplayPage(903L, 11))
+            assertTrue(ManyuePrefetchManager.isNextDisplayPage(903L, 13))
+            ManyuePrefetchManager.updateVisiblePages(setOf(903L to 10, 903L to 11))
+            assertTrue(ManyuePrefetchManager.isNextDisplayPage(903L, 12))
+        } finally {
+            ManyuePrefetchManager.reset()
+        }
+    }
+
     @Test fun `one speculative owner cannot be stolen or released by another holder`() {
         val slot = ManyueDisplayPreparationSlot()
         val a = Any()

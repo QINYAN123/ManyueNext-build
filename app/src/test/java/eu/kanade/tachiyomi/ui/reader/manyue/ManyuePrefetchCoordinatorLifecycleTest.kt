@@ -27,17 +27,15 @@ class ManyuePrefetchCoordinatorLifecycleTest {
 
     @Test
     @OptIn(ExperimentalCoroutinesApi::class)
-    fun `one cursor completes more than five pages while selection moves without restarting`() = runBlocking {
+    fun `one source cursor advances after enqueue while earlier workers are still pending`() = runBlocking {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default.limitedParallelism(1))
         val coordinator = ManyuePrefetchJobCoordinator(scope)
-        val firstStarted = CompletableDeferred<Unit>()
-        val finished = CompletableDeferred<Unit>()
         val startedByPage = (1..11).associateWith { CompletableDeferred<Unit>() }
         val terminalByPage = (1..11).associateWith { CompletableDeferred<Unit>() }
-        val completedByPage = (1..11).associateWith { CompletableDeferred<Unit>() }
         val active = AtomicInteger()
         val maxActive = AtomicInteger()
-        val completed = Collections.synchronizedList(mutableListOf<Int>())
+        val enqueued = Collections.synchronizedList(mutableListOf<Int>())
+        val priorWorkerPendingAtNextEnqueue = CompletableDeferred<Unit>()
         val oldMode = ManyueRuntimeState.modeInt
         ManyueRuntimeState.updateMode(ManyueEnhancementMode.AI_2X.value)
         val generation = ManyueRuntimeState.generation
@@ -48,91 +46,96 @@ class ManyuePrefetchCoordinatorLifecycleTest {
             maxActive.updateAndGet { maxOf(it, running) }
             try {
                 startedByPage.getValue(pageIndex).complete(Unit)
-                if (pageIndex == 1) firstStarted.complete(Unit)
-                terminalByPage.getValue(pageIndex).await()
-                // Simulate continuous reading. reconcile must update only the reading head while
-                // this same cursor job continues through the rest of the chapter.
+                if (pageIndex > 1 && !terminalByPage.getValue(pageIndex - 1).isCompleted) {
+                    priorWorkerPendingAtNextEnqueue.complete(Unit)
+                }
+                // Model the reader advancing as each request enters the queue. The prior native
+                // result remains nonterminal until the next source page has started.
+                ManyuePrefetchManager.onPageChanged(91, pageIndex)
                 coordinator.reconcileAfterDecision(
                     91, pageIndex, generation, 12, ManyueEnhancementMode.AI_2X.value, work,
                 )
-                completed += pageIndex
-                completedByPage.getValue(pageIndex).complete(Unit)
-                if (pageIndex == 11) finished.complete(Unit)
-                ManyuePrefetchWorkOutcome.COMPLETED
+                enqueued += pageIndex
+                if (pageIndex > 1) terminalByPage.getValue(pageIndex - 1).complete(Unit)
+                ManyuePrefetchWorkOutcome.ENQUEUED
             } finally {
                 active.decrementAndGet()
             }
         }
 
         try {
+            ManyuePrefetchManager.reset()
             coordinator.reconcileAfterDecision(91, 0, generation, 12, ManyueEnhancementMode.AI_2X.value, work)
-            withTimeout(5_000) { firstStarted.await() }
+            withTimeout(5_000) { startedByPage.getValue(1).await() }
             assertEquals(1, coordinator.activeCursorCount)
-            coordinator.reconcileAfterDecision(91, 1, generation, 12, ManyueEnhancementMode.AI_2X.value, work)
             for (pageIndex in 1..11) {
                 withTimeout(5_000) { startedByPage.getValue(pageIndex).await() }
-                assertEquals(1, coordinator.activeCursorCount)
-                if (pageIndex < 11) {
-                    assertTrue(!startedByPage.getValue(pageIndex + 1).isCompleted,
-                        "page ${pageIndex + 1} must wait for page $pageIndex worker terminal")
-                }
-                terminalByPage.getValue(pageIndex).complete(Unit)
-                withTimeout(5_000) { completedByPage.getValue(pageIndex).await() }
-                if (pageIndex < 11) withTimeout(5_000) { startedByPage.getValue(pageIndex + 1).await() }
             }
-            withTimeout(5_000) { finished.await() }
             withTimeout(5_000) {
                 while (coordinator.activeCursorCount != 0) delay(10)
             }
 
-            assertEquals((1..11).toList(), completed.toList())
-            assertEquals(1, maxActive.get(), "only one prefetch page may be unfinished")
+            assertEquals((1..11).toList(), enqueued.toList())
+            assertTrue(priorWorkerPendingAtNextEnqueue.isCompleted,
+                "the next source page must start before the prior worker is terminal")
+            assertEquals(1, maxActive.get(), "source loading and enqueue remain serialized")
             assertEquals(0, coordinator.activeCursorCount)
         } finally {
             coordinator.cancelAll()
             scope.cancel()
+            ManyuePrefetchManager.reset()
             ManyueRuntimeState.updateMode(oldMode)
         }
     }
 
     @Test
     @OptIn(ExperimentalCoroutinesApi::class)
-    fun `fixed head stops after five candidates and repeated reconcile does not replay cache hits`() = runBlocking {
+    fun `fixed head enqueues only five candidates without waiting for worker terminals`() = runBlocking {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default.limitedParallelism(1))
         val coordinator = ManyuePrefetchJobCoordinator(scope)
         val startedByPage = (1..6).associateWith { CompletableDeferred<Unit>() }
         val terminalByPage = (1..5).associateWith { CompletableDeferred<Unit>() }
-        val completed = Collections.synchronizedList(mutableListOf<Int>())
+        val enqueued = Collections.synchronizedList(mutableListOf<Int>())
+        val sourceActive = AtomicInteger()
+        val maxSourceActive = AtomicInteger()
         val oldMode = ManyueRuntimeState.modeInt
         ManyueRuntimeState.updateMode(ManyueEnhancementMode.AI_2X.value)
         val generation = ManyueRuntimeState.generation
 
         val work: suspend (Int, Long) -> ManyuePrefetchWorkOutcome = { pageIndex, _ ->
-            startedByPage.getValue(pageIndex).complete(Unit)
-            terminalByPage.getValue(pageIndex).await()
-            completed += pageIndex
-            ManyuePrefetchWorkOutcome.COMPLETED
+            val active = sourceActive.incrementAndGet()
+            maxSourceActive.updateAndGet { maxOf(it, active) }
+            try {
+                startedByPage.getValue(pageIndex).complete(Unit)
+                enqueued += pageIndex
+                ManyuePrefetchWorkOutcome.ENQUEUED
+            } finally {
+                sourceActive.decrementAndGet()
+            }
         }
 
         try {
+            ManyuePrefetchManager.reset()
             coordinator.reconcileAfterDecision(92, 0, generation, 20, ManyueEnhancementMode.AI_2X.value, work)
             for (pageIndex in 1..5) {
                 withTimeout(5_000) { startedByPage.getValue(pageIndex).await() }
-                terminalByPage.getValue(pageIndex).complete(Unit)
-                if (pageIndex < 5) withTimeout(5_000) { startedByPage.getValue(pageIndex + 1).await() }
             }
             coordinator.awaitCursorIdle()
-            assertEquals((1..5).toList(), completed.toList())
+            assertEquals((1..5).toList(), enqueued.toList())
             assertTrue(!startedByPage.getValue(6).isCompleted, "page 6 is outside the fixed-head window")
+            assertEquals(1, maxSourceActive.get(), "five enqueues do not run five source cursors")
+            assertEquals(5, terminalByPage.count { !it.value.isCompleted },
+                "worker completion is independent from the five-page input window")
 
             // Reconcile with the same head leaves the cursor at the edge instead of replaying
-            // completed/cache-hit pages 1..5 forever.
+            // already-enqueued pages 1..5 forever.
             coordinator.reconcileAfterDecision(92, 0, generation, 20, ManyueEnhancementMode.AI_2X.value, work)
             coordinator.awaitCursorIdle()
-            assertEquals((1..5).toList(), completed.toList())
+            assertEquals((1..5).toList(), enqueued.toList())
         } finally {
             coordinator.cancelAll()
             scope.cancel()
+            ManyuePrefetchManager.reset()
             ManyueRuntimeState.updateMode(oldMode)
         }
     }
@@ -429,7 +432,7 @@ class ManyuePrefetchCoordinatorLifecycleTest {
 
     @Test
     @OptIn(ExperimentalCoroutinesApi::class)
-    fun `worker waiter survives direction movement after its token is queued`() = runBlocking {
+    fun `terminal watchers retain at most five reservations and reset releases them`() = runBlocking {
         val chapterId = 103L
         val mode = ManyueEnhancementMode.AI_2X.value
         val oldMode = ManyueRuntimeState.modeInt
@@ -440,62 +443,54 @@ class ManyuePrefetchCoordinatorLifecycleTest {
         ManyuePrefetchManager.releaseCurrent(chapterId, 0)
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default.limitedParallelism(1))
         val coordinator = ManyuePrefetchJobCoordinator(scope)
-        val tokenQueued = CompletableDeferred<Unit>()
-        val completeWorker = CompletableDeferred<Unit>()
-        val workerWaitCancelled = CompletableDeferred<Unit>()
-        val nextPageStarted = CompletableDeferred<Unit>()
-        val enqueueCount = AtomicInteger()
+        val terminalByPage = (1..6).associateWith { CompletableDeferred<Unit>() }
+        val page6Enqueued = CompletableDeferred<Unit>()
+        val reservationCloseCount = AtomicInteger()
+        val enqueued = Collections.synchronizedList(mutableListOf<Int>())
+        val work: suspend (Int, Long) -> ManyuePrefetchWorkOutcome = { pageIndex, taskGeneration ->
+            val slot = coordinator.awaitWorkerReservationSlot(chapterId, taskGeneration, mode, pageIndex)
+            val reservation = AutoCloseable { reservationCloseCount.incrementAndGet() }
+            coordinator.retainWorkerReservationUntilTerminal(
+                chapterId = chapterId,
+                generation = taskGeneration,
+                mode = mode,
+                pageIndex = pageIndex,
+                token = "prefetch-$pageIndex",
+                reservation = reservation,
+                slot = slot,
+                awaitTerminal = { token ->
+                    terminalByPage.getValue(token.substringAfter('-').toInt()).await()
+                    ManyueAiUpscaler.STATE_READY
+                },
+            )
+            enqueued += pageIndex
+            if (pageIndex == 6) page6Enqueued.complete(Unit)
+            ManyuePrefetchWorkOutcome.ENQUEUED
+        }
 
         try {
-            coordinator.reconcileAfterDecision(chapterId, 0, generation, 20, mode) { pageIndex, taskGeneration ->
-                if (pageIndex == 1) {
-                    val phaseGuard = ManyuePrefetchPreparationPhaseGuard()
-                    coordinator.awaitWhileCurrent(
-                        chapterId,
-                        taskGeneration,
-                        mode,
-                        keepStageCurrent = {
-                            phaseGuard.shouldKeepStageCurrent {
-                                coordinator.isPreparationCurrent(chapterId, taskGeneration, mode, pageIndex)
-                            }
-                        },
-                        cancelStageIfStale = {
-                            phaseGuard.cancelPreparationIfPending()
-                        },
-                    ) {
-                        assertTrue(coordinator.isPreparationCurrent(chapterId, taskGeneration, mode, pageIndex))
-                        assertTrue(phaseGuard.beginEnqueue())
-                        enqueueCount.incrementAndGet()
-                        phaseGuard.resolveEnqueue()
-                        tokenQueued.complete(Unit)
-                        try {
-                            completeWorker.await()
-                        } catch (error: CancellationException) {
-                            workerWaitCancelled.complete(Unit)
-                            throw error
-                        }
-                    }
-                } else if (pageIndex == 4) {
-                    nextPageStarted.complete(Unit)
-                }
-                ManyuePrefetchWorkOutcome.COMPLETED
-            }
-            withTimeout(5_000) { tokenQueued.await() }
-
-            ManyuePrefetchManager.onPageChanged(chapterId, 3)
-            ManyuePrefetchManager.releaseCurrent(chapterId, 3)
-            coordinator.reconcileAfterDecision(chapterId, 3, generation, 20, mode) { pageIndex, _ ->
-                if (pageIndex == 4) nextPageStarted.complete(Unit)
-                ManyuePrefetchWorkOutcome.COMPLETED
-            }
-            delay(250)
-            assertTrue(!workerWaitCancelled.isCompleted, "queued worker wait survives a window change")
-            assertTrue(!nextPageStarted.isCompleted, "a second page waits for the queued worker to finish")
-            assertEquals(1, enqueueCount.get())
-
-            completeWorker.complete(Unit)
-            withTimeout(5_000) { nextPageStarted.await() }
+            coordinator.reconcileAfterDecision(chapterId, 0, generation, 20, mode, work)
             coordinator.awaitCursorIdle()
+            assertEquals((1..5).toList(), enqueued.toList())
+            assertEquals(5, coordinator.activeWorkerReservationCount)
+            assertEquals(0, reservationCloseCount.get())
+
+            // Advancing one page opens a sixth candidate, but it cannot reserve cache budget until
+            // one of the five terminal watchers releases its lease.
+            ManyuePrefetchManager.onPageChanged(chapterId, 1)
+            coordinator.reconcileAfterDecision(chapterId, 1, generation, 20, mode, work)
+            delay(150)
+            assertTrue(!page6Enqueued.isCompleted, "the five reservation slots bound future enqueues")
+            assertEquals(5, coordinator.activeWorkerReservationCount)
+
+            terminalByPage.getValue(1).complete(Unit)
+            withTimeout(5_000) { page6Enqueued.await() }
+            assertEquals(1, reservationCloseCount.get())
+            assertEquals(5, coordinator.activeWorkerReservationCount)
+
+            coordinator.cancelAll()
+            assertEquals(0, coordinator.activeWorkerReservationCount)
+            assertEquals(6, reservationCloseCount.get(), "reset releases every reservation exactly once")
         } finally {
             coordinator.cancelAll()
             scope.cancel()

@@ -21,8 +21,7 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.withContext
 import okio.Buffer
 import okio.buffer
@@ -31,9 +30,9 @@ import logcat.LogPriority
 import tachiyomi.core.common.util.system.logcat
 
 /**
- * Drives one lightweight directional cursor for the active chapter. At most one page is loaded or
- * waiting on the AI worker at a time; the cursor moves only after that request reaches a terminal
- * state. Page selection updates the cursor's reading head and priorities without restarting it.
+ * Drives one lightweight directional cursor for the active chapter. Source reads and enqueues stay
+ * serialized, while a bounded set of worker requests may remain pending as the cursor advances.
+ * Page selection updates the cursor's reading head and priorities without restarting it.
  */
 class ManyueReaderPrefetcher(context: Context) {
 
@@ -89,19 +88,28 @@ class ManyueReaderPrefetcher(context: Context) {
                 if (!coordinator.isPreparationCurrent(chapterId, taskGeneration, mode, pageIndex)) {
                     throw PrefetchWindowMovedCancellationException()
                 }
-                coordinator.awaitReaderWork(chapterId, taskGeneration, mode, pageIndex)
-                val reservation = ManyueEnhancementCache.awaitPrefetchBudget(
-                    context = appContext,
-                    mangaId = currentMangaId,
-                    chapterId = chapterId,
-                    pageIndex = pageIndex,
+                coordinator.awaitReaderWork(chapterId, taskGeneration, mode, pageIndex, inputPreparation = true)
+                val workerSlot = coordinator.awaitWorkerReservationSlot(
+                    chapterId,
+                    taskGeneration,
+                    mode,
+                    pageIndex,
                 )
+                var reservation: ManyueEnhancementCache.PrefetchReservation? = null
+                var reservationTransferred = false
                 try {
+                    val acquiredReservation = ManyueEnhancementCache.awaitPrefetchBudget(
+                        context = appContext,
+                        mangaId = currentMangaId,
+                        chapterId = chapterId,
+                        pageIndex = pageIndex,
+                    )
+                    reservation = acquiredReservation
                     coordinator.ensureCurrent(chapterId, taskGeneration, mode)
                     if (!coordinator.isPreparationCurrent(chapterId, taskGeneration, mode, pageIndex)) {
                         throw PrefetchWindowMovedCancellationException()
                     }
-                    coordinator.awaitReaderWork(chapterId, taskGeneration, mode, pageIndex)
+                    coordinator.awaitReaderWork(chapterId, taskGeneration, mode, pageIndex, inputPreparation = true)
                     val token = loadAndEnqueue(
                         page = page,
                         pageIndex = pageIndex,
@@ -112,27 +120,36 @@ class ManyueReaderPrefetcher(context: Context) {
                         phaseGuard = phaseGuard,
                     )
                     if (token != null) {
-                        // The returned token may be shared with a visible holder. Cancelling this
-                        // waiter must leave that request intact; the next page starts only on terminal.
-                        when (coordinator.awaitWorkerCompletion(chapterId, taskGeneration, mode, token)) {
-                            ManyueAiUpscaler.STATE_CANCELLED -> ManyuePrefetchWorkOutcome.CANCELLED
-                            ManyueAiUpscaler.STATE_READY -> ManyuePrefetchWorkOutcome.COMPLETED
-                            else -> ManyuePrefetchWorkOutcome.FAILED
-                        }
+                        // The request can be shared with a visible holder. Keep its cache budget
+                        // until terminal, but let the single source cursor prepare the next page.
+                        coordinator.retainWorkerReservationUntilTerminal(
+                            chapterId = chapterId,
+                            generation = taskGeneration,
+                            mode = mode,
+                            pageIndex = pageIndex,
+                            token = token,
+                            reservation = acquiredReservation,
+                            slot = workerSlot,
+                        )
+                        reservationTransferred = true
+                        ManyuePrefetchWorkOutcome.ENQUEUED
                     } else {
                         // Missing/error pages are remembered as failures; cursor cancellation is distinct.
                         ManyuePrefetchWorkOutcome.FAILED
                     }
                 } finally {
-                    // Keep resource ownership inside the polled child so cancellation after budget
-                    // acquisition cannot strand an unclosed reservation.
-                    reservation.close()
+                    // Ownership moves only after a token exists; all failed/stale preparations
+                    // release both bounded resources in this child.
+                    if (!reservationTransferred) {
+                        reservation?.close()
+                        workerSlot.close()
+                    }
                 }
             }
         }
     }
 
-    /** Keeps the full byte array local to this helper so it is out of scope before worker wait. */
+    /** Keeps source bytes local until the factory has written its input file. */
     private suspend fun loadAndEnqueue(
         page: ReaderPage,
         pageIndex: Int,
@@ -169,7 +186,7 @@ class ManyueReaderPrefetcher(context: Context) {
                     throw PrefetchWindowMovedCancellationException()
                 }
                 // The phase CAS excludes a concurrent stale-window cancellation across this
-                // synchronous enqueue. Once a token exists, keep the waiter through completion.
+                // synchronous enqueue. The caller hands the token and budget lease to a watcher.
                 ManyueAiRequestFactory.enqueue(
                     appContext,
                     identity,
@@ -216,6 +233,8 @@ class ManyueReaderPrefetcher(context: Context) {
 }
 
 internal enum class ManyuePrefetchWorkOutcome {
+    /** The source cursor admitted the request; native inference may still be queued or running. */
+    ENQUEUED,
     COMPLETED,
     FAILED,
     CANCELLED,
@@ -268,6 +287,21 @@ internal class ManyuePrefetchJobCoordinator(private val scope: CoroutineScope) {
 
     private data class CursorKey(val chapterId: Long, val generation: Long, val mode: Int)
 
+    private data class WorkerReservation(
+        val pageIndex: Int,
+        val reservation: AutoCloseable,
+        val slot: WorkerReservationSlot,
+        val job: Job,
+    )
+
+    internal class WorkerReservationSlot internal constructor(private val releaseSlot: () -> Unit) : AutoCloseable {
+        private val closed = java.util.concurrent.atomic.AtomicBoolean(false)
+
+        override fun close() {
+            if (closed.compareAndSet(false, true)) releaseSlot()
+        }
+    }
+
     @Volatile private var activeKey: CursorKey? = null
     @Volatile private var selectedPage: Int = -1
     @Volatile private var activeJob: Job? = null
@@ -276,9 +310,14 @@ internal class ManyuePrefetchJobCoordinator(private val scope: CoroutineScope) {
     private var direction = ManyueAiSafetyPolicy.PrefetchDirection.FORWARD
     private val failedPages = mutableSetOf<Int>()
     private var latestWork: (suspend (pageIndex: Int, generation: Long) -> ManyuePrefetchWorkOutcome)? = null
+    private val workerReservationSlots = Semaphore(MAX_PENDING_WORKER_RESERVATIONS)
+    private val workerReservations = linkedMapOf<String, WorkerReservation>()
 
     internal val activeCursorCount: Int
         get() = if (activeJob?.isCompleted == false) 1 else 0
+
+    internal val activeWorkerReservationCount: Int
+        get() = synchronized(this) { workerReservations.size }
 
     internal suspend fun awaitCursorIdle() {
         while (true) {
@@ -304,8 +343,10 @@ internal class ManyuePrefetchJobCoordinator(private val scope: CoroutineScope) {
 
         val key = CursorKey(chapterId, generation, mode)
         var start: Job? = null
+        var releaseReservations: List<WorkerReservation> = emptyList()
         synchronized(this) {
             if (activeKey != key) {
+                releaseReservations = takeWorkerReservationsLocked()
                 activeJob?.cancel()
                 activeJob = null
                 activeKey = key
@@ -336,6 +377,7 @@ internal class ManyuePrefetchJobCoordinator(private val scope: CoroutineScope) {
             latestWork = work
             start = scheduleCursorLocked(key)
         }
+        releaseWorkerReservations(releaseReservations)
         start?.start()
     }
 
@@ -361,7 +403,7 @@ internal class ManyuePrefetchJobCoordinator(private val scope: CoroutineScope) {
                 throw error
             } catch (error: Throwable) {
                 logcat { "Manyue prefetch failed page=$pageIndex: ${error.javaClass.simpleName}" }
-                // A bad source/worker result is remembered for this key. Cancellation is not.
+                // A bad source/enqueue result is remembered for this key. Cancellation is not.
                 outcome = ManyuePrefetchWorkOutcome.FAILED
             } finally {
                 completePage(key, pageIndex, outcome)
@@ -407,8 +449,8 @@ internal class ManyuePrefetchJobCoordinator(private val scope: CoroutineScope) {
     private fun completePage(key: CursorKey, pageIndex: Int, outcome: ManyuePrefetchWorkOutcome) = synchronized(this) {
         if (activeKey == key) {
             if (outcome == ManyuePrefetchWorkOutcome.FAILED) failedPages += pageIndex
-            // Successes may be rechecked after a direction change, reusing a cached request when
-            // present or rebuilding it after eviction. Cancellation is never remembered as failure.
+            // Enqueued/completed pages may be rechecked after a direction change, reusing any
+            // surviving request or cache entry. Cancellation is never remembered as failure.
             if (nextPageIndex == pageIndex) nextPageIndex += direction.step
         }
     }
@@ -483,12 +525,22 @@ internal class ManyuePrefetchJobCoordinator(private val scope: CoroutineScope) {
     }
 
     /** Wait without pinning a thread, while mode/generation changes remain promptly cancellable. */
-    suspend fun awaitReaderWork(chapterId: Long, generation: Long, mode: Int, pageIndex: Int = -1) {
+    suspend fun awaitReaderWork(
+        chapterId: Long,
+        generation: Long,
+        mode: Int,
+        pageIndex: Int = -1,
+        inputPreparation: Boolean = false,
+    ) {
         fun priority(): Int {
-            if (ManyuePrefetchManager.isVisiblePage(chapterId, pageIndex)) return 100
-            val head = selectedPageIndex(chapterId, generation) ?: return 1
-            val direction = selectedDirection(chapterId, generation) ?: return 1
-            return ManyueAiSafetyPolicy.continuousPrefetchPriority(pageIndex, head, direction)
+            val basePriority = if (ManyuePrefetchManager.isVisiblePage(chapterId, pageIndex)) {
+                100
+            } else {
+                val head = selectedPageIndex(chapterId, generation) ?: return 1
+                val direction = selectedDirection(chapterId, generation) ?: return 1
+                ManyueAiSafetyPolicy.continuousPrefetchPriority(pageIndex, head, direction)
+            }
+            return if (inputPreparation) maxOf(INPUT_PREPARATION_PRIORITY, basePriority) else basePriority
         }
         while (ManyueReaderWorkGate.isAiWorkBlocked(priority()) ||
             (mode == ManyueEnhancementMode.AUTO.value && ManyueRuntimeState.displayWidthPx <= 0)
@@ -497,6 +549,87 @@ internal class ManyuePrefetchJobCoordinator(private val scope: CoroutineScope) {
             delay(READER_WORK_GATE_POLL_MS)
         }
         ensureCurrent(chapterId, generation, mode)
+    }
+
+    /** Reserves one of at most five cache-budget leases that can outlive source preparation. */
+    suspend fun awaitWorkerReservationSlot(
+        chapterId: Long,
+        generation: Long,
+        mode: Int,
+        pageIndex: Int,
+    ): WorkerReservationSlot {
+        while (true) {
+            ensureCurrent(chapterId, generation, mode)
+            if (!isPreparationCurrent(chapterId, generation, mode, pageIndex)) {
+                throw PrefetchWindowMovedCancellationException()
+            }
+            if (workerReservationSlots.tryAcquire()) {
+                val slot = WorkerReservationSlot { workerReservationSlots.release() }
+                if (isPreparationCurrent(chapterId, generation, mode, pageIndex)) return slot
+                slot.close()
+                throw PrefetchWindowMovedCancellationException()
+            }
+            delay(STATE_POLL_MS)
+        }
+    }
+
+    /** Transfers a cache reservation to a terminal waiter without blocking the source cursor. */
+    fun retainWorkerReservationUntilTerminal(
+        chapterId: Long,
+        generation: Long,
+        mode: Int,
+        pageIndex: Int,
+        token: String,
+        reservation: AutoCloseable,
+        slot: WorkerReservationSlot,
+        awaitTerminal: suspend (String) -> Int = { ManyueAiUpscaler.awaitCompletion(it) },
+    ) {
+        var start: Job? = null
+        var releaseImmediately = false
+        synchronized(this) {
+            if (!isCurrent(chapterId, generation, mode)) {
+                releaseImmediately = true
+            } else if (token in workerReservations) {
+                releaseImmediately = true
+            } else {
+                val job = scope.launch(start = CoroutineStart.LAZY) {
+                    try {
+                        awaitTerminal(token)
+                    } finally {
+                        val currentJob = currentCoroutineContext()[Job]
+                        val owned = synchronized(this@ManyuePrefetchJobCoordinator) {
+                            workerReservations[token]
+                                ?.takeIf { it.job === currentJob }
+                                ?.also { workerReservations.remove(token) }
+                        }
+                        owned?.reservation?.close()
+                        owned?.slot?.close()
+                    }
+                }
+                workerReservations[token] = WorkerReservation(pageIndex, reservation, slot, job)
+                start = job
+            }
+        }
+        if (releaseImmediately) {
+            reservation.close()
+            slot.close()
+        } else {
+            start?.start()
+        }
+    }
+
+    private fun takeWorkerReservationsLocked(): List<WorkerReservation> {
+        val pending = workerReservations.values.toList()
+        workerReservations.clear()
+        return pending
+    }
+
+    private fun releaseWorkerReservations(pending: List<WorkerReservation>) {
+        pending.forEach {
+            it.job.cancel()
+            it.reservation.close()
+            it.slot.close()
+        }
     }
 
     /** Polling races only the waiter; cancelling it never cancels a shared worker request. */
@@ -529,7 +662,7 @@ internal class ManyuePrefetchJobCoordinator(private val scope: CoroutineScope) {
     }
 
     fun cancelAll() {
-        synchronized(this) {
+        val releaseReservations = synchronized(this) {
             activeKey = null
             selectedPage = -1
             pageCount = 0
@@ -539,12 +672,16 @@ internal class ManyuePrefetchJobCoordinator(private val scope: CoroutineScope) {
             latestWork = null
             activeJob?.cancel()
             activeJob = null
+            takeWorkerReservationsLocked()
         }
+        releaseWorkerReservations(releaseReservations)
     }
 
     private companion object {
         const val READER_WORK_GATE_POLL_MS = 80L
         const val STATE_POLL_MS = 100L
+        const val INPUT_PREPARATION_PRIORITY = 50
+        const val MAX_PENDING_WORKER_RESERVATIONS = 5
     }
 }
 

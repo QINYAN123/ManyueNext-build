@@ -95,6 +95,7 @@ object ManyueAiUpscaler {
         val createdAsPrefetch: Boolean = priority < 100,
         @Volatile var outputWidth: Int = 0,
         @Volatile var outputHeight: Int = 0,
+        @Volatile var predictiveStart: Boolean = false,
         val benchmarkNamespace: Int = ManyueBenchmarkControl.cacheNamespace,
     ) : Comparable<Request> {
         internal val terminal = CompletableDeferred<Int>()
@@ -136,8 +137,8 @@ object ManyueAiUpscaler {
             runCatching { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND) }
             while (!Thread.currentThread().isInterrupted) {
                 try {
-                    val req = queue.poll(1, TimeUnit.SECONDS)
-                    if (req == null) {
+                    val polled = queue.poll(1, TimeUnit.SECONDS)
+                    if (polled == null) {
                         ManyueLiteRuntime.releaseWhenIdleOnWorker(
                             ManyueRuntimeState.aiModel.continuousScale &&
                                 ManyueEnhancementMode.fromInt(ManyueRuntimeState.modeInt).usesAi(),
@@ -148,6 +149,12 @@ object ManyueAiUpscaler {
                         )
                         continue
                     }
+                    val predicted = predictiveCandidate(polled)
+                    val req = if (predicted != null && predicted !== polled && queue.remove(predicted)) {
+                        queue.offer(polled)
+                        predicted
+                    } else polled
+                    req.predictiveStart = predicted === req
                     if (req.cancelled || req.completed) {
                         finishBlockedWork(req, cancelled = req.cancelled)
                         continue
@@ -158,7 +165,7 @@ object ManyueAiUpscaler {
                         continue
                     }
                     val diagnosticsEnabled = ManyuePerformanceDiagnostics.enabled
-                    val readerGateBlocked = ManyueReaderWorkGate.isAiWorkBlocked(req.priority)
+                    val readerGateBlocked = ManyueReaderWorkGate.isAiWorkBlocked(effectiveWorkPriority(req))
                     // Preserve the original short-circuit when diagnostics are off. When enabled,
                     // read the pacer even if the reader gate already blocks so both reasons export.
                     val workPacerBlocked = if (readerGateBlocked && !diagnosticsEnabled) {
@@ -176,7 +183,7 @@ object ManyueAiUpscaler {
                     }
                     finishBlockedWork(req, cancelled = false)
                     val claimed = synchronized(this@ManyueAiUpscaler) {
-                        if (queue.peek()?.let { shouldYieldToVisible(req, it) } == true) {
+                        if (!req.predictiveStart && queue.peek()?.let { shouldYieldToVisible(req, it) } == true) {
                             queue.offer(req)
                             false
                         } else if (req.cancelled || req.completed || req.processing) {
@@ -191,6 +198,12 @@ object ManyueAiUpscaler {
                     }
                     if (!claimed) continue
                     req.processingStartedAt = System.nanoTime() / 1_000_000L
+                    if (req.predictiveStart) ManyuePerformanceDiagnostics.event(
+                        Stage.READ_AHEAD_SELECTED, req.pageIndex, req.token,
+                        Metric.AHEAD_PAGES to (ManyueReadAheadScheduler.policy.distance(
+                            req.chapterId, req.pageIndex, req.generation,
+                        ) ?: 0).toLong(),
+                    )
                     ManyuePerformanceDiagnostics.event(
                         Stage.STARTED,
                         req.pageIndex,
@@ -213,6 +226,24 @@ object ManyueAiUpscaler {
             }
         }
     }
+
+    /** Choose the nearest prepared future input that has enough lead for this device's cost.
+     * No queue expansion or parallel inference; when motion expires normal visible priority wins.
+     */
+    private fun predictiveCandidate(first: Request): Request? {
+        val policy = ManyueReadAheadScheduler.policy
+        return (queue.toList() + first).asSequence()
+            .filter { !it.cancelled && !it.completed && requestIsCurrent(it) && it.model == ManyueAiModel.QUALITY_REAL_ESRGAN }
+            .mapNotNull { req ->
+                val distance = policy.distance(req.chapterId, req.pageIndex, req.generation) ?: return@mapNotNull null
+                val lead = policy.preferredLead(req.chapterId, req.generation, req.sourceWidth, req.sourceHeight)
+                if (lead > 0 && distance in lead..ManyueAiSafetyPolicy.PREFETCH_WINDOW_PAGES) req to distance else null
+            }
+            .minByOrNull { it.second }?.first
+    }
+
+    private fun effectiveWorkPriority(req: Request): Int =
+        if (req.predictiveStart) maxOf(50, req.priority) else req.priority
 
     @Synchronized
     fun register(
@@ -299,6 +330,14 @@ object ManyueAiUpscaler {
         ) {
             return false
         }
+        // A predictive page is still ahead of the reader. Cancelling it whenever another
+        // visible strip binds would recreate the start/cancel starvation this solves.
+        // Passed pages, chapter/direction/settings changes are still cancelled by the manager.
+        if (active.predictiveStart && active.processing && active.model == ManyueAiModel.QUALITY_REAL_ESRGAN &&
+            active.mangaId == visible.mangaId && active.chapterId == visible.chapterId && active.generation == visible.generation &&
+            ManyueReadAheadScheduler.policy.distance(active.chapterId, active.pageIndex, active.generation) in
+            1..ManyueAiSafetyPolicy.PREFETCH_WINDOW_PAGES
+        ) return false
         // Lite and Quality cancel at safe computation boundaries while retaining their models.
         // Only the unselectable legacy CUGAN identity still needs the former bounded finish rule.
         val sameChapter = active.mangaId == visible.mangaId && active.chapterId == visible.chapterId
@@ -353,7 +392,7 @@ object ManyueAiUpscaler {
         // This snapshot is explanatory telemetry only. The scheduling decision continues to use
         // the existing gate boolean and pacer boolean unchanged.
         val reasonMask = if (readerGateBlocked) {
-            ManyueReaderWorkGate.aiWorkBlockReasonMask(req.priority)
+            ManyueReaderWorkGate.aiWorkBlockReasonMask(effectiveWorkPriority(req))
         } else {
             0
         }
@@ -912,6 +951,9 @@ object ManyueAiUpscaler {
                 0L
             }
             val postElapsedMs = SystemClock.elapsedRealtime() - postStartedAt
+            if (req.model == ManyueAiModel.QUALITY_REAL_ESRGAN) {
+                ManyueReadAheadScheduler.policy.completed(req.sourceWidth, req.sourceHeight, nativeElapsedMs + postElapsedMs)
+            }
             ManyuePerformanceDiagnostics.event(
                 Stage.AI_READY, req.pageIndex, req.token,
                 Metric.QUEUE_MS to waitMs, Metric.PREPARATION_MS to preparationElapsedMs,
@@ -954,7 +996,7 @@ object ManyueAiUpscaler {
             ManyueDiagnostics.record("${req.failureDetail}；已保留原图")
         } finally {
             expensiveWorkStartedAt?.let {
-                workPacer.afterWork(it, pressureActive = ManyueReaderWorkGate.isAiWorkBlocked(req.priority))
+                workPacer.afterWork(it, pressureActive = ManyueReaderWorkGate.isAiWorkBlocked(effectiveWorkPriority(req)))
             }
             req.runningProcess = null
             req.nativeCancellation = null
@@ -976,7 +1018,7 @@ object ManyueAiUpscaler {
     private fun awaitReaderIdle(req: Request): Boolean {
         val previousState = req.progressState
         var waited = false
-        while (ManyueReaderWorkGate.isAiWorkBlocked(req.priority)) {
+        while (ManyueReaderWorkGate.isAiWorkBlocked(effectiveWorkPriority(req))) {
             if (!requestIsCurrent(req)) return false
             if (!waited) notifyProgress(req, STATE_WAITING_RESOURCES)
             waited = true

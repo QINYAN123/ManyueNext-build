@@ -34,8 +34,14 @@ object ManyuePrefetchManager {
     private val displayPreparationSlot = ManyueDisplayPreparationSlot()
 
     internal fun isNextDisplayPage(chapterId: Long, pageIndex: Int): Boolean = synchronized(this) {
-        chapterId == currentChapterId && currentPage >= 0 &&
-            ManyueAiSafetyPolicy.relativeDistance(pageIndex, currentPage, prefetchDirection) == 1
+        if (chapterId != currentChapterId || currentPage < 0) return@synchronized false
+        // Short strips can put several pages on screen at once. Prepare the first page
+        // beyond that visible frontier, rather than treating an already visible N+1 as prewarm.
+        val frontier = visiblePages.asSequence().filter { it.chapterId == chapterId }
+            .map { ManyueAiSafetyPolicy.relativeDistance(it.pageIndex, currentPage, prefetchDirection) }
+            .maxOrNull()?.coerceAtLeast(0) ?: 0
+        val distance = ManyueAiSafetyPolicy.relativeDistance(pageIndex, currentPage, prefetchDirection)
+        distance in 1..ManyueAiSafetyPolicy.PREFETCH_WINDOW_PAGES && distance == frontier + 1
     }
 
     internal fun acquireDisplayPreparation(chapterId: Long, pageIndex: Int, owner: Any): Boolean =
@@ -74,6 +80,7 @@ object ManyuePrefetchManager {
             directionKey = null
             prefetchDirection = ManyueAiSafetyPolicy.PrefetchDirection.FORWARD
             displayPreparationSlot.reset()
+            ManyueReadAheadScheduler.policy.reset()
         }
     }
 
@@ -137,6 +144,7 @@ object ManyuePrefetchManager {
             }
             currentChapterId = chapterId
             currentPage = current
+            ManyueReadAheadScheduler.policy.selected(chapterId, current, nextDirectionKey.generation)
             val selectedKey = DecisionKey(chapterId, current, nextDirectionKey.generation)
             currentDecisions.keys.filter { it != selectedKey }
                 .forEach { key -> currentDecisions.remove(key)?.complete(Unit) }

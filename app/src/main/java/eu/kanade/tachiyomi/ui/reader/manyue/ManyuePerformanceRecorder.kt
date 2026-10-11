@@ -14,6 +14,7 @@ internal class ManyuePerformanceRecorder(
         PAGE_SELECTED,
         QUEUED,
         STARTED,
+        READ_AHEAD_SELECTED,
         PRIORITY_CHANGED,
         CANCELLED,
         CACHE_HIT,
@@ -43,6 +44,7 @@ internal class ManyuePerformanceRecorder(
 
     enum class Metric {
         CANCEL_ACK_MS,
+        AHEAD_PAGES,
         PRIORITY,
         QUEUE_DEPTH,
         QUEUE_MS,
