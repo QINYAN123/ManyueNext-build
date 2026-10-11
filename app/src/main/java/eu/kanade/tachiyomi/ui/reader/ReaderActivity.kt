@@ -367,6 +367,13 @@ class ReaderActivity : BaseActivity() {
      */
     override fun onDestroy() {
         saveComfortScale()
+        if (eu.kanade.tachiyomi.BuildConfig.BUILD_TYPE == "benchmark") {
+            val benchmarkControl = eu.kanade.tachiyomi.ui.reader.manyue.ManyueBenchmarkControl
+            if (benchmarkControl.reader.get() === this) {
+                benchmarkControl.viewerLayerOverride = null
+                benchmarkControl.reader.clear()
+            }
+        }
         manyueFrameMonitor?.close()
         manyueFrameMonitor = null
         manyueGpuDisplayController?.close()
@@ -590,6 +597,23 @@ class ReaderActivity : BaseActivity() {
                     readerPreferences.grayscale.set(intent.getBooleanExtra("grayscale", false))
                 }
             }
+            "layer" -> {
+                val kind = intent.getStringExtra("kind")?.lowercase() ?: return false
+                val override = when (kind) {
+                    "none" -> {
+                        if (!canUseBenchmarkNoLayer()) return false
+                        eu.kanade.tachiyomi.ui.reader.manyue.ManyueBenchmarkControl.ViewerLayerOverride.NONE
+                    }
+                    "hardware" ->
+                        eu.kanade.tachiyomi.ui.reader.manyue.ManyueBenchmarkControl.ViewerLayerOverride.HARDWARE
+                    "default" -> null
+                    else -> return false
+                }
+                val readerConfig = config ?: return false
+                eu.kanade.tachiyomi.ui.reader.manyue.ManyueBenchmarkControl.viewerLayerOverride = override
+                readerConfig.applyCurrentLayerPaint()
+                binding.viewerContainer.invalidate()
+            }
             "jump" -> {
                 val pages = viewModel.state.value.viewerChapters?.currChapter?.pages ?: return false
                 val page = pages.getOrNull(intent.getIntExtra("page", -1)) ?: return false
@@ -645,6 +669,14 @@ class ReaderActivity : BaseActivity() {
             put("grayscale", readerPreferences.grayscale.get())
             put("aiTileMipmaps", eu.kanade.tachiyomi.ui.reader.manyue.ManyueBenchmarkControl.aiTileMipmaps)
             put("invertedColors", readerPreferences.invertedColors.get())
+            put(
+                "layerOverride",
+                eu.kanade.tachiyomi.ui.reader.manyue.ManyueBenchmarkControl.viewerLayerOverride?.wireName ?: "default",
+            )
+            // These report View/window state only; they do not prove the final compositor path or scanout.
+            put("viewerContainerLayerType", binding.viewerContainer.layerType)
+            put("windowHardwareAccelerated", window.decorView.isHardwareAccelerated)
+            put("viewerContainerHardwareAccelerated", binding.viewerContainer.isHardwareAccelerated)
             put("colorFilter", readerPreferences.colorFilter.get())
             put("customBrightness", readerPreferences.customBrightness.get())
             put(
@@ -705,6 +737,13 @@ class ReaderActivity : BaseActivity() {
     fun onManyueGpuDisplayChanged(enabled: Boolean, strength: Int) {
         if (isFinishing || isDestroyed) return
         // A strength update only changes display parameters: no page reload, encoding or AI reset.
+        if (eu.kanade.tachiyomi.BuildConfig.BUILD_TYPE == "benchmark" && enabled &&
+            eu.kanade.tachiyomi.ui.reader.manyue.ManyueBenchmarkControl.viewerLayerOverride ==
+            eu.kanade.tachiyomi.ui.reader.manyue.ManyueBenchmarkControl.ViewerLayerOverride.NONE
+        ) {
+            eu.kanade.tachiyomi.ui.reader.manyue.ManyueBenchmarkControl.viewerLayerOverride = null
+            config?.applyCurrentLayerPaint()
+        }
         if (viewModel.state.value.viewer != null &&
             (viewModel.state.value.viewer is WebGpuViewer) !=
             (preferences.highQualityRenderer.get() && !needsManyueCanvasViewer())
@@ -1385,9 +1424,38 @@ class ReaderActivity : BaseActivity() {
 
             viewModel.setBrightnessOverlayValue(value)
         }
+
         private fun setLayerPaint(grayscale: Boolean, invertedColors: Boolean) {
             val paint = if (grayscale || invertedColors) getCombinedPaint(grayscale, invertedColors) else null
-            binding.viewerContainer.setLayerType(LAYER_TYPE_HARDWARE, paint)
+            val benchmarkControl = eu.kanade.tachiyomi.ui.reader.manyue.ManyueBenchmarkControl
+            val benchmarkBuild = eu.kanade.tachiyomi.BuildConfig.BUILD_TYPE == "benchmark"
+            if (benchmarkBuild && paint != null &&
+                benchmarkControl.viewerLayerOverride ==
+                eu.kanade.tachiyomi.ui.reader.manyue.ManyueBenchmarkControl.ViewerLayerOverride.NONE
+            ) {
+                // Color filters require the layer Paint; never let the benchmark override remove it.
+                benchmarkControl.viewerLayerOverride = null
+            }
+            val layerType = if (benchmarkBuild && benchmarkControl.viewerLayerOverride ==
+                eu.kanade.tachiyomi.ui.reader.manyue.ManyueBenchmarkControl.ViewerLayerOverride.NONE
+            ) {
+                View.LAYER_TYPE_NONE
+            } else {
+                LAYER_TYPE_HARDWARE
+            }
+            binding.viewerContainer.setLayerType(layerType, paint)
         }
+
+        fun applyCurrentLayerPaint() {
+            setLayerPaint(readerPreferences.grayscale.get(), readerPreferences.invertedColors.get())
+        }
+    }
+
+    private fun canUseBenchmarkNoLayer(): Boolean {
+        val gpuEnabled = readerPreferences.manyueGpuDisplayFilter.get()
+        val gpuStrength = readerPreferences.manyueGpuDisplayStrength.get()
+        val gpuEffectActive = mutableGpuDisplayStatus.value.state == ManyueGpuDisplayStatus.State.ACTIVE
+        return (!gpuEnabled || gpuStrength == 0) && !gpuEffectActive &&
+            !readerPreferences.grayscale.get() && !readerPreferences.invertedColors.get()
     }
 }
