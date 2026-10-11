@@ -10,6 +10,8 @@ import eu.kanade.tachiyomi.ui.reader.manyue.ManyueReadingCoverage
 import eu.kanade.tachiyomi.ui.reader.manyue.ManyuePerformanceDiagnostics
 import eu.kanade.tachiyomi.ui.reader.manyue.ManyuePerformanceRecorder
 import eu.kanade.tachiyomi.ui.reader.manyue.ManyueEnhancementState
+import eu.kanade.tachiyomi.ui.reader.manyue.ManyueGpuDisplayStatus
+import eu.kanade.tachiyomi.ui.reader.manyue.ManyueWebGpuDetailFilter
 import androidx.lifecycle.Lifecycle
 import eu.kanade.tachiyomi.ui.reader.model.ReaderPage
 import kotlinx.coroutines.launch
@@ -32,6 +34,30 @@ class WebGpuViewerContinuous(activity: ReaderActivity, val useGap: Boolean = fal
     private var manyueHead: Pair<Long, Int>? = null
     private var manyueGeneration = -1L
     private var visibleManyueOwners = emptySet<ViewerReaderPage>()
+    private val detailFilter = ManyueWebGpuDetailFilter().apply { enabled = false }
+    private var detailRequested = false
+    private var detailStrength = 25
+
+    internal fun configureDetail(enabled: Boolean, strength: Int) {
+        if (detailRequested != enabled || detailStrength != strength.coerceIn(0, 100)) {
+            detailFilter.retryAfterSettingsChange()
+        }
+        detailRequested = enabled
+        detailStrength = strength.coerceIn(0, 100)
+        detailFilter.strength = detailStrength
+        detailFilter.enabled = enabled
+        activity.updateWebGpuDetailStatus(
+            this,
+            ManyueGpuDisplayStatus(
+                when {
+                    !enabled -> ManyueGpuDisplayStatus.State.OFF
+                    detailStrength == 0 -> ManyueGpuDisplayStatus.State.ZERO_STRENGTH
+                    else -> ManyueGpuDisplayStatus.State.WAITING
+                },
+                detailStrength,
+            ),
+        )
+    }
 
     fun comfortScaleForPersistence(): Float? = state.scale.takeIf { it.isFinite() && it >= .5f && it < 1f }
 
@@ -52,6 +78,16 @@ class WebGpuViewerContinuous(activity: ReaderActivity, val useGap: Boolean = fal
 
     init {
         state.backgroundColor = readerBackgroundColor()
+        state.filters.filters = state.filters.filters + detailFilter
+        detailFilter.onFailure = {
+            scope.launch {
+                activity.updateWebGpuDetailStatus(
+                    this@WebGpuViewerContinuous,
+                    ManyueGpuDisplayStatus(ManyueGpuDisplayStatus.State.FAILED, detailStrength),
+                )
+                state.invalidate()
+            }
+        }
 
         state.onVisibleImages = { visible ->
             val active = activity.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) && pager.isShown
@@ -87,10 +123,17 @@ class WebGpuViewerContinuous(activity: ReaderActivity, val useGap: Boolean = fal
         }
 
         state.onSubmittedImages = { submitted, _ ->
+            val effectStrength = if (detailFilter.active) detailFilter.submittedStrength else 0
             // GPU feedback arrives after submission. Resolve the same image object on main:
             // a newer page swap must never borrow an older frame's successful submission.
             scope.launch {
                 if (!activity.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) || !pager.isShown) return@launch
+                if (detailRequested && detailStrength > 0 && effectStrength == detailStrength) {
+                    activity.updateWebGpuDetailStatus(
+                        this@WebGpuViewerContinuous,
+                        ManyueGpuDisplayStatus(ManyueGpuDisplayStatus.State.ACTIVE, effectStrength),
+                    )
+                }
                 submitted.forEach { image ->
                     val owner = viewerPageFor(image.page) as? ViewerReaderPage ?: return@forEach
                     if (owner !in visibleManyueOwners) return@forEach
@@ -160,6 +203,7 @@ class WebGpuViewerContinuous(activity: ReaderActivity, val useGap: Boolean = fal
     }
 
     override fun destroy() {
+        detailFilter.onFailure = null
         visibleManyueOwners.forEach { ManyueReadingCoverage.hidden(it) }
         visibleManyueOwners = emptySet()
         state.onVisibleImages = null

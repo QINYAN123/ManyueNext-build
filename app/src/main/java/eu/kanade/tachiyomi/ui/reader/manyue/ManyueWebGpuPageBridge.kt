@@ -50,6 +50,7 @@ internal class ManyueWebGpuPageBridge(
             val info = page.sourceImageInfo.value as? SourceImageInfo.Available
             ManyueReadingCoverage.Source(
                 identity.mangaId, identity.chapterId, identity.pageIndex,
+                fingerprint = inputFingerprint,
                 sourceWidth = info?.width ?: 0, sourceHeight = info?.height ?: 0,
             )
         }

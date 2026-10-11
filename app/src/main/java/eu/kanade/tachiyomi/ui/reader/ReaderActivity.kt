@@ -196,7 +196,11 @@ class ReaderActivity : BaseActivity() {
         binding = ReaderActivityBinding.inflate(layoutInflater)
         setContentView(binding.root)
         manyueGpuDisplayController = ManyueGpuDisplayController(binding.viewerContainer).also { controller ->
-            controller.status.onEach { mutableGpuDisplayStatus.value = it }.launchIn(lifecycleScope)
+            controller.status.onEach {
+                if (viewModel.state.value.viewer !is eu.kanade.tachiyomi.ui.reader.viewer.webgpu.WebGpuViewerContinuous) {
+                    mutableGpuDisplayStatus.value = it
+                }
+            }.launchIn(lifecycleScope)
             controller.configure(
                 readerPreferences.manyueGpuDisplayFilter.get(),
                 readerPreferences.manyueGpuDisplayStrength.get(),
@@ -755,7 +759,7 @@ class ReaderActivity : BaseActivity() {
         val qualityContinuous = continuous && runtime.aiModel == eu.kanade.tachiyomi.ui.reader.manyue.ManyueAiModel.QUALITY_REAL_ESRGAN &&
             runtime.modeInt == eu.kanade.tachiyomi.ui.reader.manyue.ManyueEnhancementMode.AI_2X.value
         return (isManyueEnhancementActive() && !qualityContinuous) ||
-            (Build.VERSION.SDK_INT >= 33 && readerPreferences.manyueGpuDisplayFilter.get())
+            (!continuous && Build.VERSION.SDK_INT >= 33 && readerPreferences.manyueGpuDisplayFilter.get())
     }
 
     fun onManyueGpuDisplayChanged(enabled: Boolean, strength: Int) {
@@ -784,7 +788,24 @@ class ReaderActivity : BaseActivity() {
             updateViewer()
             binding.root.post { viewModel.state.value.viewerChapters?.let(::setChapters) }
         }
-        manyueGpuDisplayController?.configure(enabled, strength)
+        applyManyueGpuDisplay(enabled, strength)
+    }
+
+    private fun applyManyueGpuDisplay(enabled: Boolean, strength: Int) {
+        val viewer = viewModel.state.value.viewer as? eu.kanade.tachiyomi.ui.reader.viewer.webgpu.WebGpuViewerContinuous
+        if (viewer != null) {
+            manyueGpuDisplayController?.configure(false, strength)
+            viewer.configureDetail(enabled, strength)
+        } else {
+            manyueGpuDisplayController?.configure(enabled, strength)
+        }
+    }
+
+    internal fun updateWebGpuDetailStatus(
+        viewer: eu.kanade.tachiyomi.ui.reader.viewer.webgpu.WebGpuViewerContinuous,
+        status: ManyueGpuDisplayStatus,
+    ) {
+        if (viewModel.state.value.viewer === viewer) mutableGpuDisplayStatus.value = status
     }
 
     fun onManyueClassicStrengthChanged(strength: Int) {
@@ -1047,6 +1068,9 @@ class ReaderActivity : BaseActivity() {
         restoreComfortScale()
         updateViewerInset(readerPreferences.fullscreen.get(), readerPreferences.drawUnderCutout.get())
         binding.viewerContainer.addView(newViewer.getView())
+        applyManyueGpuDisplay(
+            readerPreferences.manyueGpuDisplayFilter.get(), readerPreferences.manyueGpuDisplayStrength.get(),
+        )
 
         if (readerPreferences.showReadingMode.get()) {
             showReadingModeToast(viewModel.getMangaReadingMode())
