@@ -237,7 +237,9 @@ class ManyuePageBridge(
                 token = t
 
                 val strength = ManyueRuntimeState.classicStrength
-                val wantClassic = ManyueEnhancementMode.fromInt(mode).usesClassic(ManyueRuntimeState.aiModel)
+                // Keep the legacy display/manifest branches source-compatible, but never enter
+                // classic lookup, variant generation, or classic completion states.
+                val wantClassic = false
                 val completionListener = ManyueAiUpscaler.OnAiCompleteListener { tok, state, detail ->
                     if (!isCurrent(t, identity, mode, expectedGeneration)) return@OnAiCompleteListener
                     if (state == ManyueAiUpscaler.STATE_PROCESSING) {

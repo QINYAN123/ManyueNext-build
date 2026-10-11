@@ -44,7 +44,7 @@ enum class ManyueAiModel(
     ;
 
     companion object {
-        val DEFAULT = MOBILE_LITE
+        val DEFAULT = QUALITY_REAL_ESRGAN
 
         /** Models offered to readers. FAST_REAL_CUGAN remains an internal legacy identity. */
         val selectableModels = listOf(QUALITY_REAL_ESRGAN, MOBILE_LITE)

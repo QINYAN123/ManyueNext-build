@@ -47,13 +47,28 @@ class ManyueAutomaticReaderTest {
         val source = Buffer().write(image())
         val states = mutableListOf<ManyueEnhancementState>()
         val enhanced = ManyueReaderHook.applyClassic(source, 4, 25, { state, _ -> states += state }, displayWidthPx = 8)
+        assertSame(source, enhanced)
         val outputBytes = enhanced.readByteArray()
         val bitmap = BitmapFactory.decodeByteArray(outputBytes, 0, outputBytes.size)
         assertEquals(12, bitmap.width)
         assertEquals(16, bitmap.height)
-        assertEquals(listOf(ManyueEnhancementState.CLASSIC_PROCESSING, ManyueEnhancementState.CLASSIC_READY), states)
+        assertTrue(states.isEmpty())
         assertFalse(states.contains(ManyueEnhancementState.AI_READY))
         bitmap.recycle()
+    }
+
+    @Test fun retiredModesKeepTheOriginalAndModeThreeStillUsesAi() = runBlocking {
+        val bytes = image()
+        for (legacyMode in listOf(1, 3)) {
+            val source = Buffer().write(bytes.clone())
+            val states = mutableListOf<ManyueEnhancementState>()
+            val result = ManyueReaderHook.applyClassic(source, legacyMode, 100, { state, _ -> states += state })
+            assertSame(source, result)
+            assertArrayEquals(bytes, result.readByteArray())
+            assertTrue(states.isEmpty())
+        }
+        assertFalse(ManyueReaderHook.needsAi(Buffer().write(bytes.clone()), 1))
+        assertTrue(ManyueReaderHook.needsAi(Buffer().write(bytes.clone()), 3))
     }
 
     @Test fun narrowAutomaticSourceLeavesOriginalForAsyncAiInsteadOfClassicReencoding() = runBlocking {

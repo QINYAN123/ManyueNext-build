@@ -1,12 +1,7 @@
 package eu.kanade.tachiyomi.ui.reader.manyue
 
 import android.content.Context
-import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-import java.io.ByteArrayOutputStream
 import java.io.File
 
 /**
@@ -14,9 +9,9 @@ import java.io.File
  *
  * OFF              -> return null (use original, fast path)
  * animated (GIF/WebP VP8X) -> return null
- * CLASSIC          -> decode -> classic enhance -> WebP -> BufferedSource
+ * CLASSIC          -> retired; return null and keep the original
  * AI_2X            -> async: kick off AI queue, return null (show original first)
- * AI_2X_CLASSIC    -> AI result then classic
+ * AI_2X_CLASSIC    -> legacy mode canonicalized to AI_2X
  *
  * Any exception => null (caller falls back to original).
  */
@@ -52,45 +47,14 @@ object ManyueImagePipeline {
     }
 
     /**
-     * Classic-only path: synchronous. Returns WebP bytes or null on failure/off/animated.
+     * Legacy source-compatible entry point. Classic processing is retired.
      */
+    @Suppress("UNUSED_PARAMETER")
     suspend fun classicEnhance(
         bytes: ByteArray,
         strength: Int,
         isAiCombined: Boolean,
-    ): ByteArray? = withContext(Dispatchers.Default) {
-        // A zero-strength pass must not decode and lossily re-encode an unchanged image.
-        if (strength <= 0 || isAnimated(bytes)) return@withContext null
-        var bmp: Bitmap? = null
-        var enhanced: Bitmap? = null
-        try {
-            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-            if (!ManyueAiSafetyPolicy.isPixelBudgetSafe(
-                    bounds.outWidth,
-                    bounds.outHeight,
-                    ManyueAiSafetyPolicy.MAX_CLASSIC_PIXELS,
-                )
-            ) {
-                return@withContext null
-            }
-            val decoded = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                ?: return@withContext null
-            bmp = decoded
-            val outputBitmap = ManyueClassicEnhancer.enhance(decoded, strength, isAiCombined)
-            enhanced = outputBitmap
-            val out = ByteArrayOutputStream()
-            check(outputBitmap.compress(ManyueBitmapEncoding.lossyWebpFormat(), 92, out))
-            out.toByteArray()
-        } catch (t: CancellationException) {
-            throw t
-        } catch (t: Throwable) {
-            null
-        } finally {
-            enhanced?.takeIf { it !== bmp && !it.isRecycled }?.recycle()
-            bmp?.takeIf { !it.isRecycled }?.recycle()
-        }
-    }
+    ): ByteArray? = null
 
     /**
      * Kick off an AI upscale request. Returns a token the caller can poll via state().
@@ -117,7 +81,7 @@ object ManyueImagePipeline {
                 inputFile, w, h, targetMode, targetWidth, priority,
                 targetScaleTenths = targetScaleTenths,
                 model = ManyueRuntimeState.aiModel,
-                anime4kOverlay = ManyueRuntimeState.anime4kOverlay,
+                anime4kOverlay = false,
             )
             ManyueAiUpscaler.queue(token)
             return token
@@ -127,46 +91,15 @@ object ManyueImagePipeline {
     }
 
     /**
-     * Convenience entry used by readers. Returns non-null bytes only when a
-     * synchronous classic enhancement was applied; AI is always async.
+     * Legacy convenience entry. Async AI is scheduled by the reader bridge; this path preserves
+     * the original bytes and never applies a retired classic filter.
      */
+    @Suppress("UNUSED_PARAMETER")
     suspend fun process(
         bytes: ByteArray,
         pageInfo: PageInfo,
         mode: ManyueEnhancementMode,
         preferences: ManyueEnhancementPreferences,
         context: Context,
-    ): ByteArray? {
-        if (mode == ManyueEnhancementMode.OFF) return null
-        if (isAnimated(bytes)) return null
-        return when (mode) {
-            ManyueEnhancementMode.CLASSIC ->
-                classicEnhance(bytes, preferences.classicStrength.get(), isAiCombined = false)
-            ManyueEnhancementMode.AI_2X -> {
-                // async: caller should poll state and swap image when ready.
-                null
-            }
-            ManyueEnhancementMode.AI_2X_CLASSIC -> {
-                // classic on top of whatever AI produced; synchronous classic pass on the original
-                // is acceptable as a first frame. AI overlay happens via token polling.
-                classicEnhance(bytes, preferences.classicStrength.get(), isAiCombined = true)
-            }
-            ManyueEnhancementMode.OFF -> null
-            ManyueEnhancementMode.AUTO -> {
-                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-                if (ManyueAutoEnhancementPolicy.decide(
-                        bounds.outWidth,
-                        ManyueRuntimeState.displayWidthPx,
-                        preferences.aiScalePercent.get(),
-                        ManyueAiModel.fromId(preferences.aiModel.get()).continuousScale,
-                    ).path == ManyueAutoEnhancementPolicy.Path.ORIGINAL_SIZE
-                ) {
-                    classicEnhance(bytes, preferences.classicStrength.get(), isAiCombined = false)
-                } else {
-                    null
-                }
-            }
-        }
-    }
+    ): ByteArray? = null
 }

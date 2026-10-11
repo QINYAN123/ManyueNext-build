@@ -219,7 +219,7 @@ class ReaderPreferences(
 
     // region Manyue Enhancement
 
-    /** 0=OFF,1=CLASSIC,2=AI_2X,3=AI_2X_CLASSIC */
+    /** Legacy-compatible setting; mode 1 migrates to OFF and mode 3 to AI_2X. */
     val manyueEnhancementMode: Preference<Int> = preferenceStore.getInt("manyueEnhancementMode", 0)
     val manyueClassicStrength: Preference<Int> = preferenceStore.getInt("manyueClassicStrength", 25)
     val manyueAiScalePercent: Preference<Int> = preferenceStore.getInt("manyueAiScalePercent", 200)

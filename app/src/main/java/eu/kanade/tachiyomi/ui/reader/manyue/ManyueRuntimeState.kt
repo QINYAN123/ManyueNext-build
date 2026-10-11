@@ -43,8 +43,9 @@ object ManyueRuntimeState {
      */
     @Synchronized
     fun updateMode(newMode: Int) {
-        if (modeInt == newMode) return
-        modeInt = newMode
+        val canonicalMode = ManyueEnhancementMode.fromInt(newMode).value
+        if (modeInt == canonicalMode) return
+        modeInt = canonicalMode
         generation++
         ManyuePrefetchManager.reset()
     }
@@ -101,9 +102,9 @@ object ManyueRuntimeState {
     }
 
     @Synchronized
-    fun updateAnime4kOverlay(enabled: Boolean) {
-        if (anime4kOverlay == enabled) return
-        anime4kOverlay = enabled
+    fun updateAnime4kOverlay(@Suppress("UNUSED_PARAMETER") enabled: Boolean) {
+        if (!anime4kOverlay) return
+        anime4kOverlay = false
         generation++
         ManyuePrefetchManager.reset()
     }
@@ -127,10 +128,14 @@ object ManyueRuntimeState {
         if (!prefs.manyueLiteModelMigrationDone.get()) {
             prefs.manyueLiteModelMigrationDone.set(true)
         }
-        updateMode(prefs.manyueEnhancementMode.get())
+        val savedMode = prefs.manyueEnhancementMode.get()
+        val canonicalMode = ManyueEnhancementMode.fromInt(savedMode).value
+        if (savedMode != canonicalMode) prefs.manyueEnhancementMode.set(canonicalMode)
+        updateMode(canonicalMode)
         updateClassicStrength(prefs.manyueClassicStrength.get())
         updateAiModel(ManyueAiModel.fromId(canonicalModelId))
-        updateAnime4kOverlay(prefs.manyueAnime4kOverlay.get())
+        if (prefs.manyueAnime4kOverlay.get()) prefs.manyueAnime4kOverlay.set(false)
+        updateAnime4kOverlay(false)
         updateAiScale(prefs.manyueAiScalePercent.get())
         updateAiDetailStrength(prefs.manyueAiDetailStrength.get())
         foldableMode = prefs.manyueFoldableMode.get()

@@ -750,7 +750,7 @@ class ManyuePrefetchCoordinatorLifecycleTest {
             withTimeout(5_000) { modeWaitStarted.await() }
 
             // A settings change cancels a suspended wait even if there is no new page callback.
-            ManyueRuntimeState.updateMode(ManyueEnhancementMode.AI_2X_CLASSIC.value)
+            ManyueRuntimeState.updateMode(ManyueEnhancementMode.AUTO.value)
             withTimeout(5_000) { modeWaitCancelled.await() }
             assertTrue(!coordinator.isCurrent(94, generation, ManyueEnhancementMode.AI_2X.value))
             assertTrue(

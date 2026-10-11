@@ -263,12 +263,12 @@ object ManyueAiUpscaler {
         sourceFingerprint: String = "",
         targetScaleTenths: Int = 20,
         model: ManyueAiModel = ManyueRuntimeState.aiModel,
-        anime4kOverlay: Boolean = ManyueRuntimeState.anime4kOverlay && !model.continuousScale,
+        @Suppress("UNUSED_PARAMETER") anime4kOverlay: Boolean = false,
         aiDetailStrength: Int = if (model.continuousScale) ManyueRuntimeState.aiDetailStrength else 0,
     ): String {
         val requestKey = listOf(
             mangaId, chapterId, pageIndex, targetMode, targetWidth, targetScaleTenths,
-            expectedMode, generation, sourceFingerprint, model.cacheIdentity, anime4kOverlay, aiDetailStrength,
+            expectedMode, generation, sourceFingerprint, model.cacheIdentity, false, aiDetailStrength,
         ).joinToString("|")
         tokensByRequestKey[requestKey]?.let { existingToken ->
             val existing = requests[existingToken]
@@ -285,7 +285,7 @@ object ManyueAiUpscaler {
             token, mangaId, chapterId, pageIndex, inputFile,
             sourceWidth, sourceHeight, targetMode, targetWidth, targetScaleTenths, priority,
             expectedMode, generation, sourceFingerprint, requestKey = requestKey,
-            model = model, anime4kOverlay = anime4kOverlay, aiDetailStrength = aiDetailStrength,
+            model = model, anime4kOverlay = false, aiDetailStrength = aiDetailStrength,
         )
         requests[token] = req
         tokensByRequestKey[requestKey] = token
@@ -453,12 +453,12 @@ object ManyueAiUpscaler {
         sourceFingerprint: String,
         targetScaleTenths: Int = 20,
         model: ManyueAiModel = ManyueRuntimeState.aiModel,
-        anime4kOverlay: Boolean = ManyueRuntimeState.anime4kOverlay && !model.continuousScale,
+        @Suppress("UNUSED_PARAMETER") anime4kOverlay: Boolean = false,
         aiDetailStrength: Int = if (model.continuousScale) ManyueRuntimeState.aiDetailStrength else 0,
     ): String? {
         val key = listOf(
             mangaId, chapterId, pageIndex, targetMode, targetWidth, targetScaleTenths,
-            expectedMode, generation, sourceFingerprint, model.cacheIdentity, anime4kOverlay, aiDetailStrength,
+            expectedMode, generation, sourceFingerprint, model.cacheIdentity, false, aiDetailStrength,
         ).joinToString("|")
         val token = tokensByRequestKey[key] ?: return null
         val req = requests[token]
@@ -623,45 +623,41 @@ object ManyueAiUpscaler {
     fun pinnedCachedImage(
         context: Context,
         token: String,
-        strength: Int? = null,
+        @Suppress("UNUSED_PARAMETER") strength: Int? = null,
     ): ManyueEnhancementCache.PinnedCachedImage? {
         val key = cacheKeyForToken(token) ?: return null
-        return pinnedCachedImageForKey(context, key, strength)
+        return pinnedCachedImageForKey(context, key)
     }
 
     internal fun pinnedCachedImageForKey(
         context: Context,
         cacheKey: String,
-        strength: Int? = null,
+        @Suppress("UNUSED_PARAMETER") strength: Int? = null,
     ): ManyueEnhancementCache.PinnedCachedImage? =
-        ManyueEnhancementCache.pinCachedImage(context, cacheKey, strength)
+        ManyueEnhancementCache.pinCachedImage(context, cacheKey)
 
+    @Suppress("UNUSED_PARAMETER")
     fun cachedClassicImage(
         context: Context,
         token: String,
         strength: Int,
-    ): ManyueEnhancementCache.CachedImage? {
-        val key = cacheKeyForToken(token) ?: return null
-        return ManyueEnhancementCache.getClassicImage(context, key, strength)
-    }
+    ): ManyueEnhancementCache.CachedImage? = null
 
+    @Suppress("UNUSED_PARAMETER")
     fun cacheClassicImage(
         context: Context,
         token: String,
         strength: Int,
         bitmap: Bitmap,
-    ): ManyueEnhancementCache.CachedImage? {
-        val key = cacheKeyForToken(token) ?: return null
-        return cacheClassicImageForKey(context, key, strength, bitmap)
-    }
+    ): ManyueEnhancementCache.CachedImage? = null
 
+    @Suppress("UNUSED_PARAMETER")
     internal fun cacheClassicImageForKey(
         context: Context,
         cacheKey: String,
         strength: Int,
         bitmap: Bitmap,
-    ): ManyueEnhancementCache.CachedImage? =
-        ManyueEnhancementCache.putClassicImage(context, cacheKey, strength, bitmap)
+    ): ManyueEnhancementCache.CachedImage? = null
 
     fun removeClassicImage(context: Context, token: String, strength: Int) {
         val key = cacheKeyForToken(token) ?: return

@@ -48,7 +48,7 @@ class ManyuePageBridgeLogicTest {
     @Test fun `OFF mode maps correctly`() {
         assertEquals(ManyueEnhancementMode.OFF, ManyueEnhancementMode.fromInt(0))
         assertEquals(ManyueEnhancementMode.AI_2X, ManyueEnhancementMode.fromInt(2))
-        assertEquals(ManyueEnhancementMode.AI_2X_CLASSIC, ManyueEnhancementMode.fromInt(3))
+        assertEquals(ManyueEnhancementMode.AI_2X, ManyueEnhancementMode.fromInt(3))
     }
 
     @Test fun `classic combined strength scales and floors at 1`() {

@@ -434,7 +434,9 @@ class ReaderActivity : BaseActivity() {
     }
 
     fun onManyueModeChanged(mode: Int) {
-        eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.updateMode(mode)
+        val canonicalMode = eu.kanade.tachiyomi.ui.reader.manyue.ManyueEnhancementMode.fromInt(mode).value
+        readerPreferences.manyueEnhancementMode.set(canonicalMode)
+        eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.updateMode(canonicalMode)
         recordManyueConfiguration()
         if (preferences.highQualityRenderer.get()) {
             updateViewer()
@@ -557,7 +559,7 @@ class ReaderActivity : BaseActivity() {
                 }
                 if (intent.hasExtra("mode")) {
                     val mode = intent.getIntExtra("mode", 2)
-                    if (mode !in listOf(0, 2, 3, 4)) return false
+                    if (mode !in listOf(0, 2, 4)) return false
                     readerPreferences.manyueEnhancementMode.set(mode)
                     onManyueModeChanged(mode)
                 }
@@ -685,7 +687,7 @@ class ReaderActivity : BaseActivity() {
             )
             put("flashOnPageChange", readerPreferences.flashOnPageChange.get())
             put("classicStrength", readerPreferences.manyueClassicStrength.get())
-            put("anime4kOverlay", readerPreferences.manyueAnime4kOverlay.get())
+            put("anime4kOverlay", eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.anime4kOverlay)
             put("width", binding.viewerContainer.width)
             put("height", binding.viewerContainer.height)
         }.toString()
@@ -799,8 +801,10 @@ class ReaderActivity : BaseActivity() {
         viewModel.state.value.viewer?.refreshManyue()
     }
 
+    @Suppress("UNUSED_PARAMETER")
     fun onManyueAnime4kOverlayChanged(enabled: Boolean) {
-        eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.updateAnime4kOverlay(enabled)
+        readerPreferences.manyueAnime4kOverlay.set(false)
+        eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.updateAnime4kOverlay(false)
         viewModel.state.value.viewer?.refreshManyue()
     }
 

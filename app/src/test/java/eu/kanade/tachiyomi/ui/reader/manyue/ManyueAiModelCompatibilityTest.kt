@@ -65,7 +65,36 @@ class ManyueAiModelCompatibilityTest {
 
     @Test
     fun `unknown saved model still falls back to the configured default`() {
+        assertEquals(ManyueAiModel.QUALITY_REAL_ESRGAN, ManyueAiModel.DEFAULT)
         assertEquals(ManyueAiModel.DEFAULT, ManyueAiModel.fromId("removed-or-unknown-model"))
+        assertEquals(ManyueAiModel.MOBILE_LITE, ManyueAiModel.fromId(ManyueAiModel.MOBILE_LITE.id))
+    }
+
+    @Test
+    fun `legacy enhancement modes and Anime overlay migrate while saved Lite remains selected`() {
+        val context = RuntimeEnvironment.getApplication()
+        val shared = context.getSharedPreferences("mode-retirement-${System.nanoTime()}", Context.MODE_PRIVATE)
+        val prefs = ReaderPreferences(AndroidPreferenceStore(shared))
+        val old = RuntimeSnapshot.capture()
+        try {
+            prefs.manyueAiModel.set(ManyueAiModel.MOBILE_LITE.id)
+            for ((savedMode, expectedMode) in listOf(1 to 0, 3 to 2, 4 to 4)) {
+                prefs.manyueEnhancementMode.set(savedMode)
+                prefs.manyueAnime4kOverlay.set(true)
+
+                ManyueRuntimeState.syncFrom(prefs)
+
+                assertEquals(expectedMode, prefs.manyueEnhancementMode.get())
+                assertEquals(expectedMode, ManyueRuntimeState.modeInt)
+                assertFalse(prefs.manyueAnime4kOverlay.get())
+                assertFalse(ManyueRuntimeState.anime4kOverlay)
+                assertEquals(ManyueAiModel.MOBILE_LITE.id, prefs.manyueAiModel.get())
+                assertEquals(ManyueAiModel.MOBILE_LITE, ManyueRuntimeState.aiModel)
+            }
+        } finally {
+            old.restore()
+            shared.edit().clear().apply()
+        }
     }
 
     @Test

@@ -8,7 +8,7 @@ import tachiyomi.core.common.preference.PreferenceStore
  */
 class ManyueEnhancementPreferences(private val store: PreferenceStore) {
 
-    /** 0=OFF,1=CLASSIC,2=AI_2X,3=AI_2X_CLASSIC,4=AUTO */
+    /** Legacy-compatible stored values; 1 migrates to OFF and 3 to AI_2X. */
     val enhancementMode: Preference<Int> =
         store.getInt("manyueEnhancementMode", ManyueEnhancementMode.OFF.value)
 
@@ -22,7 +22,7 @@ class ManyueEnhancementPreferences(private val store: PreferenceStore) {
 
     val aiModel: Preference<String> = store.getString("manyueAiModel", ManyueAiModel.DEFAULT.id)
 
-    /** Optional Anime4KCPP post-filter overlay, kept off by default for lowest latency. */
+    /** Legacy persisted flag; runtime sync clears it and new requests never enable the overlay. */
     val anime4kOverlay: Preference<Boolean> = store.getBoolean("manyueAnime4kOverlay", false)
 
     /** Independent screen-space filter; it does not schedule AI or re-encode images. */

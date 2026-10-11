@@ -18,6 +18,7 @@ import org.robolectric.annotation.GraphicsMode
 import org.robolectric.annotation.LooperMode
 import org.robolectric.util.ReflectionHelpers
 import java.io.ByteArrayOutputStream
+import java.io.File
 
 @RunWith(RobolectricTestRunner::class)
 @Config(application = Application::class, sdk = [34], manifest = Config.NONE)
@@ -115,6 +116,90 @@ class ManyueAiRequestRejectionTest {
         assertTrue(ManyuePageBridge.rejectionMessage(requireNotNull(rejection)).contains("设置已更改"))
     }
 
+    @Test
+    fun `direct legacy Anime flag is suppressed and shares the plain AI request identity`() = withRuntime { context ->
+        fun input(name: String) = File(context.cacheDir, name).apply { writeBytes(byteArrayOf(1, 2, 3)) }
+        val first = ManyueAiUpscaler.register(
+            mangaId = 9501,
+            chapterId = 9502,
+            pageIndex = 0,
+            inputFile = input("manyue-overlay-off-${System.nanoTime()}.bin"),
+            sourceWidth = 12,
+            sourceHeight = 16,
+            targetMode = 2,
+            targetWidth = 24,
+            priority = 100,
+            expectedMode = ManyueEnhancementMode.AI_2X.value,
+            generation = ManyueRuntimeState.generation,
+            sourceFingerprint = "overlay-retired-input",
+            model = ManyueAiModel.QUALITY_REAL_ESRGAN,
+            anime4kOverlay = false,
+        )
+        val legacyOverlayInput = input("manyue-overlay-old-${System.nanoTime()}.bin")
+        val second = ManyueAiUpscaler.register(
+            mangaId = 9501,
+            chapterId = 9502,
+            pageIndex = 0,
+            inputFile = legacyOverlayInput,
+            sourceWidth = 12,
+            sourceHeight = 16,
+            targetMode = 2,
+            targetWidth = 24,
+            priority = 100,
+            expectedMode = ManyueEnhancementMode.AI_2X.value,
+            generation = ManyueRuntimeState.generation,
+            sourceFingerprint = "overlay-retired-input",
+            model = ManyueAiModel.QUALITY_REAL_ESRGAN,
+            anime4kOverlay = true,
+        )
+
+        assertEquals(first, second)
+        assertFalse(request(first).anime4kOverlay)
+        assertFalse("the duplicate old-overlay input should be discarded", legacyOverlayInput.exists())
+        ManyueAiUpscaler.cancel(first)
+    }
+
+    @Test
+    fun `classic cache metadata remains readable but reader APIs never select its variant`() = withRuntime { context ->
+        val input = File(context.cacheDir, "manyue-classic-cache-input-${System.nanoTime()}.bin")
+            .apply { writeBytes(byteArrayOf(1, 2, 3)) }
+        val token = ManyueAiUpscaler.register(
+            mangaId = 9601,
+            chapterId = 9602,
+            pageIndex = 0,
+            inputFile = input,
+            sourceWidth = 12,
+            sourceHeight = 16,
+            targetMode = 2,
+            targetWidth = 24,
+            priority = 100,
+            expectedMode = ManyueEnhancementMode.AI_2X.value,
+            generation = ManyueRuntimeState.generation,
+            sourceFingerprint = "classic-cache-retirement",
+            model = ManyueAiModel.QUALITY_REAL_ESRGAN,
+        )
+        val key = requireNotNull(ManyueAiUpscaler.cacheKeyForToken(token))
+        val source = File(context.cacheDir, "manyue-classic-base-${System.nanoTime()}.png")
+            .apply { writeBytes(png(24, 32)) }
+        val bitmap = Bitmap.createBitmap(24, 32, Bitmap.Config.ARGB_8888)
+        var pinned: ManyueEnhancementCache.PinnedCachedImage? = null
+        try {
+            assertTrue(ManyueEnhancementCache.putImage(context, key, source, 24, 32))
+            assertNotNull(ManyueEnhancementCache.putClassicImage(context, key, 25, bitmap))
+            assertEquals("classic_luma_v3_25.img", ManyueEnhancementCache.getClassicImage(context, key, 25)?.file?.name)
+
+            assertNull(ManyueAiUpscaler.cachedClassicImage(context, token, 25))
+            pinned = ManyueAiUpscaler.pinnedCachedImageForKey(context, key, 25)
+            assertEquals("image.png", pinned?.image?.file?.name)
+        } finally {
+            pinned?.lease?.close()
+            bitmap.recycle()
+            ManyueAiUpscaler.cancel(token)
+            ManyueEnhancementCache.getBundle(context, key)?.deleteRecursively()
+            source.delete()
+        }
+    }
+
     private inline fun withRuntime(block: (Application) -> Unit) {
         val context = RuntimeEnvironment.getApplication()
         val runtime = ManyueAiRuntime
@@ -150,7 +235,7 @@ class ManyueAiRequestRejectionTest {
             @Suppress("UNCHECKED_CAST")
             val requests = requestsField.get(null) as Map<String, ManyueAiUpscaler.Request>
             // Cancellation deletes private test inputs and never starts native work.
-            requests.values.filter { it.mangaId in setOf(9201L, 9301L, 9401L) }
+            requests.values.filter { it.mangaId in setOf(9201L, 9301L, 9401L, 9501L, 9601L) }
                 .map { it.token }
                 .forEach(scheduler::cancel)
             ManyuePrefetchManager.reset()

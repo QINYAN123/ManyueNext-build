@@ -42,8 +42,8 @@ class ManyueLiteReaderIntegrationTest {
         val state = RuntimeSnapshot().apply { installLite(displayWidth = 6) }
         try {
             assertFalse(ManyueEnhancementMode.AUTO.usesClassic(ManyueAiModel.MOBILE_LITE))
-            assertTrue(ManyueEnhancementMode.AUTO.usesClassic(ManyueAiModel.FAST_REAL_CUGAN))
-            assertTrue(ManyueEnhancementMode.AI_2X_CLASSIC.usesClassic(ManyueAiModel.MOBILE_LITE))
+            assertFalse(ManyueEnhancementMode.AUTO.usesClassic(ManyueAiModel.FAST_REAL_CUGAN))
+            assertFalse(ManyueEnhancementMode.AI_2X_CLASSIC.usesClassic(ManyueAiModel.MOBILE_LITE))
 
             val original = png(width = 8, height = 17, color = Color.RED)
             assertTrue(ManyueReaderHook.needsAi(Buffer().write(original.clone()), ManyueEnhancementMode.AUTO.value))

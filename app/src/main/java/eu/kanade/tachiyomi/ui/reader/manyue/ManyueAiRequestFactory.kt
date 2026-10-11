@@ -200,7 +200,7 @@ object ManyueAiRequestFactory {
             sourceFingerprint = sourceFingerprint,
             targetScaleTenths = targetScaleTenths,
             model = model,
-            anime4kOverlay = ManyueRuntimeState.anime4kOverlay && !model.continuousScale,
+            anime4kOverlay = false,
             aiDetailStrength = if (model.continuousScale) ManyueRuntimeState.aiDetailStrength else 0,
         )
         if (reusable != null) {
@@ -236,7 +236,7 @@ object ManyueAiRequestFactory {
                 generation = generation,
                 sourceFingerprint = sourceFingerprint,
                 model = model,
-                anime4kOverlay = ManyueRuntimeState.anime4kOverlay && !model.continuousScale,
+                anime4kOverlay = false,
                 aiDetailStrength = if (model.continuousScale) ManyueRuntimeState.aiDetailStrength else 0,
             )
             // Register priority first, but open read-ahead only after queue() has offered the
