@@ -11,6 +11,7 @@ internal object ManyueLegacyProtocol {
     const val READY = 0
     const val RESULT = 1
     const val FATAL = 2
+    const val CANCELLED = -22
     private const val RESPONSE_BYTES = 92
     private const val MAX_PATH_BYTES = 4096
 

@@ -57,6 +57,14 @@ static bool resident_remove_output(const path_t& output_path)
     return errno == ENOENT;
 }
 
+static bool resident_cancel_requested(const std::string& path)
+{
+    if (path.empty())
+        return false;
+    std::ifstream marker(path.c_str(), std::ios::binary);
+    return marker.good();
+}
+
 static int resident_decode_request(const manyue_resident::Request& request,
                                    int scale, Task* task, uint64_t* elapsed_us)
 {
@@ -173,6 +181,7 @@ static int resident_decode_request(const manyue_resident::Request& request,
     task->resize_applied = false;
     task->inpath = input_path;
     task->outpath = output_path;
+@TASK_CANCEL_PATH_ASSIGNMENT@
     const path_t ext = get_file_extension(task->outpath);
     if (channels == 4 && (ext == PATHSTR("jpg") || ext == PATHSTR("JPG") ||
                           ext == PATHSTR("jpeg") || ext == PATHSTR("JPEG"))) {

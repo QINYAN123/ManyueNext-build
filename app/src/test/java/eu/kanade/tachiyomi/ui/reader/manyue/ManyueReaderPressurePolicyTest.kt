@@ -239,9 +239,11 @@ class ManyueReaderPressurePolicyTest {
             clock.advance(8_000_000L)
             policy.reportScroll(reader, dx = 100, dy = 0, viewportHeightPx = 100)
         }
-        assertEquals(ManyueReaderPressurePolicy.BLOCK_REASON_FAST_SCROLL, policy.aiWorkBlockReasonMask(99))
+        assertEquals(ManyueReaderPressurePolicy.BLOCK_REASON_FAST_SCROLL, policy.aiWorkBlockReasonMask(49))
+        assertEquals(0, policy.aiWorkBlockReasonMask(50), "nearest read-ahead continues during fast motion")
+        assertEquals(0, policy.aiWorkBlockReasonMask(99))
         assertEquals(0, policy.aiWorkBlockReasonMask(100), "visible work continues during fast scroll")
-        assertEquals(policy.aiWorkBlockReasonMask(99) != 0, policy.isBlocked())
+        assertEquals(policy.aiWorkBlockReasonMask(49) != 0, policy.isBlocked())
         assertEquals(policy.aiWorkBlockReasonMask(100) != 0, policy.isVisibleWorkBlocked())
 
         clock.advance(FAST_SCROLL_HOLD_NANOS + 1L)

@@ -20,6 +20,29 @@ import org.robolectric.annotation.LooperMode
 @Config(application = Application::class, sdk = [34], manifest = Config.NONE)
 @LooperMode(LooperMode.Mode.PAUSED)
 class ManyueDisplayCommitTest {
+    @Test fun preparedResultCannotWaitForeverForHealthyFramesOrBurstSwap() {
+        val controller = Robolectric.buildActivity(Activity::class.java).setup()
+        val recycler = WebtoonRecyclerView(controller.get())
+        controller.get().setContentView(recycler)
+        val state = RecyclerView::class.java.getDeclaredField("mScrollState").apply { isAccessible = true }
+        try {
+            ManyueReaderWorkGate.update(recycler, true)
+            state.setInt(recycler, RecyclerView.SCROLL_STATE_DRAGGING)
+            repeat(3) { ManyueReaderWorkGate.reportFrame(recycler, 40_000_000L, 16_666_667L) }
+            assertFalse(recycler.canSwapManyueImage(199L))
+            assertTrue("A prepared result can commit after a bounded wait", recycler.canSwapManyueImage(200L))
+            recycler.noteManyueImageSwap()
+            assertFalse("Pressure bypass cannot burst swap", recycler.canSwapManyueImage(300L))
+            // Advance the clock without draining a synthetic continuously-dragging vsync loop.
+            org.robolectric.shadows.ShadowSystemClock.advanceBy(Duration.ofMillis(100))
+            assertTrue(recycler.canSwapManyueImage(300L))
+        } finally {
+            state.setInt(recycler, RecyclerView.SCROLL_STATE_IDLE)
+            ManyueReaderWorkGate.release(recycler)
+            controller.pause().stop().destroy()
+        }
+    }
+
     @Test fun stableScrollingCanSwapAndThermalAloneDoesNotHideAReadyImage() {
         val controller = Robolectric.buildActivity(Activity::class.java).setup()
         val recycler = WebtoonRecyclerView(controller.get())

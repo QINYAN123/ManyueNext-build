@@ -45,9 +45,12 @@ object ManyueAiRuntime {
 
     private val legacySession = ManyueLegacySession()
 
-    class CancelledException : CancellationException("Manyue AI request cancelled")
+    class CancelledException(
+        val residentRetained: Boolean = false,
+        val acknowledgementMillis: Long? = null,
+    ) : CancellationException("Manyue AI request cancelled")
 
-    private const val EXPECTED_REAL_ESRGAN_SHA256 = "76b3b887fca8115b408173bcb920b4e18b317b0eba0f83e19bd224708642e611"
+    private const val EXPECTED_REAL_ESRGAN_SHA256 = "a4c5581ef5b0d6e0f96e3b7c6d607d7a6f97565f80cc1f6760b1f3953c3f2698"
     private const val EXPECTED_REAL_CUGAN_SHA256 = "d4ab907cb698b621f429b09ec5757318b23a1e05f8a7f77575c9af8ff24cb464"
     private const val EXPECTED_NCNN_SHA256 = "87d150e735157b09aa20f26f5e57f72468c548e7ce98ce407ec50ee7e14a52dd"
     private const val EXPECTED_LIBOMP_SHA256 = "da75dcbe6026a3e08d01bfe86860159432051b329a84deb5ee042ce9b8e1a302"
@@ -238,6 +241,7 @@ object ManyueAiRuntime {
         targetWidth: Int,
         isCancelled: () -> Boolean,
         onProcessStarted: (Process) -> Unit,
+        isConfigurationCurrent: () -> Boolean = { true },
     ): String {
         require(!model.continuousScale && probe(context, model) == Capability.READY)
         require(inputFile.isFile && inputFile.length() in 1..MAX_INPUT_BYTES.toLong())
@@ -264,6 +268,8 @@ object ManyueAiRuntime {
             logFile = logFile,
             isCancelled = isCancelled,
             onProcessStarted = onProcessStarted,
+            cooperativeCancellation = model == ManyueAiModel.QUALITY_REAL_ESRGAN,
+            isConfigurationCurrent = isConfigurationCurrent,
         )
     }
 

@@ -31,6 +31,26 @@ object ManyuePrefetchManager {
     private var directionKey: DirectionKey? = null
 
     private var prefetchDirection = ManyueAiSafetyPolicy.PrefetchDirection.FORWARD
+    private val displayPreparationSlot = ManyueDisplayPreparationSlot()
+
+    internal fun isNextDisplayPage(chapterId: Long, pageIndex: Int): Boolean = synchronized(this) {
+        chapterId == currentChapterId && currentPage >= 0 &&
+            ManyueAiSafetyPolicy.relativeDistance(pageIndex, currentPage, prefetchDirection) == 1
+    }
+
+    internal fun acquireDisplayPreparation(chapterId: Long, pageIndex: Int, owner: Any): Boolean =
+        synchronized(this) {
+            displayPreparationSlot.acquire(owner, isNextDisplayPage(chapterId, pageIndex))
+        }
+
+    internal fun ownsDisplayPreparation(chapterId: Long, pageIndex: Int, owner: Any): Boolean =
+        synchronized(this) {
+            displayPreparationSlot.owns(owner) && isNextDisplayPage(chapterId, pageIndex)
+        }
+
+    internal fun releaseDisplayPreparation(owner: Any) = synchronized(this) {
+        displayPreparationSlot.release(owner)
+    }
 
     internal fun isVisiblePage(chapterId: Long, pageIndex: Int): Boolean = synchronized(this) {
         PageKey(chapterId, pageIndex) in visiblePages ||
@@ -53,6 +73,7 @@ object ManyuePrefetchManager {
             currentPage = -1
             directionKey = null
             prefetchDirection = ManyueAiSafetyPolicy.PrefetchDirection.FORWARD
+            displayPreparationSlot.reset()
         }
     }
 
@@ -220,11 +241,9 @@ object ManyuePrefetchManager {
                 isCurrent = key.chapterId == currentChapterId && key.pageIndex == currentPage,
                 isVisible = key in visiblePages,
                 directionalPriority = candidatePriority.takeIf { key.chapterId == currentChapterId },
-                keepActive = key.chapterId == currentChapterId && ManyueAiSafetyPolicy.shouldFinishActiveRequest(
-                    pageIndex = key.pageIndex,
-                    currentIndex = currentPage,
-                    isProcessing = pageTokens.any(ManyueAiUpscaler::isProcessing),
-                ),
+                // Quality now cancels at safe GPU checkpoints without reloading the model.
+                // Fully passed pages do not consume another five-page look-back allowance.
+                keepActive = false,
             )
             when {
                 managedPriority != null -> pageTokens.forEach { ManyueAiUpscaler.updatePriority(it, managedPriority) }

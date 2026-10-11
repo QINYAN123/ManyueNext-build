@@ -25,6 +25,91 @@ import java.util.concurrent.TimeUnit
 @RunWith(RobolectricTestRunner::class)
 @Config(application = Application::class, sdk = [34], manifest = Config.NONE)
 class ManyueLegacySessionTest {
+    @Test
+    fun `cooperative acknowledgement cleans retired output and reuses the next framed request`() = withSession { root, session ->
+        var retired = false
+        var first = true
+        var starts = 0
+        val process = FakeProcess(ByteArrayInputStream(concat(
+            responseFrame(kind = ManyueLegacyProtocol.READY, requestId = 0),
+            responseFrame(kind = ManyueLegacyProtocol.RESULT, requestId = 1, status = ManyueLegacyProtocol.CANCELLED,
+                outputBytes = 0, width = 0, height = 0),
+            responseFrame(kind = ManyueLegacyProtocol.RESULT, requestId = 2, outputBytes = 4),
+        ))) { frame ->
+            writeOutputForRequest(frame)
+            if (first) {
+                retired = true
+                first = false
+            }
+        }
+        File(root, "retired.out.cancel").writeText("stale")
+        val error = assertThrows(ManyueAiRuntime.CancelledException::class.java) {
+            upscale(session, root, "same-key", { starts++; process }, "retired.webp",
+                isCancelled = { retired }, cooperativeCancellation = true)
+        }
+        assertTrue(error.residentRetained)
+        assertTrue(process.isAlive)
+        assertFalse(File(root, "retired.out").exists())
+        assertFalse(File(root, "retired.out.cancel").exists())
+        retired = false
+        val next = upscale(session, root, "same-key", { starts++; process }, "current.webp", cooperativeCancellation = true)
+        assertEquals(1, starts)
+        assertEquals(2, process.requestsSeen)
+        assertEquals(0, JSONObject(next).getInt("modelLoads"))
+    }
+
+    @Test
+    fun `unsolicited cancel or configuration invalidation cannot retain a worker`() = withSession { root, session ->
+        val unexpected = fakeProcess(
+            responseFrame(kind = ManyueLegacyProtocol.READY, requestId = 0),
+            responseFrame(kind = ManyueLegacyProtocol.RESULT, requestId = 1,
+                status = ManyueLegacyProtocol.CANCELLED, width = 0, height = 0),
+        )
+        assertThrows(IllegalStateException::class.java) {
+            upscale(session, root, "key", { unexpected }, "unexpected.webp", cooperativeCancellation = true)
+        }
+        assertFalse(unexpected.isAlive)
+        var configurationCurrent = true
+        val changed = FakeProcess(ByteArrayInputStream(concat(
+            responseFrame(kind = ManyueLegacyProtocol.READY, requestId = 0),
+            responseFrame(kind = ManyueLegacyProtocol.RESULT, requestId = 2, outputBytes = 4),
+        ))) { frame ->
+            writeOutputForRequest(frame)
+            configurationCurrent = false
+        }
+        val error = assertThrows(ManyueAiRuntime.CancelledException::class.java) {
+            upscale(session, root, "key", { changed }, "changed.webp",
+                cooperativeCancellation = true, isConfigurationCurrent = { configurationCurrent })
+        }
+        assertFalse(error.residentRetained)
+        assertFalse(changed.isAlive)
+        assertFalse(File(root, "changed.out").exists())
+        assertFalse(File(root, "changed.out.cancel").exists())
+    }
+
+    @Test
+    fun `missing cooperative acknowledgement times out and removes marker and partial output`() = withSession { root, session ->
+        val blocked = CloseAwareBlockingInputStream()
+        val responses = java.io.SequenceInputStream(
+            ByteArrayInputStream(responseFrame(kind = ManyueLegacyProtocol.READY, requestId = 0)), blocked,
+        )
+        val process = FakeProcess(responses, ::writeOutputForRequest)
+        val error = assertThrows(ManyueAiRuntime.CancelledException::class.java) {
+            upscale(session, root, "key", { process }, "timeout.webp", cooperativeCancellation = true,
+                isCancelled = {
+                    if (process.requestsSeen > 0) {
+                        org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofMillis(800))
+                        true
+                    } else false
+                },
+            )
+        }
+        assertFalse(error.residentRetained)
+        assertFalse(process.isAlive)
+        assertFalse(File(root, "timeout.out").exists())
+        assertFalse(File(root, "timeout.out.cancel").exists())
+        assertTrue(blocked.closed.await(1, TimeUnit.SECONDS))
+    }
 
     @Test
     fun `same live key reuses worker and reports startup metrics only once`() = withSession { root, session ->
@@ -340,6 +425,8 @@ class ManyueLegacySessionTest {
         isCancelled: () -> Boolean = { false },
         onProcessStarted: (Process) -> Unit = {},
         logFile: File = File(root, "native.log"),
+        cooperativeCancellation: Boolean = false,
+        isConfigurationCurrent: () -> Boolean = { true },
     ): String {
         val input = File(root, "$name.input").apply { writeBytes(byteArrayOf(9)) }
         return session.upscale(
@@ -351,6 +438,8 @@ class ManyueLegacySessionTest {
             logFile = logFile,
             isCancelled = isCancelled,
             onProcessStarted = onProcessStarted,
+            cooperativeCancellation = cooperativeCancellation,
+            isConfigurationCurrent = isConfigurationCurrent,
         )
     }
 

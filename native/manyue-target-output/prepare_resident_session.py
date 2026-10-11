@@ -41,6 +41,7 @@ def apply_resident_patch(variant: str, output_dir: Path) -> None:
         source,
         "#include <iostream>\n",
         "#include <iostream>\n#include <chrono>\n"
+        "#include <fstream>\n"
         "#if !defined(_WIN32)\n#include <sys/stat.h>\n#endif\n"
         '#include "manyue_resident_protocol.h"\n',
         "include resident protocol and monotonic clock",
@@ -56,6 +57,13 @@ def apply_resident_patch(variant: str, output_dir: Path) -> None:
     )
     source = replace_once(source, task_anchor, task_anchor + task_fields,
                           "add resident request timing to Task")
+    if variant == "realesr":
+        source = replace_once(
+            source,
+            "    path_t outpath;\n",
+            "    path_t outpath;\n    std::string cancel_path;\n",
+            "add request-scoped RealSR cancellation marker to Task",
+        )
 
     queue_anchor = "TaskQueue toproc;\nTaskQueue tosave;\n"
     globals_block = r'''TaskQueue toproc;
@@ -78,6 +86,7 @@ static void resident_release_input(Task& task);
 static void resident_report_task(Task& task, int status);
 static void resident_report_task_success(Task& task);
 static void resident_report_startup_failure(int status);
+static bool resident_cancel_requested(const std::string& path);
 '''
     source = replace_once(source, queue_anchor, globals_block,
                           "declare resident protocol state and metrics")
@@ -109,6 +118,23 @@ static void resident_report_startup_failure(int status);
 
     def process_replacement(match: re.Match[str]) -> str:
         indent = match.group("indent")
+        process_call = match.group("call")
+        cancel_branch = ""
+        if variant == "realesr":
+            process_call = process_call.replace(
+                "v.inimage, v.outimage)",
+                "v.inimage, v.outimage, resident_session_mode ? v.cancel_path.c_str() : nullptr)",
+                1,
+            )
+            cancel_branch = (
+                f"{indent}if (resident_session_mode && (process_status == manyue_resident::kCancelled || "
+                f"(process_status == 0 && resident_cancel_requested(v.cancel_path)))) {{\n"
+                f"{indent}    resident_release_input(v);\n"
+                f"{indent}    remove(v.outpath.c_str());\n"
+                f"{indent}    resident_report_task(v, manyue_resident::kCancelled);\n"
+                f"{indent}    continue;\n"
+                f"{indent}}}\n"
+            )
         return (
             f"{indent}if (resident_session_mode && v.outimage.empty()) {{\n"
             f"{indent}    resident_release_input(v);\n"
@@ -116,8 +142,10 @@ static void resident_report_startup_failure(int status);
             f"{indent}    continue;\n"
             f"{indent}}}\n"
             f"{indent}const uint64_t infer_start_us = resident_session_mode ? resident_now_us() : 0;\n"
-            f"{indent}const int process_status = {match.group('call')};\n"
+            f"{indent}const int process_status = {process_call};\n"
             f"{indent}if (resident_session_mode) v.infer_us = resident_now_us() - infer_start_us;\n"
+            + cancel_branch
+            +
             f"{indent}if (resident_session_mode && process_status != 0) {{\n"
             f"{indent}    resident_release_input(v);\n"
             f"{indent}    resident_report_task(v, manyue_resident::kInferenceError);\n"
@@ -136,10 +164,22 @@ static void resident_report_startup_failure(int status);
 
     def resize_replacement(match: re.Match[str]) -> str:
         indent = match.group("indent")
+        cancel_branch = ""
+        if variant == "realesr":
+            cancel_branch = (
+                f"{indent}if (resident_session_mode && resident_cancel_requested(v.cancel_path)) {{\n"
+                f"{indent}    resident_release_input(v);\n"
+                f"{indent}    remove(v.outpath.c_str());\n"
+                f"{indent}    resident_report_task(v, manyue_resident::kCancelled);\n"
+                f"{indent}    continue;\n"
+                f"{indent}}}\n"
+            )
         return (
             f"{indent}const uint64_t resize_start_us = resident_session_mode ? resident_now_us() : 0;\n"
             f"{indent}v.resize_failed = !resize_task_output(v);\n"
             f"{indent}if (resident_session_mode) v.resize_us = resident_now_us() - resize_start_us;\n"
+            + cancel_branch
+            +
             f"{indent}if (resident_session_mode && v.resize_failed) {{\n"
             f"{indent}    resident_release_input(v);\n"
             f"{indent}    resident_report_task(v, manyue_resident::kResizeError);\n"
@@ -161,8 +201,19 @@ static void resident_report_startup_failure(int status);
     save_text = source[save_start:main_start]
     sentinel = "        if (v.id == -233)\n            break;\n"
     save_text = replace_once(
-        save_text, sentinel,
-        sentinel + "\n        const uint64_t encode_start_us = resident_session_mode ? resident_now_us() : 0;\n",
+        save_text,
+        sentinel,
+        sentinel
+        + (
+            "\n        if (resident_session_mode && resident_cancel_requested(v.cancel_path)) {\n"
+            "            resident_release_input(v);\n"
+            "            remove(v.outpath.c_str());\n"
+            "            resident_report_task(v, manyue_resident::kCancelled);\n"
+            "            continue;\n"
+            "        }\n"
+            if variant == "realesr" else "\n"
+        )
+        + "        const uint64_t encode_start_us = resident_session_mode ? resident_now_us() : 0;\n",
         f"{variant} time resident output encoding",
     )
     if variant == "realesr":
@@ -275,6 +326,95 @@ static void resident_report_startup_failure(int status);
         f"{variant} report successful session output",
     )
     source = source[:save_start] + save_text + source[main_start:]
+
+    if variant == "realesr":
+        engine_file = output_dir / "realsr.cpp"
+        header_file = output_dir / "realsr.h"
+        engine = engine_file.read_text(encoding="utf-8")
+        header = header_file.read_text(encoding="utf-8")
+        header = replace_once(
+            header,
+            "    int process(const ncnn::Mat& inimage, ncnn::Mat& outimage) const;\n",
+            "    int process(const ncnn::Mat& inimage, ncnn::Mat& outimage, const char* cancel_path = nullptr) const;\n",
+            "add optional RealSR cancel marker argument",
+        )
+        header = replace_once(
+            header,
+            "    int process_cpu(const ncnn::Mat& inimage, ncnn::Mat& outimage) const;\n",
+            "    int process_cpu(const ncnn::Mat& inimage, ncnn::Mat& outimage, const char* cancel_path = nullptr) const;\n",
+            "add optional CPU cancel marker argument",
+        )
+        engine = replace_once(
+            engine,
+            '#include "manyue_ncnn_status.h"\n',
+            '#include "manyue_ncnn_status.h"\n'
+            '#include "manyue_resident_protocol.h"\n'
+            "#include <fstream>\n",
+            "include resident cancel status and marker reader",
+        )
+        engine = replace_once(
+            engine,
+            "RealSR::RealSR(int gpuid, bool _tta_mode, int num_threads)\n",
+            "static bool manyue_resident_cancel_requested(const char* path)\n"
+            "{\n"
+            "    if (!path || !path[0])\n"
+            "        return false;\n"
+            "    std::ifstream marker(path, std::ios::binary);\n"
+            "    return marker.good();\n"
+            "}\n\n"
+            "RealSR::RealSR(int gpuid, bool _tta_mode, int num_threads)\n",
+            "add request-scoped RealSR marker helper",
+        )
+        engine = replace_once(
+            engine,
+            "int RealSR::process(const ncnn::Mat& inimage, ncnn::Mat& outimage) const\n",
+            "int RealSR::process(const ncnn::Mat& inimage, ncnn::Mat& outimage, const char* cancel_path) const\n",
+            "add resident marker to RealSR process",
+        )
+        engine = replace_once(
+            engine,
+            "int RealSR::process_cpu(const ncnn::Mat& inimage, ncnn::Mat& outimage) const\n",
+            "int RealSR::process_cpu(const ncnn::Mat& inimage, ncnn::Mat& outimage, const char* cancel_path) const\n",
+            "add resident marker to CPU process",
+        )
+        engine = replace_once(
+            engine,
+            "int RealSR::process(const ncnn::Mat& inimage, ncnn::Mat& outimage, const char* cancel_path) const\n{\n",
+            "int RealSR::process(const ncnn::Mat& inimage, ncnn::Mat& outimage, const char* cancel_path) const\n{\n"
+            "    if (manyue_resident_cancel_requested(cancel_path))\n"
+            "        return manyue_resident::kCancelled;\n\n",
+            "check for cancellation before dispatch",
+        )
+        engine = replace_once(
+            engine,
+            "return process_cpu(inimage, outimage);",
+            "return process_cpu(inimage, outimage, cancel_path);",
+            "forward marker to CPU fallback",
+        )
+        cpu_start = engine.index("int RealSR::process_cpu(")
+        cpu_region = engine[cpu_start:]
+        cpu_loop = "        for (int xi = 0; xi < xtiles; xi++)\n        {\n"
+        cpu_region = replace_once(
+            cpu_region,
+            cpu_loop,
+            cpu_loop
+            + "            if (manyue_resident_cancel_requested(cancel_path))\n"
+            + "                return manyue_resident::kCancelled;\n",
+            "poll marker between CPU tiles",
+        )
+        cpu_return = "    return 0;\n}"
+        if cpu_region.count(cpu_return) != 1:
+            raise RuntimeError("RealSR CPU cancel patch: expected one process_cpu return")
+        cpu_region = cpu_region.replace(
+            cpu_return,
+            "    if (manyue_resident_cancel_requested(cancel_path))\n"
+            "        return manyue_resident::kCancelled;\n"
+            "    return 0;\n}",
+            1,
+        )
+        engine = engine[:cpu_start] + cpu_region
+        engine_file.write_text(engine, encoding="utf-8", newline="\n")
+        header_file.write_text(header, encoding="utf-8", newline="\n")
 
     # Add resident flag parsing, but leave the legacy path untouched by default.
     if variant == "realesr":
@@ -398,6 +538,11 @@ static void resident_report_startup_failure(int status);
         "@TASK_SCALE_ASSIGNMENT@",
         "    task->scale = scale;\n" if variant == "realcugan" else "",
     )
+    runtime = runtime.replace(
+        "@TASK_CANCEL_PATH_ASSIGNMENT@",
+        "    task->cancel_path = request.output_path + \".cancel\";\n"
+        if variant == "realesr" else "",
+    )
     output_image_init = (
         "    if (width > INT_MAX / scale || height > INT_MAX / scale) {\n"
         "        resident_release_input(*task);\n"
@@ -458,10 +603,18 @@ def verify_candidate(module: Path, variant: str) -> None:
     runtime = (module / "manyue_resident_session.inc").read_text(encoding="utf-8")
     if "@TASK_SCALE_ASSIGNMENT@" in runtime:
         raise RuntimeError(f"{variant} candidate contains an unexpanded Task scale placeholder")
+    if "@TASK_CANCEL_PATH_ASSIGNMENT@" in runtime:
+        raise RuntimeError(f"{variant} candidate contains an unexpanded cancel-path placeholder")
     if variant == "realcugan" and "task->scale = scale;" not in runtime:
         raise RuntimeError("realcugan candidate lost its per-task scale assignment")
     if variant == "realesr" and "task->scale = scale;" in runtime:
         raise RuntimeError("realesr candidate assigns a Task field it does not have")
+    if variant == "realesr" and (
+        "task->cancel_path = request.output_path + \".cancel\";" not in runtime or
+        "manyue_resident::kCancelled" not in main or
+        "const char* cancel_path" not in engine
+    ):
+        raise RuntimeError("realesr candidate lost request-scoped cooperative cancellation")
     if "case 'S'" not in main or "manyue_resident_protocol.h" not in main or \
             "MNYQ" not in protocol or "MNYR" not in protocol or \
             "run_resident_session" not in runtime:

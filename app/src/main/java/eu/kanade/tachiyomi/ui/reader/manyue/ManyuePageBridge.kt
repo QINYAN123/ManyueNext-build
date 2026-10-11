@@ -11,6 +11,7 @@ import eu.kanade.tachiyomi.ui.reader.manyue.ManyuePerformanceRecorder.Stage
 import eu.kanade.tachiyomi.ui.reader.viewer.ReaderPageImageView
 import eu.kanade.tachiyomi.ui.reader.viewer.webtoon.WebtoonRecyclerView
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -156,8 +157,8 @@ class ManyuePageBridge(
                     }
                     onState(ManyueEnhancementState.AI_QUEUED, null)
                 }
-                // Only the visible holder submits direct work. Offscreen pages are covered by
-                // the bounded reader prefetch cursor and can reuse that request when they appear.
+                // Current/visible holders and only the attached nearest directional holder can
+                // submit. The factory deduplicates this against the sequential prefetch cursor.
                 val visibilityDiagnosticStartedAt = if (ManyuePerformanceDiagnostics.enabled) {
                     val startedAt = SystemClock.elapsedRealtime()
                     val recorded = recordVisibilityWait(
@@ -172,12 +173,13 @@ class ManyuePageBridge(
                 var enqueueRejection: ManyueAiRequestFactory.Rejection? = null
                 val requestResult = awaitVisiblePageAction(
                     isCurrent = { isCurrentBeforeToken(identity, mode, expectedGeneration) },
-                    isVisible = ::isPageVisible,
+                    isVisible = { isPageVisible() || canPrepareNext(identity) },
                     // During chapter/layout handoff geometry can precede the viewer's page
                     // window. register() would cancel such a token before queue(), and the
                     // retained holder would immediately recreate it. Wait before any IO.
                     isAdmitted = {
-                        ManyuePrefetchManager.isVisiblePage(identity.chapterId, identity.pageIndex)
+                        ManyuePrefetchManager.isVisiblePage(identity.chapterId, identity.pageIndex) ||
+                            canPrepareNext(identity)
                     },
                     onWaitFinished = { outcome ->
                         visibilityDiagnosticStartedAt?.let { startedAt ->
@@ -197,7 +199,7 @@ class ManyuePageBridge(
                                 context = context,
                                 identity = identity,
                                 originalBytes = originalBytes,
-                                priority = 100,
+                                priority = if (ManyuePrefetchManager.isVisiblePage(identity.chapterId, identity.pageIndex)) 100 else 50,
                                 expectedMode = mode,
                                 generation = expectedGeneration,
                                 onRejected = { enqueueRejection = it },
@@ -267,7 +269,15 @@ class ManyuePageBridge(
                                 // Cached RecyclerView holders can reappear without bind(). A
                                 // cancelled strip must be able to recreate its request then.
                                 try {
-                                    if (!awaitDisplayPause(t, identity, mode, expectedGeneration)) return@launch
+                                    if (!awaitSourceReady(t, identity, mode, expectedGeneration)) return@launch
+                                    if (awaitVisiblePageAction(
+                                            isCurrent = { isCurrent(t, identity, mode, expectedGeneration) },
+                                            isVisible = ::isPageVisible,
+                                            isAdmitted = {
+                                                ManyuePrefetchManager.isVisiblePage(identity.chapterId, identity.pageIndex)
+                                            },
+                                        ) { Unit } is VisibleActionResult.Stale
+                                    ) return@launch
                                     val bytes = withContext(Dispatchers.IO) { reloadOriginal() }
                                     if (bytes != null && isCurrent(t, identity, mode, expectedGeneration)) {
                                         tryStartAi(
@@ -424,40 +434,61 @@ class ManyuePageBridge(
                                 t,
                                 Metric.SOURCE_WAIT_MS to (SystemClock.elapsedRealtime() - sourceWaitStartedAt),
                             )
-                            // Keep completed results encoded in the cache until this holder actually
-                            // intersects the viewport. Attached RecyclerView children can be offscreen;
-                            // staging them would enqueue base-tile decodes ahead of the page being read.
-                            val visibilityStartedAt = SystemClock.elapsedRealtime()
-                            if (!awaitPageVisibility(
-                                    isCurrent = { isCurrent(t, identity, mode, expectedGeneration) },
-                                    isVisible = ::isPageVisible,
+                            while (isCurrent(t, identity, mode, expectedGeneration)) {
+                                val visibilityStartedAt = SystemClock.elapsedRealtime()
+                                if (!awaitPageVisibility(
+                                        isCurrent = { isCurrent(t, identity, mode, expectedGeneration) },
+                                        isVisible = {
+                                            isPageVisible() || (!wantClassic && canPrepareNext(identity) &&
+                                                ManyuePrefetchManager.acquireDisplayPreparation(identity.chapterId, identity.pageIndex, this@ManyuePageBridge))
+                                        },
+                                    )
+                                ) return@launch
+                                val speculative = !isPageVisible()
+                                ManyuePerformanceDiagnostics.event(
+                                    if (speculative) Stage.DISPLAY_PREWARM_STARTED else Stage.PAGE_VISIBLE,
+                                    identity.pageIndex,
+                                    t,
+                                    Metric.VISIBILITY_WAIT_MS to (SystemClock.elapsedRealtime() - visibilityStartedAt),
                                 )
-                            ) {
-                                return@launch
+                                val completed = stageFile(
+                                    image = display.image,
+                                    baseImage = display.baseImage,
+                                    classicVariant = display.image.file != display.baseImage.file,
+                                    state = display.state,
+                                    detail = display.detail,
+                                    token = t,
+                                    cacheKey = requestCacheKey,
+                                    expectedIdentity = identity,
+                                    expectedMode = mode,
+                                    expectedGeneration = expectedGeneration,
+                                    context = context,
+                                    strength = strength,
+                                    onEnhancedDimensions = onEnhancedDimensions,
+                                    onState = onState,
+                                    allowOffscreen = {
+                                        isAttachedNext(identity) && ManyuePrefetchManager.ownsDisplayPreparation(
+                                            identity.chapterId, identity.pageIndex, this@ManyuePageBridge,
+                                        )
+                                    },
+                                )
+                                // A fast skip/reversal can retire a prepared holder before commit.
+                                // Release its decoded child promptly, keeping the encoded result for
+                                // a revisit. Do not hold this one speculative slot while off-window.
+                                while (!completed.isCompleted && isCurrent(t, identity, mode, expectedGeneration)) {
+                                    if (!isPageVisible() && !(isAttachedNext(identity) && ManyuePrefetchManager.ownsDisplayPreparation(
+                                            identity.chapterId, identity.pageIndex, this@ManyuePageBridge,
+                                        ))
+                                    ) {
+                                        stagedImageId?.let(view::cancelStagedImage)
+                                        stagedImageId = null
+                                        break
+                                    }
+                                    delay(32L)
+                                }
+                                ManyuePrefetchManager.releaseDisplayPreparation(this@ManyuePageBridge)
+                                if (completed.isCompleted) return@launch
                             }
-                            ManyuePerformanceDiagnostics.event(
-                                Stage.PAGE_VISIBLE,
-                                identity.pageIndex,
-                                t,
-                                Metric.VISIBILITY_WAIT_MS to (SystemClock.elapsedRealtime() - visibilityStartedAt),
-                            )
-                            if (!isCurrent(t, identity, mode, expectedGeneration)) return@launch
-                            stageFile(
-                                image = display.image,
-                                baseImage = display.baseImage,
-                                classicVariant = display.image.file != display.baseImage.file,
-                                state = display.state,
-                                detail = display.detail,
-                                token = t,
-                                cacheKey = requestCacheKey,
-                                expectedIdentity = identity,
-                                expectedMode = mode,
-                                expectedGeneration = expectedGeneration,
-                                context = context,
-                                strength = strength,
-                                onEnhancedDimensions = onEnhancedDimensions,
-                                onState = onState,
-                            )
                         } catch (_: CancellationException) {
                             // Holder was rebound or detached.
                         } catch (error: Throwable) {
@@ -467,6 +498,7 @@ class ManyuePageBridge(
                                 onState(ManyueEnhancementState.FAILED, "AI 结果显示失败")
                             }
                         } finally {
+                            ManyuePrefetchManager.releaseDisplayPreparation(this@ManyuePageBridge)
                             imageCacheLease?.close()
                             baseCacheLease?.close()
                         }
@@ -518,6 +550,14 @@ class ManyuePageBridge(
         return view.getGlobalVisibleRect(Rect())
     }
 
+    private fun canPrepareNext(identity: Identity): Boolean =
+        isAttachedNext(identity) && !ManyueReaderWorkGate.isAiWorkBlocked(50)
+
+    private fun isAttachedNext(identity: Identity): Boolean =
+        findRecyclerView() is WebtoonRecyclerView && view.isAttachedToWindow && view.isShown &&
+            view.width > 0 && view.height > 0 &&
+            ManyuePrefetchManager.isNextDisplayPage(identity.chapterId, identity.pageIndex)
+
     private fun recordVisibilityWait(
         stage: Stage,
         identity: Identity,
@@ -543,44 +583,6 @@ class ManyuePageBridge(
         outcome?.let { metrics.add(Metric.WAIT_OUTCOME to it.metricValue) }
         ManyuePerformanceDiagnostics.event(stage, identity.pageIndex, null, *metrics.toTypedArray())
         return true
-    }
-
-    private suspend fun awaitDisplayPause(
-        expectedToken: String,
-        expectedIdentity: Identity,
-        expectedMode: Int,
-        expectedGeneration: Long,
-    ): Boolean {
-        val recycler = findRecyclerView()
-        var quietSince = 0L
-        val visibleRect = Rect()
-        while (isCurrent(expectedToken, expectedIdentity, expectedMode, expectedGeneration)) {
-            if (!view.isAttachedToWindow) {
-                awaitAttachment()
-                quietSince = 0L
-                continue
-            }
-            val pageVisible = view.isShown && view.getGlobalVisibleRect(visibleRect)
-            val settled = pageVisible && view.isManyueImageReady() && !view.isManyueInteractionActive() &&
-                (
-                    recycler == null || (
-                        recycler.scrollState == RecyclerView.SCROLL_STATE_IDLE &&
-                            !recycler.isComputingLayout
-                        )
-                    )
-            val now = SystemClock.uptimeMillis()
-            if (settled) {
-                // The strip RecyclerView already owns a 300 ms quiet window. Do not add
-                // another window for every preparation and commit phase.
-                if (recycler is WebtoonRecyclerView) return true
-                if (quietSince == 0L) quietSince = now
-                if (now - quietSince >= SCROLL_SETTLE_MS) return true
-            } else {
-                quietSince = 0L
-            }
-            delay(if (pageVisible) 80L else 250L)
-        }
-        return false
     }
 
     private suspend fun awaitAttachment() = suspendCancellableCoroutine<Unit> { continuation ->
@@ -675,7 +677,9 @@ class ManyuePageBridge(
         strength: Int,
         onEnhancedDimensions: (Int, Int) -> Unit,
         onState: (ManyueEnhancementState, String?) -> Unit,
-    ) {
+        allowOffscreen: () -> Boolean,
+    ): CompletableDeferred<Boolean> {
+        val completed = CompletableDeferred<Boolean>()
         // Freeze the token's immutable source/configuration/output stamp for this whole staged
         // image attempt. The staged child itself cannot contribute coverage before it is promoted.
         val coverageResult = ManyueAiUpscaler.coverageResultForToken(token)
@@ -686,18 +690,22 @@ class ManyuePageBridge(
         lateinit var beginStage: (ManyueEnhancementCache.CachedImage, Boolean) -> Unit
         beginStage = { target, mayFallback ->
             val stageStartedAt = SystemClock.elapsedRealtime()
+            var basePreparedAt: Long? = null
             var callbackRanSynchronously = false
             var displayFailureReported = false
             val requestId = view.setTiledImagePreservingCurrent(
                 file = target.file,
                 config = config,
                 shouldCommit = {
-                    isCurrent(token, expectedIdentity, expectedMode, expectedGeneration)
+                    isCurrent(token, expectedIdentity, expectedMode, expectedGeneration) &&
+                        (isPageVisible() || allowOffscreen())
                 },
                 maySwap = {
                     if (recycler is WebtoonRecyclerView) {
-                        view.isAttachedToWindow && view.isShown && view.getGlobalVisibleRect(Rect()) &&
-                            recycler.canSwapManyueImage()
+                        view.isAttachedToWindow && view.isShown && (isPageVisible() || allowOffscreen()) &&
+                            recycler.canSwapManyueImage(
+                                basePreparedAt?.let { SystemClock.elapsedRealtime() - it } ?: 0L,
+                            )
                     } else if (view.isManyueInteractionActive()) {
                         quietSince = 0L
                         false
@@ -726,12 +734,14 @@ class ManyuePageBridge(
                     stagedImageId = null
                     onEnhancedDimensions(target.width, target.height)
                     onState(readyState, readyDetail)
+                    completed.complete(true)
                     logcat {
                         "Manyue reader replace chapter=${expectedIdentity.chapterId} " +
                             "page=${expectedIdentity.pageIndex} token=$token stageWaitMs=${SystemClock.elapsedRealtime() - stageStartedAt}"
                     }
                 },
                 onPrepared = {
+                    basePreparedAt = SystemClock.elapsedRealtime()
                     ManyuePerformanceDiagnostics.event(
                         Stage.BASE_READY,
                         expectedIdentity.pageIndex,
@@ -775,6 +785,7 @@ class ManyuePageBridge(
                             "Manyue AI tiled image load failed; original retained"
                         }
                         onState(ManyueEnhancementState.FAILED, "AI 结果显示失败")
+                        completed.complete(false)
                     }
                 },
                 onDisplayError = { error ->
@@ -799,6 +810,7 @@ class ManyuePageBridge(
             if (!callbackRanSynchronously) stagedImageId = requestId
         }
         beginStage(image, classicVariant)
+        return completed
     }
 
     private fun isCurrent(

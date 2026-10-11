@@ -40,6 +40,7 @@ enum Status : int32_t {
     kOutputPrepareError = -12,
     kInferenceError = -20,
     kResizeError = -21,
+    kCancelled = -22,
     kEncodeError = -30,
     kOutputInvalid = -31,
     kModelInitError = -40,

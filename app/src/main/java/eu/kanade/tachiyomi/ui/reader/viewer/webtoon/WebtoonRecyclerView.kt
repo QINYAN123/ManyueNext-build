@@ -40,6 +40,7 @@ class WebtoonRecyclerView @JvmOverloads constructor(
     private var frameCallbackPosted = false
     private var previousFrameTimeNanos = 0L
     private var manyueSwapSampleUntil = 0L
+    private var manyueLastSwapAt: Long? = null
 
     private val manyueFrameCallback = Choreographer.FrameCallback { frameTimeNanos ->
         frameCallbackPosted = false
@@ -81,19 +82,23 @@ class WebtoonRecyclerView @JvmOverloads constructor(
         scrollState != SCROLL_STATE_IDLE || SystemClock.uptimeMillis() - manyueLastInteraction < 300L
 
     /** Stable scrolling can display a prepared result; pinch, layout, and measured pressure cannot. */
-    fun canSwapManyueImage(): Boolean {
-        if (isZooming || manyueAnimating > 0 || isComputingLayout ||
-            ManyueReaderWorkGate.isDisplayBlocked()
-        ) {
+    fun canSwapManyueImage(preparedWaitMillis: Long = 0L): Boolean {
+        if (isZooming || manyueAnimating > 0 || isComputingLayout) {
             return false
         }
+        val now = SystemClock.uptimeMillis()
+        if (ManyueReaderWorkGate.isDisplayBlocked() &&
+            (preparedWaitMillis < 200L || manyueLastSwapAt?.let { now - it < 100L } == true)
+        ) return false
         return scrollState != SCROLL_STATE_IDLE ||
             (!manyueTouchActive && SystemClock.uptimeMillis() - manyueLastInteraction >= 120L)
     }
 
     /** Include replacement/retirement frames even after scrolling stops. */
     fun noteManyueImageSwap() {
-        manyueSwapSampleUntil = SystemClock.uptimeMillis() + 500L
+        val now = SystemClock.uptimeMillis()
+        manyueLastSwapAt = now
+        manyueSwapSampleUntil = now + 500L
         updateFrameSampling()
     }
 

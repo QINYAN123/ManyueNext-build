@@ -67,7 +67,7 @@ class ManyueLitePolicyTest {
     }
 
     @Test
-    fun `visible AI and prepared results continue through fast scroll while prefetch waits`() {
+    fun `visible and nearest AI continue through fast scroll while further prefetch waits`() {
         val owner = Any()
         try {
             ManyueReaderWorkGate.update(owner, active = true)
@@ -79,7 +79,8 @@ class ManyueLitePolicyTest {
             assertTrue(ManyueReaderWorkGate.isBlocked())
             assertFalse(ManyueReaderWorkGate.isDisplayBlocked())
             assertFalse(ManyueReaderWorkGate.isAiWorkBlocked(priority = 100))
-            assertTrue(ManyueReaderWorkGate.isAiWorkBlocked(priority = 99))
+            assertFalse(ManyueReaderWorkGate.isAiWorkBlocked(priority = 50))
+            assertTrue(ManyueReaderWorkGate.isAiWorkBlocked(priority = 49))
         } finally {
             ManyueReaderWorkGate.release(owner)
         }

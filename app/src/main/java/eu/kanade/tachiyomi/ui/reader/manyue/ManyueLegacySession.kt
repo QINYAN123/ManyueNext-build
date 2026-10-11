@@ -60,18 +60,30 @@ internal class ManyueLegacySession {
         logFile: File,
         isCancelled: () -> Boolean,
         onProcessStarted: (Process) -> Unit,
+        cooperativeCancellation: Boolean = false,
+        isConfigurationCurrent: () -> Boolean = { true },
     ): String {
         val deadline = SystemClock.elapsedRealtime() + 240_000L
         var current = connection
         var startup: ManyueLegacyProtocol.Response? = null
         var ownsOutput = false
+        var cancellationMarker: File? = null
+        var retainCancelledConnection = false
+        var cancellationRequestedAt: Long? = null
         try {
             if (isCancelled()) throw ManyueAiRuntime.CancelledException()
             val inputPath = input.canonicalFile
             val outputPath = output.canonicalFile
             val logPath = logFile.canonicalFile
-            require(inputPath != outputPath && inputPath != logPath && outputPath != logPath) {
+            val markerPath = File(outputPath.path + ".cancel").canonicalFile
+            require(inputPath != outputPath && inputPath != logPath && outputPath != logPath &&
+                (!cooperativeCancellation || (markerPath != inputPath && markerPath != logPath))
+            ) {
                 "Native work files must preserve the original file"
+            }
+            if (cooperativeCancellation) {
+                check(!markerPath.exists() || markerPath.delete()) { "Unable to remove a stale cancellation marker" }
+                cancellationMarker = markerPath
             }
             ownsOutput = true
             check(!output.exists() || output.delete()) { "Unable to remove a stale native output" }
@@ -92,18 +104,37 @@ internal class ManyueLegacySession {
             val id = nextRequestId++
             check(id > 0) { "Native request sequence exhausted" }
             ManyueLegacyProtocol.writeRequest(current.process.outputStream, id, targetWidth, input.path, output.path)
-            val response = read(current, isCancelled, deadline)
+            val response = read(current, isCancelled, deadline, cancellationMarker, isConfigurationCurrent) {
+                cancellationRequestedAt = SystemClock.elapsedRealtime()
+            }
             check(
                 response.kind == ManyueLegacyProtocol.RESULT && response.requestId == id &&
-                    response.status == 0 && response.modelLoads == 0,
+                    response.modelLoads == 0,
             ) {
                 "Native session request failed (${response.status})"
             }
-            if (isCancelled()) throw ManyueAiRuntime.CancelledException()
+            if (response.status == ManyueLegacyProtocol.CANCELLED) {
+                check(cooperativeCancellation && isCancelled() && response.width == 0 && response.height == 0 &&
+                    response.outputBytes == 0L
+                ) { "Unexpected native cancellation response" }
+                retainCancelledConnection = isConfigurationCurrent()
+                throw ManyueAiRuntime.CancelledException(
+                    retainCancelledConnection,
+                    cancellationRequestedAt?.let { SystemClock.elapsedRealtime() - it },
+                )
+            }
+            check(response.status == 0) { "Native session request failed (${response.status})" }
             check(
                 response.width == targetWidth && response.height > 0 &&
                     output.isFile && output.length() > 0 && output.length() == response.outputBytes,
             ) { "Native session output is missing or invalid" }
+            if (isCancelled()) {
+                retainCancelledConnection = cooperativeCancellation && isConfigurationCurrent()
+                throw ManyueAiRuntime.CancelledException(
+                    retainCancelledConnection,
+                    cancellationRequestedAt?.let { SystemClock.elapsedRealtime() - it },
+                )
+            }
             return JSONObject().apply {
                 val backend = when (response.backend) {
                     1 -> "vulkan"
@@ -125,7 +156,7 @@ internal class ManyueLegacySession {
         } catch (error: Throwable) {
             if (ownsOutput) runCatching { logFile.writeText(current?.logTail().orEmpty()) }
             try {
-                close()
+                if (!retainCancelledConnection || !isConfigurationCurrent()) close()
             } finally {
                 if (ownsOutput) output.delete()
             }
@@ -135,6 +166,7 @@ internal class ManyueLegacySession {
             }
             throw error
         } finally {
+            cancellationMarker?.delete()
             lastUsedAt = SystemClock.elapsedRealtime()
         }
     }
@@ -143,12 +175,27 @@ internal class ManyueLegacySession {
         connection: Connection,
         isCancelled: () -> Boolean,
         deadline: Long,
+        cancellationMarker: File? = null,
+        isConfigurationCurrent: () -> Boolean = { true },
+        onCancellationRequested: () -> Unit = {},
     ): ManyueLegacyProtocol.Response {
         val response = connection.responses.submit<ManyueLegacyProtocol.Response> {
             ManyueLegacyProtocol.readResponse(connection.process.inputStream)
         }
+        var cancellationRequestedAt: Long? = null
         while (true) {
-            if (isCancelled()) throw ManyueAiRuntime.CancelledException()
+            if (!isConfigurationCurrent()) throw ManyueAiRuntime.CancelledException()
+            if (isCancelled()) {
+                if (cancellationMarker == null) throw ManyueAiRuntime.CancelledException()
+                if (cancellationRequestedAt == null) {
+                    cancellationMarker.writeText("1")
+                    cancellationRequestedAt = SystemClock.elapsedRealtime()
+                    onCancellationRequested()
+                }
+            }
+            if (cancellationRequestedAt?.let { SystemClock.elapsedRealtime() - it >= 2_000L } == true) {
+                throw ManyueAiRuntime.CancelledException()
+            }
             check(SystemClock.elapsedRealtime() < deadline) { "Native session timed out" }
             try {
                 return response.get(100, TimeUnit.MILLISECONDS)

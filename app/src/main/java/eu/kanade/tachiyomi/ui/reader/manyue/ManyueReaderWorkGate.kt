@@ -56,7 +56,7 @@ object ManyueReaderWorkGate {
     fun isBlocked(): Boolean = policy.isBlocked()
 
     fun isAiWorkBlocked(priority: Int): Boolean =
-        if (priority >= 100) policy.isVisibleWorkBlocked() else policy.isBlocked()
+        if (priority >= 50) policy.isVisibleWorkBlocked() else policy.isBlocked()
 
     /** Diagnostic-only snapshot; callers must keep [isAiWorkBlocked] as the scheduling decision. */
     fun aiWorkBlockReasonMask(priority: Int): Int = policy.aiWorkBlockReasonMask(priority)

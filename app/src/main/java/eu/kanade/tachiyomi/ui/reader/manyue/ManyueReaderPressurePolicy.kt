@@ -163,7 +163,7 @@ internal class ManyueReaderPressurePolicy(
         return thermalPressure || isBefore(now, fastScrollUntilNanos) || isBefore(now, badFrameUntilNanos)
     }
 
-    /** Visible AI jobs continue through fast motion, while measured jank/heat still pause work. */
+    /** Current and nearest read-ahead jobs continue through motion; jank/heat still pause them. */
     @Synchronized
     fun isVisibleWorkBlocked(): Boolean =
         thermalPressure || isBefore(nanoTime(), badFrameUntilNanos)
@@ -175,7 +175,7 @@ internal class ManyueReaderPressurePolicy(
         var reasons = 0
         if (thermalPressure) reasons = reasons or BLOCK_REASON_THERMAL
         if (isBefore(now, badFrameUntilNanos)) reasons = reasons or BLOCK_REASON_BAD_FRAME
-        if (priority < 100 && isBefore(now, fastScrollUntilNanos)) {
+        if (priority < 50 && isBefore(now, fastScrollUntilNanos)) {
             reasons = reasons or BLOCK_REASON_FAST_SCROLL
         }
         return reasons

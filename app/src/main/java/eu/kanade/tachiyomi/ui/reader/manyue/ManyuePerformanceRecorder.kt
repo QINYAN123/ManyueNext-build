@@ -22,6 +22,10 @@ internal class ManyuePerformanceRecorder(
         AI_READY,
         AI_FAILED,
         DISPLAY_STARTED,
+        DISPLAY_PREWARM_STARTED,
+        NATIVE_CANCEL_REQUESTED,
+        NATIVE_CANCEL_ACK,
+        NATIVE_CANCEL_HARD,
         DISPLAY_PREPARED,
         CLASSIC_DETAIL,
         SOURCE_READY,
@@ -38,6 +42,7 @@ internal class ManyuePerformanceRecorder(
     }
 
     enum class Metric {
+        CANCEL_ACK_MS,
         PRIORITY,
         QUEUE_DEPTH,
         QUEUE_MS,

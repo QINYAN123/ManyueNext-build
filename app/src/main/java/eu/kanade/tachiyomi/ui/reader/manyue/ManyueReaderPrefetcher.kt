@@ -89,7 +89,7 @@ class ManyueReaderPrefetcher(context: Context) {
                 if (!coordinator.isPreparationCurrent(chapterId, taskGeneration, mode, pageIndex)) {
                     throw PrefetchWindowMovedCancellationException()
                 }
-                coordinator.awaitReaderWork(chapterId, taskGeneration, mode)
+                coordinator.awaitReaderWork(chapterId, taskGeneration, mode, pageIndex)
                 val reservation = ManyueEnhancementCache.awaitPrefetchBudget(
                     context = appContext,
                     mangaId = currentMangaId,
@@ -101,7 +101,7 @@ class ManyueReaderPrefetcher(context: Context) {
                     if (!coordinator.isPreparationCurrent(chapterId, taskGeneration, mode, pageIndex)) {
                         throw PrefetchWindowMovedCancellationException()
                     }
-                    coordinator.awaitReaderWork(chapterId, taskGeneration, mode)
+                    coordinator.awaitReaderWork(chapterId, taskGeneration, mode, pageIndex)
                     val token = loadAndEnqueue(
                         page = page,
                         pageIndex = pageIndex,
@@ -483,8 +483,14 @@ internal class ManyuePrefetchJobCoordinator(private val scope: CoroutineScope) {
     }
 
     /** Wait without pinning a thread, while mode/generation changes remain promptly cancellable. */
-    suspend fun awaitReaderWork(chapterId: Long, generation: Long, mode: Int) {
-        while (ManyueReaderWorkGate.isBlocked() ||
+    suspend fun awaitReaderWork(chapterId: Long, generation: Long, mode: Int, pageIndex: Int = -1) {
+        fun priority(): Int {
+            if (ManyuePrefetchManager.isVisiblePage(chapterId, pageIndex)) return 100
+            val head = selectedPageIndex(chapterId, generation) ?: return 1
+            val direction = selectedDirection(chapterId, generation) ?: return 1
+            return ManyueAiSafetyPolicy.continuousPrefetchPriority(pageIndex, head, direction)
+        }
+        while (ManyueReaderWorkGate.isAiWorkBlocked(priority()) ||
             (mode == ManyueEnhancementMode.AUTO.value && ManyueRuntimeState.displayWidthPx <= 0)
         ) {
             ensureCurrent(chapterId, generation, mode)

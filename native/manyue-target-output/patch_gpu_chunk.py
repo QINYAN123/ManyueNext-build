@@ -17,6 +17,7 @@ import textwrap
 
 REALSR_HELPERS = r"""
 #include <cstdlib>
+#include <fstream>
 
 // MANYUE_GPU_CHUNK helper: only the verified Real-ESRGANv3-anime x2 graph.
 static int manyue_gpu_chunk_mode()
@@ -86,12 +87,22 @@ static bool manyue_gpu_is_realesr_x2_graph(const ncnn::Net& net)
         && manyue_gpu_blob_from_layer(net, "output", "Resize_40", "Interp");
 }
 
+static bool manyue_gpu_cancel_requested(const char* path)
+{
+    if (!path || !path[0])
+        return false;
+    std::ifstream marker(path, std::ios::binary);
+    return marker.good();
+}
+
 // Ask ncnn to materialize one existing graph blob, wait for that command
 // block, and reset its command buffer. The temporary VkMat handle lives until
 // after reset; the same Extractor retains its own blob handle for continuation.
 static int manyue_gpu_chunk_boundary(ncnn::Extractor& ex,
                                      ncnn::VkCompute& cmd,
-                                     const char* blob_name)
+                                     const char* blob_name,
+                                     const char* cancel_path,
+                                     bool* cancelled)
 {
     ncnn::VkMat boundary;
     int ret = ex.extract(blob_name, boundary, cmd);
@@ -102,7 +113,13 @@ static int manyue_gpu_chunk_boundary(ncnn::Extractor& ex,
     if (ret != 0)
         return ret;
 
-    return cmd.reset();
+    ret = cmd.reset();
+    if (ret != 0)
+        return ret;
+
+    if (cancelled && manyue_gpu_cancel_requested(cancel_path))
+        *cancelled = true;
+    return 0;
 }
 """
 
@@ -235,6 +252,7 @@ def helper_insertion(text: str, constructor_marker: str, helper: str, label: str
 
 def patch_realesr(text: str) -> tuple[str, int]:
     original = text
+    resident_cancel = "const char* cancel_path" in text and "manyue_resident_cancel_requested" in text
     text = helper_insertion(text, "RealSR::RealSR(", REALSR_HELPERS, "RealSR")
 
     start, end = region_bounds(
@@ -254,10 +272,12 @@ def patch_realesr(text: str) -> tuple[str, int]:
     const bool manyue_gpu_chunk_enabled =
         (manyue_gpu_chunk_mode_value == 1 || manyue_gpu_chunk_mode_value == 2 || manyue_gpu_chunk_mode_value == 4)
         && manyue_gpu_is_realesr_x2_graph(net);
+    bool manyue_cancelled = false;
 """
     region = region[:opening + len(setup_anchor)] + setup + region[opening + len(setup_anchor):]
 
     old = 'MANYUE_NCNN_CHECK(ex.extract(net_output_name.c_str(), out_tile_gpu, cmd), "Extractor::extract");'
+    cancel_arg = "cancel_path" if resident_cancel else "0"
     injected = r"""
                     if (manyue_gpu_chunk_enabled)
                     {
@@ -281,14 +301,69 @@ def patch_realesr(text: str) -> tuple[str, int]:
                         for (size_t manyue_i = 0; manyue_i < manyue_boundary_count; manyue_i++)
                         {
                             MANYUE_NCNN_CHECK(
-                                manyue_gpu_chunk_boundary(ex, cmd, manyue_boundaries[manyue_i]),
+                                manyue_gpu_chunk_boundary(ex, cmd, manyue_boundaries[manyue_i], @CANCEL_PATH@, &manyue_cancelled),
                                 "MANYUE_GPU_CHUNK intermediate");
+                            @CANCEL_GOTO@
                         }
                     }
 
                     MANYUE_NCNN_CHECK(ex.extract(net_output_name.c_str(), out_tile_gpu, cmd), "Extractor::extract");"""
+    injected = injected.replace("@CANCEL_PATH@", cancel_arg)
+    injected = injected.replace(
+        "@CANCEL_GOTO@",
+        "if (manyue_cancelled) goto manyue_process_cleanup;"
+        if resident_cancel else "",
+    )
     region = replace_indented_line(region, old, injected, "RealSR final Vulkan extraction")
+
+    if resident_cancel:
+        download_anchor = (
+            "            cmd.record_clone(out_gpu, out, opt);\n\n"
+            "            MANYUE_NCNN_CHECK(cmd.submit_and_wait(), \"VkCompute::submit_and_wait\");\n"
+        )
+        download_replacement = (
+            download_anchor
+            + "            MANYUE_NCNN_CHECK(cmd.reset(), \"VkCompute::reset\");\n"
+            "            if (manyue_gpu_cancel_requested(cancel_path)) {\n"
+            "                manyue_cancelled = true;\n"
+            "                goto manyue_process_cleanup;\n"
+            "            }\n"
+        )
+        if region.count(download_anchor) != 1:
+            raise ValueError("RealSR tile readback cancellation boundary: expected one anchor")
+        region = region.replace(download_anchor, download_replacement, 1)
+
+        cleanup_anchor = (
+            "    vkdev->reclaim_blob_allocator(blob_vkallocator);\n"
+            "    vkdev->reclaim_staging_allocator(staging_vkallocator);\n\n"
+            "    return 0;\n"
+        )
+        cleanup_replacement = (
+            "manyue_process_cleanup:\n"
+            "    vkdev->reclaim_blob_allocator(blob_vkallocator);\n"
+            "    vkdev->reclaim_staging_allocator(staging_vkallocator);\n\n"
+            "    return manyue_cancelled ? manyue_resident::kCancelled : 0;\n"
+        )
+        if region.count(cleanup_anchor) != 1:
+            raise ValueError("RealSR Vulkan cancel cleanup tail: expected one anchor")
+        region = region.replace(cleanup_anchor, cleanup_replacement, 1)
+
     text = text[:start] + region + text[end:]
+    if resident_cancel:
+        required_cancel_sites = (
+            "manyue_gpu_chunk_boundary(ex, cmd, manyue_boundaries[manyue_i], cancel_path, &manyue_cancelled)",
+            "if (manyue_cancelled) goto manyue_process_cleanup;",
+            "MANYUE_NCNN_CHECK(cmd.reset(), \"VkCompute::reset\");",
+            "manyue_process_cleanup:",
+            "vkdev->reclaim_blob_allocator(blob_vkallocator);",
+            "vkdev->reclaim_staging_allocator(staging_vkallocator);",
+            "return manyue_cancelled ? manyue_resident::kCancelled : 0;",
+        )
+        missing = [anchor for anchor in required_cancel_sites if anchor not in text]
+        if missing:
+            raise ValueError(f"RealSR cooperative cancellation patch incomplete: {missing}")
+    elif "manyue_process_cleanup:" in text:
+        raise ValueError("RealSR cold CLI unexpectedly received resident cancellation cleanup")
     if text == original:
         raise ValueError("RealSR: no patch applied")
     return text, 1

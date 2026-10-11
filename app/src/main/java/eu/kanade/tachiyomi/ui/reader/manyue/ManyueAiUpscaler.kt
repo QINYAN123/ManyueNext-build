@@ -299,14 +299,13 @@ object ManyueAiUpscaler {
         ) {
             return false
         }
-        // Lite cancels at tile boundaries and retains its loaded engine. Killing a nearby
-        // legacy process recreates Vulkan pipelines on the next page and can repeatedly
-        // discard all inference during fast reading. Finish that bounded nearby job once;
-        // the queue still picks the most recent visible page next. Distant work yields.
+        // Lite and Quality cancel at safe computation boundaries while retaining their models.
+        // Only the unselectable legacy CUGAN identity still needs the former bounded finish rule.
         val sameChapter = active.mangaId == visible.mangaId && active.chapterId == visible.chapterId
         val nearby = kotlin.math.abs(active.pageIndex.toLong() - visible.pageIndex.toLong()) <=
             ManyueAiSafetyPolicy.ACTIVE_COMPLETION_LOOK_BACK_PAGES
-        return active.model.continuousScale || !active.processing || !sameChapter || !nearby
+        return active.model.continuousScale || active.model == ManyueAiModel.QUALITY_REAL_ESRGAN ||
+            !active.processing || !sameChapter || !nearby
     }
 
     /** Cancel queued or running native work. Completion still has a second stale-result guard. */
@@ -318,8 +317,14 @@ object ManyueAiUpscaler {
         val req = requests[token] ?: return
         // A finished cache entry is still reusable on a backward scroll.
         if (req.completed) return
-        if (!req.cancelled) ManyuePerformanceDiagnostics.event(Stage.CANCELLED, req.pageIndex, token)
-        req.cancelled = true
+        val cooperative = synchronized(req) {
+            if (req.cancelled) return
+            val cooperate = req.model == ManyueAiModel.QUALITY_REAL_ESRGAN && req.processing &&
+                requestConfigurationCurrent(req)
+            req.cancelled = true
+            cooperate
+        }
+        ManyuePerformanceDiagnostics.event(Stage.CANCELLED, req.pageIndex, token)
         req.queued = false
         finishBlockedWork(req, cancelled = true)
         req.completionState = STATE_CANCELLED
@@ -327,6 +332,12 @@ object ManyueAiUpscaler {
         queue.remove(req)
         req.requestKey.takeIf(String::isNotEmpty)?.let { tokensByRequestKey.remove(it, token) }
         notify(req, STATE_CANCELLED, req.failureDetail)
+        // The resident response reader writes the marker and waits for safe GPU acknowledgement.
+        // Only the worker owns cleanup until that acknowledgement (or the hard timeout).
+        if (cooperative) {
+            ManyuePerformanceDiagnostics.event(Stage.NATIVE_CANCEL_REQUESTED, req.pageIndex, token)
+            return
+        }
         // Page selection happens on Main. Process termination and file cleanup do not.
         val cancelNative = req.nativeCancellation
         cancellationExecutor.execute {
@@ -780,7 +791,8 @@ object ManyueAiUpscaler {
                     logFile = logFile,
                     model = req.model,
                     targetWidth = resolved,
-                    isCancelled = { req.cancelled || !requestIsCurrent(req) },
+                    isCancelled = { nativeRequestCancelled(req) },
+                    isConfigurationCurrent = { requestConfigurationCurrent(req) },
                     onProcessStarted = {
                         req.runningProcess = it
                         notifyProgress(req, STATE_PROCESSING)
@@ -917,7 +929,13 @@ object ManyueAiUpscaler {
                     (overlayDetail?.let { "；$it" } ?: ""),
             )
             state = STATE_READY
-        } catch (_: ManyueAiRuntime.CancelledException) {
+        } catch (cancelled: ManyueAiRuntime.CancelledException) {
+            ManyuePerformanceDiagnostics.event(
+                if (cancelled.residentRetained) Stage.NATIVE_CANCEL_ACK else Stage.NATIVE_CANCEL_HARD,
+                req.pageIndex,
+                req.token,
+                Metric.CANCEL_ACK_MS to (cancelled.acknowledgementMillis ?: -1L),
+            )
             // Cancellation is expected during rapid paging, mode changes, and viewer teardown.
             logcat { "Manyue AI cancelled chapter=${req.chapterId} page=${req.pageIndex}" }
         } catch (t: Throwable) {
@@ -991,9 +1009,18 @@ object ManyueAiUpscaler {
     }
 
     private fun requestIsCurrent(req: Request): Boolean {
+        return !req.cancelled && requestConfigurationCurrent(req)
+    }
+
+    internal fun nativeRequestCancelled(req: Request): Boolean {
+        val configurationCurrent = requestConfigurationCurrent(req)
+        return !configurationCurrent || req.cancelled
+    }
+
+    private fun requestConfigurationCurrent(req: Request): Boolean {
         val mode = ManyueRuntimeState.modeInt
         val aiMode = ManyueEnhancementMode.fromInt(mode).usesAi()
-        return !req.cancelled && aiMode && mode == req.expectedMode &&
+        return aiMode && mode == req.expectedMode && ManyueRuntimeState.aiModel == req.model &&
             ManyueRuntimeState.generation == req.generation
     }
 

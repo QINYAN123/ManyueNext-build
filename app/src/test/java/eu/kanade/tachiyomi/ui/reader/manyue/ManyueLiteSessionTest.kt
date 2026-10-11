@@ -142,7 +142,7 @@ class ManyueLiteSessionTest {
         assertEquals(listOf("current", "first", "second"), generateSequence { queue.poll() }.map { it.token }.toList())
     }
 
-    @Test fun `visible work preempts queued or Lite work but lets nearby running legacy work finish`() {
+    @Test fun `visible work preempts cooperative models and only nearby legacy CUGAN finishes`() {
         fun request(
             token: String,
             priority: Int,
@@ -160,7 +160,7 @@ class ManyueLiteSessionTest {
             val legacy = request("legacy", 40, model)
             assertTrue(ManyueAiUpscaler.shouldYieldToVisible(legacy, visible))
             legacy.processing = true
-            assertEquals(model.continuousScale, ManyueAiUpscaler.shouldYieldToVisible(legacy, visible))
+            assertEquals(model != ManyueAiModel.FAST_REAL_CUGAN, ManyueAiUpscaler.shouldYieldToVisible(legacy, visible))
             assertTrue(ManyueAiUpscaler.shouldYieldToVisible(legacy.copy(pageIndex = 6), visible))
             assertTrue(ManyueAiUpscaler.shouldYieldToVisible(legacy.copy(chapterId = 3), visible))
             assertTrue(ManyueAiUpscaler.shouldYieldToVisible(legacy.copy(mangaId = 2), visible))
