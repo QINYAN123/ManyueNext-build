@@ -37,6 +37,38 @@ class ManyueRegionDecoderTest {
 
     @Test fun decodesWebpRegionAndSampledTile() = assertEncodedRegion(WEBP)
 
+    @Test fun mipmapExperimentPreservesPixelsDimensionsAndOddOriginAlignment() {
+        for (encoded in listOf(PNG, WEBP)) {
+            for ((rect, sample) in listOf(Rect(0, 0, 8, 6) to 1, Rect(1, 1, 5, 5) to 1, Rect(1, 1, 5, 5) to 2)) {
+                var baseline: IntArray? = null
+                var dimensions: Point? = null
+                for (hint in listOf(false, true)) {
+                    val decoder = ManyueRegionDecoder(mipmapHint = hint)
+                    try {
+                        decoder.init(RuntimeEnvironment.getApplication(), InputProvider { ByteArrayInputStream(encoded) })
+                        val tile = decoder.decodeRegion(rect, sample)
+                        try {
+                            assertEquals(hint, tile.hasMipMap())
+                            val pixels = IntArray(tile.width * tile.height)
+                            tile.getPixels(pixels, 0, tile.width, 0, 0, tile.width, tile.height)
+                            if (baseline == null) {
+                                baseline = pixels
+                                dimensions = Point(tile.width, tile.height)
+                            } else {
+                                assertEquals(dimensions, Point(tile.width, tile.height))
+                                assertTrue(baseline.contentEquals(pixels))
+                            }
+                        } finally {
+                            tile.recycle()
+                        }
+                    } finally {
+                        decoder.recycle()
+                    }
+                }
+            }
+        }
+    }
+
     @Test fun rejectsInvalidRectAndSampleAndDecodeAfterRecycle() {
         val decoder = newReadyDecoder(PNG)
         try {

@@ -460,7 +460,7 @@ class ReaderActivity : BaseActivity() {
     }
 
     /** Prepare an immutable current-page benchmark pair and pin its cached AI file on main. */
-    internal fun prepareManyueBenchmarkPair(pageIndex: Int): ManyueBenchmarkPairDescriptor? {
+    internal fun prepareManyueBenchmarkPair(pageIndex: Int, allowOverlay: Boolean = false): ManyueBenchmarkPairDescriptor? {
         if (eu.kanade.tachiyomi.BuildConfig.BUILD_TYPE != "benchmark" || !manyueReaderResumed ||
             isFinishing || isDestroyed || android.os.Looper.myLooper() != android.os.Looper.getMainLooper()
         ) {
@@ -498,7 +498,7 @@ class ReaderActivity : BaseActivity() {
 
         val pinned = ManyueAiUpscaler.pinnedCachedImage(applicationContext, result.token) ?: return null
         if (pinned.image.width != result.outputWidth || pinned.image.height != result.outputHeight ||
-            pinned.image.overlayApplied ||
+            (pinned.image.overlayApplied && !allowOverlay) ||
             ManyueAiUpscaler.coverageResultForToken(result.token) != result ||
             runtime.generation != result.generation || runtime.aiModel.ordinal != result.model ||
             runtime.modeInt != result.mode || runtime.aiScalePercent != result.scalePercent
@@ -571,6 +571,11 @@ class ReaderActivity : BaseActivity() {
                 readerPreferences.dualPageRotateToFitWebtoon.set(false)
                 viewModel.state.value.viewer?.refreshManyue()
             }
+            "sampling" -> {
+                eu.kanade.tachiyomi.ui.reader.manyue.ManyueBenchmarkControl.aiTileMipmaps =
+                    intent.getBooleanExtra("mipmaps", false)
+                viewModel.state.value.viewer?.refreshManyue()
+            }
             "filters" -> {
                 // Change only requested display settings for a same-page composition check.
                 // Unlike configure, this never refreshes the reader or resets AI/crop options.
@@ -638,6 +643,7 @@ class ReaderActivity : BaseActivity() {
             put("gpuEnabled", readerPreferences.manyueGpuDisplayFilter.get())
             put("gpuStrength", readerPreferences.manyueGpuDisplayStrength.get())
             put("grayscale", readerPreferences.grayscale.get())
+            put("aiTileMipmaps", eu.kanade.tachiyomi.ui.reader.manyue.ManyueBenchmarkControl.aiTileMipmaps)
             put("invertedColors", readerPreferences.invertedColors.get())
             put("colorFilter", readerPreferences.colorFilter.get())
             put("customBrightness", readerPreferences.customBrightness.get())

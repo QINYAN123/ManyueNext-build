@@ -19,6 +19,7 @@ import com.davemorrissey.labs.subscaleview.provider.InputProvider
 class ManyueRegionDecoder(
     private val cropBorders: Boolean = false,
     private val cacheLease: ManyueEnhancementCache.CacheLease? = null,
+    private val mipmapHint: Boolean = ManyueBenchmarkControl.aiTileMipmaps,
 ) : ImageRegionDecoder {
     private var decoder: BitmapRegionDecoder? = null
     private var crop = Rect()
@@ -128,13 +129,13 @@ class ManyueRegionDecoder(
         })) { "AI tile decoding failed" }
         val targetWidth = (region.width() - 1) / sampleSize + 1
         val targetHeight = (region.height() - 1) / sampleSize + 1
-        if (region == aligned && decoded.width == targetWidth && decoded.height == targetHeight) return decoded
+        if (region == aligned && decoded.width == targetWidth && decoded.height == targetHeight) return prepareTile(decoded)
         try {
             if (sampleSize == 1) {
-                return Bitmap.createBitmap(
+                return prepareTile(Bitmap.createBitmap(
                     decoded, region.left - aligned.left, region.top - aligned.top,
                     region.width(), region.height(),
-                )
+                ))
             }
             val result = Bitmap.createBitmap(targetWidth, targetHeight, Bitmap.Config.ARGB_8888)
             try {
@@ -150,7 +151,7 @@ class ManyueRegionDecoder(
                     setRectToRect(subset, RectF(0f, 0f, targetWidth.toFloat(), targetHeight.toFloat()), Matrix.ScaleToFit.FILL)
                 }
                 Canvas(result).drawBitmap(decoded, matrix, Paint(Paint.FILTER_BITMAP_FLAG))
-                return result
+                return prepareTile(result)
             } catch (error: Throwable) {
                 result.recycle()
                 throw error
@@ -159,6 +160,8 @@ class ManyueRegionDecoder(
             decoded.recycle()
         }
     }
+
+    private fun prepareTile(bitmap: Bitmap): Bitmap = bitmap.also { it.setHasMipMap(mipmapHint) }
 
     @Synchronized
     override fun isReady(): Boolean = decoder?.isRecycled == false

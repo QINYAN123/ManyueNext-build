@@ -33,7 +33,11 @@ class ManyueBenchmarkReceiver : BroadcastReceiver() {
         val reader = ManyueBenchmarkControl.reader.get()
         if (operation == "exportpair") {
             val pageIndex = intent.getIntExtra("page", -1)
-            val descriptor = if (pageIndex >= 0) reader?.prepareManyueBenchmarkPair(pageIndex) else null
+            val descriptor = if (pageIndex >= 0) {
+                reader?.prepareManyueBenchmarkPair(pageIndex, intent.getBooleanExtra("allowOverlay", false))
+            } else {
+                null
+            }
             if (descriptor == null) {
                 val pending = goAsync()
                 CoroutineScope(Dispatchers.IO).launch {
@@ -97,7 +101,7 @@ class ManyueBenchmarkReceiver : BroadcastReceiver() {
                 resultData = reader?.manyueBenchmarkReaderSnapshot()
                 return
             }
-            "begin", "observe", "comfort", "configure", "filters", "jump", "end" -> {
+            "begin", "observe", "comfort", "configure", "filters", "sampling", "jump", "end" -> {
                 if (reader?.onManyueBenchmarkCommand(operation, intent) != true) {
                     resultCode = 2
                     return
@@ -354,6 +358,8 @@ private object ManyueBenchmarkPairExporter {
             put("paired", paired)
             put("status", status)
             put("provenance", "reader_page_stream_and_active_ai_cache;not_actual_draw")
+            put("overlayRequested", descriptor.pinnedImage.image.overlayRequested)
+            put("overlayApplied", descriptor.pinnedImage.image.overlayApplied)
             put("pageIndex", descriptor.pageIndex)
             put("model", descriptor.modelId)
             put("mode", ManyueEnhancementMode.fromInt(result.mode).name)

@@ -64,6 +64,7 @@ object ManyueReadingCoverage {
     private val results = LinkedHashMap<String, Int>()
     private val ready = LinkedHashMap<Int, Pair<Long, Boolean>>()
     private val stamps = LinkedHashMap<Int, Result>()
+    private val observedLoadedResults = LinkedHashSet<Int>()
     private var droppedExposures = 0
     private var droppedResults = 0
     @Volatile private var resetEpoch = 0L
@@ -88,6 +89,7 @@ object ManyueReadingCoverage {
         results.clear()
         ready.clear()
         stamps.clear()
+        observedLoadedResults.clear()
         droppedExposures = 0
         droppedResults = 0
         resetEpoch++
@@ -236,6 +238,7 @@ object ManyueReadingCoverage {
         synchronized(lock) {
             val id = resultId(result.token) ?: return
             stamps[id] = result
+            observedLoadedResults.remove(id)
             ready.putIfAbsent(id, now() to prefetch)
         }
     }
@@ -271,8 +274,24 @@ object ManyueReadingCoverage {
                 return
             }
             if (current.firstAiDrawNs != null) return
-            current.result = resultId(result.token)
-            if (current.result == null) return
+            val knownId = results[result.token]
+            val observedLoadedResult = knownId?.let { ready[it] == null } ?: true
+            // A result already on screen may predate diagnostic reset, but still needs a complete identity.
+            if (observedLoadedResult && (expected.fingerprint.isNullOrBlank() || result.token.isBlank() ||
+                    expected.sourceWidth <= 0 || expected.sourceHeight <= 0)
+            ) {
+                current.invalidDrawCount++
+                return
+            }
+            val id = resultId(result.token) ?: return
+            val existingStamp = stamps[id]
+            if (existingStamp != null && existingStamp != result) {
+                current.invalidDrawCount++
+                return
+            }
+            stamps.putIfAbsent(id, result)
+            if (observedLoadedResult) observedLoadedResults.add(id)
+            current.result = id
             current.firstAiDrawNs = time
             current.outputWidth = result.outputWidth
             current.outputHeight = result.outputHeight
@@ -374,8 +393,10 @@ object ManyueReadingCoverage {
                     put("model", stamp.model)
                     put("mode", stamp.mode)
                     put("scalePercent", stamp.scalePercent)
-                    put("readyNs", ready[id]?.first ?: JSONObject.NULL)
-                    put("prefetch", ready[id]?.second ?: false)
+                    val readyRecord = ready[id]
+                    put("readyNs", readyRecord?.first ?: JSONObject.NULL)
+                    put("prefetch", readyRecord?.second ?: false)
+                    put("observedLoadedResult", readyRecord == null && id in observedLoadedResults)
                 }
             }))
             put("completedPrefetchResults", prefetched.size)

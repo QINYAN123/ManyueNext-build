@@ -119,6 +119,33 @@ class ManyueReadingCoverageTest {
         assertTrue(row.getBoolean("displayedDuringExposure"))
     }
 
+    @Test fun loadedResultDrawAfterResetRegistersStampWithoutInventingReadyOrPrefetch() {
+        val loaded = stamp("loaded-result-after-reset")
+        ManyueReadingCoverage.ready(loaded, prefetch = true)
+
+        // A diagnostic reset clears READY provenance, but the already-loaded page is not rebound.
+        ManyuePerformanceDiagnostics.clear()
+        expose()
+        now = 100_000_000L
+        ManyueReadingCoverage.drawn(owner, source, loaded)
+        now = 200_000_000L
+        ManyueReadingCoverage.hidden(owner)
+
+        val report = ManyueReadingCoverage.snapshot()
+        val exposure = report.getJSONArray("exposures").getJSONObject(0)
+        val result = report.getJSONArray("results").getJSONObject(0)
+        assertTrue(exposure.getBoolean("displayedDuringExposure"))
+        assertTrue(exposure.getBoolean("firstFrame"))
+        assertTrue(exposure.isNull("aiReadyNs"))
+        assertTrue(result.isNull("readyNs"))
+        assertTrue(result.getBoolean("observedLoadedResult"))
+        assertFalse(result.getBoolean("prefetch"))
+        assertEquals(0, report.getInt("completedResults"))
+        assertEquals(0, report.getInt("completedPrefetchResults"))
+        assertEquals(0, report.getInt("usedPrefetchResults"))
+        assertTrue(ManyuePerformanceDiagnostics.recorder.snapshot().events.isEmpty())
+    }
+
     @Test fun placeholderOrStaleImageFramePreventsLateAiFromBeingCalledFirstFrame() {
         expose()
         now = 10_000_000
@@ -151,6 +178,43 @@ class ManyueReadingCoverageTest {
         val row = ManyueReadingCoverage.snapshot().getJSONArray("exposures").getJSONObject(0)
         assertEquals(6, row.getInt("rejectedDrawCount"))
         assertFalse(row.getBoolean("timely"))
+        assertEquals(0, ManyueReadingCoverage.snapshot().getJSONArray("results").length())
+    }
+
+    @Test fun incompleteLoadedResultMetadataCannotBeRegistered() {
+        expose()
+        val valid = stamp()
+        listOf(
+            valid.copy(source = source.copy(fingerprint = "")),
+            valid.copy(source = source.copy(sourceWidth = 0)),
+            valid.copy(source = source.copy(sourceHeight = 0)),
+            valid.copy(source = source.copy(sourceWidth = source.sourceWidth + 1)),
+            valid.copy(outputWidth = 0),
+            valid.copy(outputHeight = 0),
+            valid.copy(token = ""),
+        ).forEach { ManyueReadingCoverage.drawn(owner, source, it) }
+        now = 200_000_000L
+        ManyueReadingCoverage.hidden(owner)
+
+        val report = ManyueReadingCoverage.snapshot()
+        val row = report.getJSONArray("exposures").getJSONObject(0)
+        assertEquals(7, row.getInt("rejectedDrawCount"))
+        assertFalse(row.getBoolean("displayedDuringExposure"))
+        assertEquals(0, report.getJSONArray("results").length())
+    }
+
+    @Test fun loadedResultWithUnknownSourceDimensionsCannotBeRegistered() {
+        val incompleteSource = source.copy(sourceWidth = 0, sourceHeight = 0)
+        expose(incompleteSource)
+        ManyueReadingCoverage.drawn(owner, incompleteSource, stamp().copy(source = incompleteSource))
+        now = 200_000_000L
+        ManyueReadingCoverage.hidden(owner)
+
+        val report = ManyueReadingCoverage.snapshot()
+        val row = report.getJSONArray("exposures").getJSONObject(0)
+        assertEquals(1, row.getInt("rejectedDrawCount"))
+        assertFalse(row.getBoolean("displayedDuringExposure"))
+        assertEquals(0, report.getJSONArray("results").length())
     }
 
     @Test fun lateFirstVisitAndInstantCachedRevisitRemainSeparate() {
