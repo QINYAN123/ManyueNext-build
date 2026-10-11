@@ -59,7 +59,11 @@ enum class ManyueAiModel(
     }
 
     val cacheIdentity: String
-        get() = if (continuousScale) "$id:${ManyueLiteAssets.MODEL_REVISION}" else id
+        get() = when {
+            continuousScale -> "$id:${ManyueLiteAssets.MODEL_REVISION}"
+            this == QUALITY_REAL_ESRGAN -> "$id:neutral-source-v1"
+            else -> id
+        }
 
     /** Fractional reconstruction is a Lite feature; legacy quality work always outputs native 2x. */
     fun outputScalePercent(savedPercent: Int): Int =

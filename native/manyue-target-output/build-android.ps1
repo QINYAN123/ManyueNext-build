@@ -131,12 +131,13 @@ $residentScript = Join-Path $helperDir "prepare_resident_session.py"
 $gpuChunkScript = Join-Path $helperDir "patch_gpu_chunk.py"
 $templatePath = Join-Path $helperDir "CMakeLists.android.in"
 $resizeHeader = Join-Path $helperDir "manyue_output_resize.h"
+$neutralHeader = Join-Path $helperDir "manyue_neutral_source.h"
 $statusHeader = Join-Path $helperDir "manyue_ncnn_status.h"
 $fileOutputHeader = Join-Path $helperDir "manyue_file_output.h"
 $protocolHeader = Join-Path $helperDir "manyue_resident_protocol.h"
 foreach ($requiredFile in @(
     $patchScript, $residentScript, $gpuChunkScript, $templatePath,
-    $resizeHeader, $statusHeader, $fileOutputHeader, $protocolHeader
+    $resizeHeader, $neutralHeader, $statusHeader, $fileOutputHeader, $protocolHeader
 )) {
     if (-not (Test-Path -LiteralPath $requiredFile)) {
         throw "Native source generator input is missing: $requiredFile"
@@ -181,7 +182,7 @@ $builtArtifacts = @()
 foreach ($spec in $selectedSpecs) {
     $baseSource = Join-Path $sourceStages ("base\" + $spec.Directory)
     $null = New-Item -ItemType Directory -Force -Path $baseSource
-    & $PythonLauncher @pythonArgs $patchScript --source-root $extractedSource --destination $baseSource --variant $spec.Variant --helper-header $resizeHeader --status-header $statusHeader --file-output-header $fileOutputHeader --cmake-template $templatePath
+    & $PythonLauncher @pythonArgs $patchScript --source-root $extractedSource --destination $baseSource --variant $spec.Variant --helper-header $resizeHeader --status-header $statusHeader --file-output-header $fileOutputHeader --neutral-header $neutralHeader --cmake-template $templatePath
     if ($LASTEXITCODE -ne 0) { throw "Base source patch failed for $($spec.Variant)" }
 
     $selectedSource = $baseSource

@@ -5,6 +5,7 @@ import android.content.Context
 import eu.kanade.tachiyomi.ui.reader.setting.ReaderPreferences
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -65,6 +66,19 @@ class ManyueAiModelCompatibilityTest {
     @Test
     fun `unknown saved model still falls back to the configured default`() {
         assertEquals(ManyueAiModel.DEFAULT, ManyueAiModel.fromId("removed-or-unknown-model"))
+    }
+
+    @Test
+    fun `neutral color policy isolates previous quality results without invalidating Lite`() {
+        fun key(modelIdentity: String) = ManyueEnhancementCache.cacheKey(
+            mangaId = 1, chapterId = 2, pageIndex = 3, mode = 2,
+            targetMode = 2, targetWidth = 2560, classicStrength = 0,
+            sourceFingerprint = "same-input", modelId = modelIdentity, benchmarkNamespace = 0,
+        )
+        val quality = ManyueAiModel.QUALITY_REAL_ESRGAN
+        assertNotEquals(key(quality.id), key(quality.cacheIdentity))
+        val lite = ManyueAiModel.MOBILE_LITE
+        assertEquals(key("${lite.id}:${ManyueLiteAssets.MODEL_REVISION}"), key(lite.cacheIdentity))
     }
 
     @Test

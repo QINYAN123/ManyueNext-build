@@ -47,7 +47,7 @@ object ManyueAiRuntime {
 
     class CancelledException : CancellationException("Manyue AI request cancelled")
 
-    private const val EXPECTED_REAL_ESRGAN_SHA256 = "e0f380b34979b1a289d30ea284edb33ee011c22537cf73dcfd7d9fb511e7baf5"
+    private const val EXPECTED_REAL_ESRGAN_SHA256 = "76b3b887fca8115b408173bcb920b4e18b317b0eba0f83e19bd224708642e611"
     private const val EXPECTED_REAL_CUGAN_SHA256 = "d4ab907cb698b621f429b09ec5757318b23a1e05f8a7f77575c9af8ff24cb464"
     private const val EXPECTED_NCNN_SHA256 = "87d150e735157b09aa20f26f5e57f72468c548e7ce98ce407ec50ee7e14a52dd"
     private const val EXPECTED_LIBOMP_SHA256 = "da75dcbe6026a3e08d01bfe86860159432051b329a84deb5ee042ce9b8e1a302"

@@ -181,7 +181,8 @@ def harden_input_read(text: str, variant: str) -> str:
 
 def patch_source(source_root: Path, destination: Path, variant: str,
                  helper_header: Path, status_header: Path,
-                 file_output_header: Path, cmake_template: Path) -> None:
+                 file_output_header: Path, neutral_header: Path,
+                 cmake_template: Path) -> None:
     module, _target, _binary = UPSTREAM_MODULES[variant]
     source_module = source_root / "RealSR-NCNN-Android-CLI" / module / "src" / "main" / "jni"
     if not (source_module / "main.cpp").is_file():
@@ -192,6 +193,8 @@ def patch_source(source_root: Path, destination: Path, variant: str,
     shutil.copy2(status_header, destination / "manyue_ncnn_status.h")
     shutil.copy2(file_output_header, destination / "manyue_file_output.h")
     shutil.copy2(file_output_header.parent / "manyue_fast_webp.h", destination / "manyue_fast_webp.h")
+    if variant == "realesr":
+        shutil.copy2(neutral_header, destination / "manyue_neutral_source.h")
 
     main_file = destination / "main.cpp"
     text = main_file.read_text(encoding="utf-8")
@@ -203,6 +206,9 @@ def patch_source(source_root: Path, destination: Path, variant: str,
         "remove OpenCV and include output resize helper",
     )
     if variant == "realesr":
+        text = replace_once(text, '#include "manyue_output_resize.h"\n',
+                            '#include "manyue_output_resize.h"\n#include "manyue_neutral_source.h"\n',
+                            "include neutral source classifier for Real-ESRGAN")
         text = replace_once(text, '#include "realsr.h"\n',
                             '#include "realsr.h"\n#include "manyue_ncnn_status.h"\n',
                             "include ncnn status checker")
@@ -326,6 +332,61 @@ def patch_source(source_root: Path, destination: Path, variant: str,
 }
 
 '''
+    if variant == "realesr":
+        helper = replace_once(
+            helper,
+            "    if (task.target_width == model_width && task.target_height == model_height)\n",
+            "    bool neutral_source = false;\n"
+            "    size_t input_stride = 0;\n"
+            "    if (!task.inimage.data ||\n"
+            "        task.inimage.elemsize != static_cast<size_t>(task.inimage.elempack) ||\n"
+            "        !manyue_neutral::packed_row_bytes(task.inimage.w, task.inimage.elempack, &input_stride) ||\n"
+            "        !manyue_neutral::classify_neutral_source(\n"
+            "            static_cast<const uint8_t*>(task.inimage.data), task.inimage.w,\n"
+            "            task.inimage.h, task.inimage.elempack, input_stride, &neutral_source))\n"
+            "    {\n"
+            "        fprintf(stderr, \"neutral source classification rejected input=%dx%d channels=%d\\n\",\n"
+            "                task.inimage.w, task.inimage.h, task.inimage.elempack);\n"
+            "        return false;\n"
+            "    }\n\n"
+            "    if (task.target_width == model_width && task.target_height == model_height)\n",
+            "classify Real-ESRGAN source before same-size output path",
+        )
+        helper = replace_once(
+            helper,
+            "    if (task.target_width == model_width && task.target_height == model_height)\n    {\n",
+            "    if (task.target_width == model_width && task.target_height == model_height)\n    {\n"
+            "        if (neutral_source) {\n"
+            "            size_t output_stride = 0;\n"
+            "            if (!manyue_neutral::packed_row_bytes(model_width, channels, &output_stride) ||\n"
+            "                !manyue_neutral::project_neutral_rgb_in_place(\n"
+            "                    static_cast<uint8_t*>(task.outimage.data), model_width, model_height,\n"
+            "                    channels, output_stride)) {\n"
+            "                fprintf(stderr, \"neutral output projection failed for %dx%d\\n\",\n"
+            "                        model_width, model_height);\n"
+            "                return false;\n"
+            "            }\n"
+            "        }\n",
+            "project neutral Real-ESRGAN output before same-size return",
+        )
+        helper = replace_once(
+            helper,
+            "    task.outimage = resized;\n    task.resize_applied = true;\n",
+            "    task.outimage = resized;\n"
+            "    if (neutral_source) {\n"
+            "        size_t output_stride = 0;\n"
+            "        if (!manyue_neutral::packed_row_bytes(task.outimage.w, channels, &output_stride) ||\n"
+            "            !manyue_neutral::project_neutral_rgb_in_place(\n"
+            "                static_cast<uint8_t*>(task.outimage.data), task.outimage.w,\n"
+            "                task.outimage.h, channels, output_stride)) {\n"
+            "            fprintf(stderr, \"neutral output projection failed for %dx%d\\n\",\n"
+            "                    task.outimage.w, task.outimage.h);\n"
+            "            return false;\n"
+            "        }\n"
+            "    }\n"
+            "    task.resize_applied = true;\n",
+            "project neutral Real-ESRGAN output after fractional resize",
+        )
     proc_name = "void *proc" if variant == "realesr" else "void* proc"
     proc_start = text.index(proc_name)
     proc_end = text.index("class SaveThreadParams", proc_start)
@@ -585,11 +646,13 @@ def main() -> None:
     parser.add_argument("--helper-header", type=Path, required=True)
     parser.add_argument("--status-header", type=Path, required=True)
     parser.add_argument("--file-output-header", type=Path, required=True)
+    parser.add_argument("--neutral-header", type=Path, required=True)
     parser.add_argument("--cmake-template", type=Path, required=True)
     args = parser.parse_args()
     patch_source(args.source_root.resolve(), args.destination.resolve(), args.variant,
                  args.helper_header.resolve(), args.status_header.resolve(),
-                 args.file_output_header.resolve(), args.cmake_template.resolve())
+                 args.file_output_header.resolve(), args.neutral_header.resolve(),
+                 args.cmake_template.resolve())
 
 
 if __name__ == "__main__":

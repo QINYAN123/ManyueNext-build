@@ -612,9 +612,8 @@ class ReaderViewModel(
     private suspend fun updateChapterProgress(readerChapter: ReaderChapter, page: Page) {
         val pageIndex = page.index
 
-        mutableState.update {
-            it.copy(currentPage = pageIndex + 1)
-        }
+        // onPageSelected publishes the UI selection synchronously; IO progress saves can start out
+        // of order and must not write an older page back into the reader state.
         readerChapter.requestedPage = pageIndex
         chapterPageIndex = pageIndex
 

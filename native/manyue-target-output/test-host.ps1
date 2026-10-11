@@ -21,10 +21,13 @@ $OutputDir = [System.IO.Path]::GetFullPath($OutputDir)
 $null = New-Item -ItemType Directory -Force -Path $OutputDir
 
 $resizeExe = Join-Path $OutputDir "output-resize-test.exe"
+$neutralExe = Join-Path $OutputDir "neutral-source-test.exe"
 $statusExe = Join-Path $OutputDir "ncnn-status-test.exe"
 $fileOutputExe = Join-Path $OutputDir "file-output-test.exe"
 & $ZigExe c++ -std=c++11 -O2 -Wall -Wextra (Join-Path $helperDir "output_resize_test.cpp") -o $resizeExe
 if ($LASTEXITCODE -ne 0) { throw "Could not compile output resize test" }
+& $ZigExe c++ -std=c++11 -O2 -Wall -Wextra (Join-Path $helperDir "neutral_source_test.cpp") -o $neutralExe
+if ($LASTEXITCODE -ne 0) { throw "Could not compile neutral source test" }
 & $ZigExe c++ -std=c++11 -O2 -Wall -Wextra (Join-Path $helperDir "ncnn_status_test.cpp") -o $statusExe
 if ($LASTEXITCODE -ne 0) { throw "Could not compile ncnn status test" }
 & $ZigExe c++ -std=c++11 -O2 -Wall -Wextra (Join-Path $helperDir "file_output_test.cpp") -o $fileOutputExe
@@ -36,6 +39,13 @@ if ($resizeExit -ne 0 -or ($resizeOutput -join "`n") -notmatch "output resize te
     throw "Resize test failed (exit=$resizeExit): $($resizeOutput -join ' ')"
 }
 Write-Output ($resizeOutput -join "`n")
+
+$neutralOutput = & $neutralExe 2>&1
+$neutralExit = $LASTEXITCODE
+if ($neutralExit -ne 0 -or ($neutralOutput -join "`n") -notmatch "neutral source tests passed") {
+    throw "Neutral source test failed (exit=$neutralExit): $($neutralOutput -join ' ')"
+}
+Write-Output ($neutralOutput -join "`n")
 
 $qualityModelParam = Join-Path $repoRoot "app\src\main\assets\ai\models-Real-ESRGANv3-anime\x2.param"
 if (-not (Test-Path -LiteralPath $qualityModelParam)) {

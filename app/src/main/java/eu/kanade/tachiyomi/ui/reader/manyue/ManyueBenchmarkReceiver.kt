@@ -102,10 +102,14 @@ class ManyueBenchmarkReceiver : BroadcastReceiver() {
                     resultCode = 2
                     return
                 }
+                resultData = "accepted:$operation"
                 if (operation != "end") return
             }
             "export" -> Unit
-            else -> return
+            else -> {
+                resultCode = 2
+                return
+            }
         }
         val pending = goAsync()
         CoroutineScope(Dispatchers.IO).launch {
