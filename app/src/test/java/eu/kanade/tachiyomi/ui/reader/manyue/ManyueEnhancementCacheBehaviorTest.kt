@@ -28,6 +28,129 @@ import java.nio.file.Files
 @Config(application = Application::class, sdk = [34], manifest = Config.NONE)
 class ManyueEnhancementCacheBehaviorTest {
 
+    @Test fun `visible old profile survives pressure until it leaves the viewport`() = runBlocking {
+        val root = Files.createTempDirectory("manyue-cache-profile-visible-test").toFile()
+        val context = IsolatedCacheContext(RuntimeEnvironment.getApplication(), root)
+        val future = ManyueEnhancementCache.ReadingIdentity(725L, 825L, 20)
+        ManyueEnhancementCache.updateReadingPosition(future.mangaId, future.chapterId, 10)
+        ManyueEnhancementCache.updateProtectedPages(setOf(future.chapterId to future.pageIndex))
+        try {
+            val key = putImage(context, future, "visible-old", "b".repeat(32))
+            RandomAccessFile(File(ManyueEnhancementCache.cacheDir(context).resolve(key), "padding"), "rw").use {
+                it.setLength(MAX_CACHE_BYTES - ManyueEnhancementCache.cacheSizeBytes(context))
+            }
+            val waiter = async(start = CoroutineStart.UNDISPATCHED) {
+                ManyueEnhancementCache.awaitPrefetchBudget(context, future.mangaId, future.chapterId, 11, 1L, "a".repeat(32))
+            }
+            awaitCondition { ManyueEnhancementCache.pendingBudgetWaiterCountForTest() == 1 }
+            assertFalse(waiter.isCompleted)
+            assertNotNull(ManyueEnhancementCache.getImage(context, key))
+            ManyueEnhancementCache.updateProtectedPages(emptySet())
+            withTimeout(5_000L) { waiter.await() }.close()
+        } finally {
+            ManyueEnhancementCache.updateProtectedPages(emptySet())
+            ManyueEnhancementCache.clearReadingPosition(future.mangaId, future.chapterId)
+            root.deleteRecursively()
+        }
+    }
+
+    @Test fun `old profile future cache does not starve current profile read ahead`() = runBlocking {
+        val root = Files.createTempDirectory("manyue-cache-profile-test").toFile()
+        val context = IsolatedCacheContext(RuntimeEnvironment.getApplication(), root)
+        val future = ManyueEnhancementCache.ReadingIdentity(721L, 821L, 20)
+        val active = "a".repeat(32)
+        ManyueEnhancementCache.updateReadingPosition(future.mangaId, future.chapterId, 10)
+        try {
+            val staleKey = putImage(context, future, "stale-profile", "b".repeat(32))
+            val activeKey = putImage(context, future, "active-profile", active)
+            val padding = File(ManyueEnhancementCache.cacheDir(context).resolve(staleKey), "budget-padding.bin")
+            RandomAccessFile(padding, "rw").use { it.setLength(MAX_CACHE_BYTES - ManyueEnhancementCache.cacheSizeBytes(context)) }
+            withTimeout(5_000L) {
+                ManyueEnhancementCache.awaitPrefetchBudget(context, future.mangaId, future.chapterId, 11, 1_000_000L, active).close()
+            }
+            assertNull(ManyueEnhancementCache.getImage(context, staleKey))
+            assertEquals(active, ManyueEnhancementCache.getImage(context, activeKey)?.profile)
+        } finally {
+            ManyueEnhancementCache.clearReadingPosition(future.mangaId, future.chapterId)
+            root.deleteRecursively()
+        }
+    }
+
+    @Test fun `active profile future bank still waits for the head rather than recomputing it`() = runBlocking {
+        val root = Files.createTempDirectory("manyue-cache-active-profile-test").toFile()
+        val context = IsolatedCacheContext(RuntimeEnvironment.getApplication(), root)
+        val future = ManyueEnhancementCache.ReadingIdentity(722L, 822L, 20)
+        val active = "a".repeat(32)
+        ManyueEnhancementCache.updateReadingPosition(future.mangaId, future.chapterId, 10)
+        try {
+            val key = putImage(context, future, "active-future", active)
+            RandomAccessFile(File(ManyueEnhancementCache.cacheDir(context).resolve(key), "padding"), "rw").use {
+                it.setLength(MAX_CACHE_BYTES - ManyueEnhancementCache.cacheSizeBytes(context))
+            }
+            val waiter = async(start = CoroutineStart.UNDISPATCHED) {
+                ManyueEnhancementCache.awaitPrefetchBudget(context, future.mangaId, future.chapterId, 11, 1L, active)
+            }
+            awaitCondition { ManyueEnhancementCache.pendingBudgetWaiterCountForTest() == 1 }
+            assertFalse(waiter.isCompleted)
+            assertNotNull(ManyueEnhancementCache.getImage(context, key))
+            ManyueEnhancementCache.updateReadingPosition(future.mangaId, future.chapterId, 26)
+            withTimeout(5_000L) { waiter.await() }.close()
+        } finally {
+            ManyueEnhancementCache.clearReadingPosition(future.mangaId, future.chapterId)
+            root.deleteRecursively()
+        }
+    }
+
+    @Test fun `leased old profile remains readable until decoder releases it`() = runBlocking {
+        val root = Files.createTempDirectory("manyue-cache-profile-lease-test").toFile()
+        val context = IsolatedCacheContext(RuntimeEnvironment.getApplication(), root)
+        val future = ManyueEnhancementCache.ReadingIdentity(723L, 823L, 20)
+        ManyueEnhancementCache.updateReadingPosition(future.mangaId, future.chapterId, 10)
+        var lease: ManyueEnhancementCache.PinnedCachedImage? = null
+        try {
+            val key = putImage(context, future, "leased-old", "b".repeat(32))
+            lease = ManyueEnhancementCache.pinCachedImage(context, key)
+            RandomAccessFile(File(ManyueEnhancementCache.cacheDir(context).resolve(key), "padding"), "rw").use {
+                it.setLength(MAX_CACHE_BYTES - ManyueEnhancementCache.cacheSizeBytes(context))
+            }
+            val waiter = async(start = CoroutineStart.UNDISPATCHED) {
+                ManyueEnhancementCache.awaitPrefetchBudget(context, future.mangaId, future.chapterId, 11, 1L, "a".repeat(32))
+            }
+            awaitCondition { ManyueEnhancementCache.pendingBudgetWaiterCountForTest() == 1 }
+            assertFalse(waiter.isCompleted)
+            assertNotNull(ManyueEnhancementCache.getImage(context, key))
+            lease?.lease?.close()
+            withTimeout(5_000L) { waiter.await() }.close()
+            assertNull(ManyueEnhancementCache.getImage(context, key))
+        } finally {
+            lease?.lease?.close()
+            ManyueEnhancementCache.clearReadingPosition(future.mangaId, future.chapterId)
+            root.deleteRecursively()
+        }
+    }
+
+    @Test fun `legacy manifests remain readable but unknown far future profiles can be reclaimed`() = runBlocking {
+        val root = Files.createTempDirectory("manyue-cache-legacy-profile-test").toFile()
+        val context = IsolatedCacheContext(RuntimeEnvironment.getApplication(), root)
+        val future = ManyueEnhancementCache.ReadingIdentity(724L, 824L, 20)
+        ManyueEnhancementCache.updateReadingPosition(future.mangaId, future.chapterId, 10)
+        try {
+            val key = putImage(context, future, "legacy-profile")
+            assertNotNull(ManyueEnhancementCache.getImage(context, key))
+            assertNull(ManyueEnhancementCache.getImage(context, key)?.profile)
+            RandomAccessFile(File(ManyueEnhancementCache.cacheDir(context).resolve(key), "padding"), "rw").use {
+                it.setLength(MAX_CACHE_BYTES - ManyueEnhancementCache.cacheSizeBytes(context))
+            }
+            withTimeout(5_000L) {
+                ManyueEnhancementCache.awaitPrefetchBudget(context, future.mangaId, future.chapterId, 11, 1L, "a".repeat(32)).close()
+            }
+            assertNull(ManyueEnhancementCache.getImage(context, key))
+        } finally {
+            ManyueEnhancementCache.clearReadingPosition(future.mangaId, future.chapterId)
+            root.deleteRecursively()
+        }
+    }
+
     @Test fun `clear removes unleased current pages but keeps a live displayed image`() = runBlocking {
         val root = Files.createTempDirectory("manyue-cache-clear-test").toFile()
         val context = IsolatedCacheContext(RuntimeEnvironment.getApplication(), root)
@@ -503,9 +626,10 @@ class ManyueEnhancementCacheBehaviorTest {
         context: Context,
         identity: ManyueEnhancementCache.ReadingIdentity,
         suffix: String,
+        profile: String? = null,
     ): String {
         val source = File(context.cacheDir, "$suffix.webp").apply { writeBytes(byteArrayOf(1, 2, 3)) }
-        val key = cacheKey(identity)
+        val key = cacheKey(identity, profile)
         assertTrue(
             ManyueEnhancementCache.putImage(
                 context,
@@ -514,12 +638,13 @@ class ManyueEnhancementCacheBehaviorTest {
                 2,
                 2,
                 readingIdentity = identity,
+                profile = profile,
             ),
         )
         return key
     }
 
-    private fun cacheKey(identity: ManyueEnhancementCache.ReadingIdentity): String =
+    private fun cacheKey(identity: ManyueEnhancementCache.ReadingIdentity, profile: String? = null): String =
         ManyueEnhancementCache.cacheKey(
             identity.mangaId,
             identity.chapterId,
@@ -528,6 +653,7 @@ class ManyueEnhancementCacheBehaviorTest {
             0,
             2,
             0,
+            modelId = profile ?: "legacy",
         )
 
     private class IsolatedCacheContext(base: Context, private val isolatedCacheDir: File) : ContextWrapper(base) {

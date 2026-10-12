@@ -100,6 +100,7 @@ object ManyueEnhancementCache {
         val overlayApplied: Boolean = false,
         val detail: String? = null,
         val readingIdentity: ReadingIdentity? = null,
+        val profile: String? = null,
     )
 
     fun cacheDir(context: Context): File =
@@ -153,13 +154,14 @@ object ManyueEnhancementCache {
         chapterId: Long,
         pageIndex: Int,
         estimatedBytes: Long = DEFAULT_PREFETCH_RESERVATION_BYTES,
+        activeProfile: String? = null,
     ): PrefetchReservation {
         require(estimatedBytes in 1..MAX_CACHE_BYTES) { "Invalid prefetch budget reservation" }
         val identity = ReadingIdentity(mangaId, chapterId, pageIndex)
         var acquired: PrefetchReservation? = null
         try {
             return withContext(Dispatchers.IO) {
-                acquirePrefetchReservation(context, identity, estimatedBytes) { acquired = it }
+                acquirePrefetchReservation(context, identity, estimatedBytes, activeProfile) { acquired = it }
             }
         } catch (error: Throwable) {
             acquired?.close()
@@ -258,12 +260,13 @@ object ManyueEnhancementCache {
         context: Context,
         identity: ReadingIdentity,
         estimatedBytes: Long,
+        activeProfile: String?,
         onAcquired: (PrefetchReservation) -> Unit,
     ): PrefetchReservation {
         while (true) {
             val observedVersion = synchronized(waitersLock) { budgetEventVersion }
             val reservation = synchronized(diskLock) {
-                if (!ensureCapacity(context, estimatedBytes, identity, preserveUpcoming = true)) {
+                if (!ensureCapacity(context, estimatedBytes, identity, preserveUpcoming = true, activeProfile = activeProfile)) {
                     null
                 } else {
                     synchronized(cacheLock) {
@@ -276,6 +279,15 @@ object ManyueEnhancementCache {
             if (reservation != null) {
                 onAcquired(reservation)
                 return reservation
+            }
+            if (ManyuePerformanceDiagnostics.enabled) {
+                ManyuePerformanceDiagnostics.event(
+                    ManyuePerformanceRecorder.Stage.PREFETCH_CACHE_PRESSURE,
+                    identity.pageIndex,
+                    null,
+                    ManyuePerformanceRecorder.Metric.WORKING_BYTES to cacheSizeBytes(context),
+                    ManyuePerformanceRecorder.Metric.CAPTURED_GENERATION to ManyueRuntimeState.generation,
+                )
             }
             awaitBudgetChange(observedVersion)
         }
@@ -330,6 +342,15 @@ object ManyueEnhancementCache {
         return md.joinToString("") { "%02x".format(it) }
     }
 
+    /** Cache retention profile only; exact source/dimensions still use the existing full key. */
+    internal fun currentProfile(): String {
+        val model = ManyueRuntimeState.aiModel
+        val detail = if (model.continuousScale) ManyueRuntimeState.aiDetailStrength else 0
+        val raw = "$MODEL_VERSION|${model.cacheIdentity}|${ManyueRuntimeState.modeInt}|" +
+            "${model.outputScalePercent(ManyueRuntimeState.aiScalePercent)}|$detail|${ManyueBenchmarkControl.cacheNamespace}"
+        return MessageDigest.getInstance("MD5").digest(raw.toByteArray()).joinToString("") { "%02x".format(it) }
+    }
+
     /** Returns the bundle dir if its complete image and dimension manifest exist. */
     fun getBundle(context: Context, key: String): File? {
         val dir = File(cacheDir(context), key)
@@ -378,7 +399,8 @@ object ManyueEnhancementCache {
             classicVariantFile(bundle, classicStrength) ?: return null
         }
         if (!image.isFile || image.length() <= 0L) return null
-        return CachedImage(image, width, height, overlayRequested, overlayApplied, detail, readingIdentity)
+        val profile = jsonString(manifest, "profile")?.takeIf { it.matches(Regex("[0-9a-f]{32}")) }
+        return CachedImage(image, width, height, overlayRequested, overlayApplied, detail, readingIdentity, profile)
     }
 
     internal fun imageFile(bundle: File): File? = cachedImage(bundle)?.file
@@ -402,10 +424,12 @@ object ManyueEnhancementCache {
         detail: String? = null,
         readingIdentity: ReadingIdentity? = null,
         consumeSource: Boolean = false,
+        profile: String? = null,
     ): Boolean {
         require(source.isFile && source.length() > 0L) { "AI output file is missing" }
         require(ManyueAiSafetyPolicy.isPixelBudgetSafe(width, height, ManyueAiSafetyPolicy.MAX_DISPLAY_PIXELS))
         require(!overlayApplied || overlayRequested) { "Anime4K overlay cannot apply unless requested" }
+        require(profile == null || profile.matches(Regex("[0-9a-f]{32}"))) { "Invalid retention profile" }
         val imageName = when (source.extension.lowercase()) {
             "png" -> "image.png"
             "webp" -> "image.webp"
@@ -427,6 +451,7 @@ object ManyueEnhancementCache {
             null
         }
         if (finalDetail != null) manifest += "detail" to finalDetail
+        if (profile != null) manifest += "profile" to profile
         readingIdentity?.let {
             manifest += "mangaId" to it.mangaId
             manifest += "chapterId" to it.chapterId
@@ -763,6 +788,7 @@ object ManyueEnhancementCache {
         incomingIdentity: ReadingIdentity?,
         ownReservationBytes: Long = 0L,
         preserveUpcoming: Boolean = false,
+        activeProfile: String? = null,
     ): Boolean {
         if (incomingBytes < 0L || incomingBytes > MAX_CACHE_BYTES) return false
         val currentSize = cacheSizeBytes(context)
@@ -774,6 +800,7 @@ object ManyueEnhancementCache {
             startingBytes = currentSize,
             targetBytes = target,
             preserveUpcoming = preserveUpcoming,
+            activeProfile = activeProfile,
         )
         return cacheSizeBytes(context) + reserved + incomingBytes <= MAX_CACHE_BYTES
     }
@@ -786,6 +813,7 @@ object ManyueEnhancementCache {
         val rank: Int,
         val pageOrder: Int,
         val bytes: Long,
+        val profile: String?,
     )
 
     private fun evictUntil(
@@ -793,6 +821,7 @@ object ManyueEnhancementCache {
         startingBytes: Long,
         targetBytes: Long,
         preserveUpcoming: Boolean = false,
+        activeProfile: String? = null,
     ) {
         val state = readingSnapshot()
         val candidates = roots.flatMap { root ->
@@ -801,7 +830,8 @@ object ManyueEnhancementCache {
                     entry.name.matches(Regex("[0-9a-f]{32}"))
                 val image = if (isCurrentBundle) cachedImage(entry) else null
                 val identity = image?.readingIdentity
-                val rank = evictionRank(identity, state.first, state.second, state.third, preserveUpcoming)
+                val keepUpcoming = preserveUpcoming && (activeProfile == null || image?.profile == activeProfile)
+                val rank = evictionRank(identity, state.first, state.second, state.third, keepUpcoming)
                 EvictionCandidate(
                     file = entry,
                     key = entry.name.takeIf { isCurrentBundle },
@@ -810,13 +840,14 @@ object ManyueEnhancementCache {
                     rank = rank.first,
                     pageOrder = rank.second,
                     bytes = directoryBytes(entry),
+                    profile = image?.profile,
                 )
             }
         }.sortedWith(compareBy<EvictionCandidate>({ it.rank }, { it.pageOrder }, { it.lastModified }))
         var size = startingBytes
         for (candidate in candidates) {
             if (size <= targetBytes) break
-            if (deleteCandidate(candidate, preserveUpcoming = preserveUpcoming)) size -= candidate.bytes
+            if (deleteCandidate(candidate, preserveUpcoming = preserveUpcoming, activeProfile = activeProfile)) size -= candidate.bytes
         }
     }
 
@@ -868,6 +899,7 @@ object ManyueEnhancementCache {
         candidate: EvictionCandidate,
         respectReadingProtection: Boolean = true,
         preserveUpcoming: Boolean = false,
+        activeProfile: String? = null,
     ): Boolean {
         val key = candidate.key
         if (key == null) {
@@ -879,7 +911,8 @@ object ManyueEnhancementCache {
             if (key in deletingBundles || (leasesByBundle[key] ?: 0) > 0) return false
             if (respectReadingProtection &&
                 (isIdentityProtected(candidate.identity, readingPosition, protectedPageSnapshot) ||
-                    (preserveUpcoming && isIdentityUpcoming(candidate.identity, readingPosition, readingDirection)))
+                    (preserveUpcoming && (activeProfile == null || candidate.profile == activeProfile) &&
+                        isIdentityUpcoming(candidate.identity, readingPosition, readingDirection)))
             ) {
                 return false
             }

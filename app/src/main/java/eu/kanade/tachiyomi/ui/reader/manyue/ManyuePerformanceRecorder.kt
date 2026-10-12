@@ -42,6 +42,7 @@ internal class ManyuePerformanceRecorder(
         WORK_BLOCK_CANCELLED,
         PREFETCH_ENTER,
         PREFETCH_EXIT,
+        PREFETCH_CACHE_PRESSURE,
     }
 
     enum class Metric {

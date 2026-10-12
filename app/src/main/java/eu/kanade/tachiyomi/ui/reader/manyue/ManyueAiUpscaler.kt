@@ -97,6 +97,7 @@ object ManyueAiUpscaler {
         @Volatile var outputHeight: Int = 0,
         @Volatile var predictiveStart: Boolean = false,
         val benchmarkNamespace: Int = ManyueBenchmarkControl.cacheNamespace,
+        val cacheProfile: String = ManyueEnhancementCache.currentProfile(),
     ) : Comparable<Request> {
         internal val terminal = CompletableDeferred<Int>()
         internal val blockedWorkSampler = ManyueBlockedWorkSampler()
@@ -937,6 +938,7 @@ object ManyueAiUpscaler {
                 detail = overlayDetail,
                 readingIdentity = ManyueEnhancementCache.ReadingIdentity(req.mangaId, req.chapterId, req.pageIndex),
                 consumeSource = true,
+                profile = req.cacheProfile,
             )
             check(cacheCommitted) { "AI 缓存预算不足，暂时保留原图" }
             req.completionDetail = overlayDetail

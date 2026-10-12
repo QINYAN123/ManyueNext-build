@@ -112,6 +112,7 @@ class ManyueReaderPrefetcher(context: Context) {
                             mangaId = currentMangaId,
                             chapterId = chapterId,
                             pageIndex = pageIndex,
+                            activeProfile = ManyueEnhancementCache.currentProfile(),
                         )
                     }
                     reservation = acquiredReservation
