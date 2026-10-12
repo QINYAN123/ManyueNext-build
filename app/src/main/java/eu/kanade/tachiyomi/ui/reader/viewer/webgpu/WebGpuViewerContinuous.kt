@@ -43,7 +43,9 @@ class WebGpuViewerContinuous(activity: ReaderActivity, val useGap: Boolean = fal
         eligible = { ManyuePrefetchManager.isNextDisplayPage(it.page.chapter.chapter.id ?: 0L, it.page.index) },
         prepare = { owner, wanted -> owner.aiBridge.updateVisibility(false, prepareNext = wanted) },
     )
-    internal var nextPreparationEnabled = true
+    // Same-APK fast-reading trial missed its prospective benefit gate. Keep benchmark access
+    // for further study, without enabling an unaccepted extra GPU workload by default.
+    internal var nextPreparationEnabled = false
         private set
 
     internal fun benchmarkPrewarm(enabled: Boolean) {
