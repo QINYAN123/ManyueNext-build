@@ -40,6 +40,7 @@ internal class ManyueWebGpuPageBridge(
     private var startJob: Job? = null
     private var prepareJob: Job? = null
     private var visible = false
+    private var prepareAhead = false
     private var terminalFailure = false
     private var readyResult: ManyueReadingCoverage.Result? = null
     private var shownToken: String? = null
@@ -64,17 +65,18 @@ internal class ManyueWebGpuPageBridge(
         mode == ManyueRuntimeState.modeInt && ManyueRuntimeState.aiModel == ManyueAiModel.QUALITY_REAL_ESRGAN
 
     private fun wantedForDisplay(): Boolean = visible ||
-        ManyuePrefetchManager.isNextDisplayPage(identity.chapterId, identity.pageIndex)
+        (prepareAhead && ManyuePrefetchManager.isNextDisplayPage(identity.chapterId, identity.pageIndex))
 
-    fun updateVisibility(isVisible: Boolean) {
+    fun updateVisibility(isVisible: Boolean, prepareNext: Boolean = false) {
         visible = isVisible
+        prepareAhead = prepareNext
         if (!wantedForDisplay()) {
             prepareJob?.cancel()
             prepareJob = null
         }
         if (!ManyueEnhancementMode.fromInt(ManyueRuntimeState.modeInt).usesAi()) return
         if (generation != ManyueRuntimeState.generation || mode != ManyueRuntimeState.modeInt) reset()
-        if (!visible || !alive() || page.status != eu.kanade.tachiyomi.source.model.Page.State.Ready) return
+        if (!wantedForDisplay() || !alive() || page.status != eu.kanade.tachiyomi.source.model.Page.State.Ready) return
         if (readyResult != null) {
             prepareReady()
         } else if (token == null && startJob?.isActive != true && !terminalFailure) {
@@ -94,13 +96,15 @@ internal class ManyueWebGpuPageBridge(
                 val bytes = withContext(Dispatchers.IO) {
                     page.stream?.invoke()?.let(::readBoundedPrefetchBytes)
                 } ?: error("original source unavailable or exceeds input budget")
-                if (!current() || generation != requestGeneration || mode != requestMode || !visible) return@launch
+                if (!current() || generation != requestGeneration || mode != requestMode || !wantedForDisplay()) return@launch
                 inputFingerprint = withContext(Dispatchers.IO) { ManyueAiUpscaler.fingerprint(bytes) }
                 var rejection: ManyueAiRequestFactory.Rejection? = null
                 val request = withContext(Dispatchers.IO) {
                     try {
                         ManyueAiRequestFactory.enqueue(
-                            context, identity, bytes, 100, requestMode, requestGeneration,
+                            context, identity, bytes,
+                            if (visible) 100 else ManyueAiSafetyPolicy.CONTINUOUS_PREFETCH_PRIORITY,
+                            requestMode, requestGeneration,
                             onRejected = { rejection = it },
                         )
                     } finally {
