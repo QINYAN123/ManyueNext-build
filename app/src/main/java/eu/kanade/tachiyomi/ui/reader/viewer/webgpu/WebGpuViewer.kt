@@ -1358,9 +1358,9 @@ open class WebGpuViewer(
                         noteIfLone(page)
                         page.state = PageState.IDLE
                         cleanupImage(oldImagePage)
-                        // Fade up from the placeholder's colour, if that placeholder was on screen -
-                        // one that decoded out of view has nothing left to fade from.
-                        if (oldImagePage.isOnScreen) imagePage.fadeIn()
+                        // A strip's newly visible bottom page should show as soon as it is decoded.
+                        // Veiling a ready image for 200ms looks like a second loading delay.
+                        if (!isContinuous && oldImagePage.isOnScreen) imagePage.fadeIn()
                         if (!isDualPageMode()) {
                             (page.imagePage as? ImagePage.ImageSingle)?.let {
                                 if (!applyWideZoomIfNeeded(it)) {
