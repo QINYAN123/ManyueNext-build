@@ -57,6 +57,48 @@ class ManyueReadingCoverageTest {
         assertEquals("WEBGPU_SUBMISSION", row.getString("aiDrawBackend"))
     }
 
+    @Test fun sameSubmittedAiFrameUsesOneTimestampAcrossRealClockAdvance() {
+        expose()
+        now = 10_000_000L
+        val frame = ManyueReadingCoverage.frameSubmitted(owner, ManyueReadingCoverage.DrawBackend.WEBGPU_SUBMISSION)
+        now += 20_000L
+        ManyueReadingCoverage.drawn(owner, source, stamp(), submittedFrame = frame)
+        now = 300_000_000L
+        ManyueReadingCoverage.hidden(owner)
+        val row = ManyueReadingCoverage.snapshot().getJSONArray("exposures").getJSONObject(0)
+        assertTrue(row.getBoolean("firstFrame"))
+        assertEquals(10_000_000L, row.getLong("aiDrawNs"))
+    }
+
+    @Test fun earlierPlaceholderStillPreventsLaterSubmittedAiFromClaimingFirstFrame() {
+        expose()
+        now = 10_000_000L
+        ManyueReadingCoverage.frameSubmitted(owner)
+        now = 100_000_000L
+        val frame = ManyueReadingCoverage.frameSubmitted(owner)
+        now += 20_000L
+        ManyueReadingCoverage.drawn(owner, source, stamp(), submittedFrame = frame)
+        now = 300_000_000L
+        ManyueReadingCoverage.hidden(owner)
+        val row = ManyueReadingCoverage.snapshot().getJSONArray("exposures").getJSONObject(0)
+        assertFalse(row.getBoolean("firstFrame"))
+        assertEquals(10_000_000L, row.getLong("firstDrawNs"))
+        assertEquals(100_000_000L, row.getLong("aiDrawNs"))
+    }
+
+    @Test fun diagnosticResetCannotReuseAnOldFrameStampForANewExposure() {
+        expose()
+        val frame = ManyueReadingCoverage.frameSubmitted(owner)
+        ManyuePerformanceDiagnostics.clear()
+        expose()
+        ManyueReadingCoverage.drawn(owner, source, stamp(), submittedFrame = frame)
+        now = 300_000_000L
+        ManyueReadingCoverage.hidden(owner)
+        val row = ManyueReadingCoverage.snapshot().getJSONArray("exposures").getJSONObject(0)
+        assertFalse(row.getBoolean("displayedDuringExposure"))
+        assertEquals(1, row.getInt("rejectedDrawCount"))
+    }
+
     @Test fun loadingEntryIsRetainedAndReadyAloneDoesNotCountAsDisplayed() {
         expose(source.copy(fingerprint = null, sourceWidth = 0, sourceHeight = 0))
         now = 1_000_000_000

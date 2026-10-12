@@ -11,6 +11,13 @@ import java.util.IdentityHashMap
 object ManyueReadingCoverage {
     enum class DrawBackend { ANDROID_CANVAS, WEBGPU_SUBMISSION }
 
+    class SubmittedFrame internal constructor(
+        internal val owner: Any,
+        internal val exposure: Int,
+        internal val epoch: Long,
+        internal val timeNs: Long,
+    )
+
     data class Source(
         val mangaId: Long,
         val chapterId: Long,
@@ -213,14 +220,16 @@ object ManyueReadingCoverage {
     }
 
     /** First submitted reader frame includes placeholders and rejected stale active images. */
-    fun frameSubmitted(owner: Any, backend: DrawBackend = DrawBackend.ANDROID_CANVAS) {
-        if (!enabled) return
-        synchronized(lock) {
+    fun frameSubmitted(owner: Any, backend: DrawBackend = DrawBackend.ANDROID_CANVAS): SubmittedFrame? {
+        if (!enabled) return null
+        return synchronized(lock) {
             active[owner]?.let {
+                val time = now()
                 if (it.firstDrawNs == null) {
-                    it.firstDrawNs = now()
+                    it.firstDrawNs = time
                     it.firstDrawBackend = backend
                 }
+                SubmittedFrame(owner, it.id, resetEpoch, time)
             }
         }
     }
@@ -262,12 +271,26 @@ object ManyueReadingCoverage {
     }
 
     /** Called after a matching active image submits its draw pass; submission is not scanout. */
-    fun drawn(owner: Any, source: Source, result: Result?, backend: DrawBackend = DrawBackend.ANDROID_CANVAS) {
+    fun drawn(
+        owner: Any,
+        source: Source,
+        result: Result?,
+        backend: DrawBackend = DrawBackend.ANDROID_CANVAS,
+        submittedFrame: SubmittedFrame? = null,
+    ) {
         if (!enabled) return
         synchronized(lock) {
             val current = active[owner] ?: return
             if (!samePage(current.source, source)) return
-            val time = now()
+            if (submittedFrame != null &&
+                (submittedFrame.owner !== owner || submittedFrame.exposure != current.id || submittedFrame.epoch != resetEpoch)
+            ) {
+                current.invalidDrawCount++
+                return
+            }
+            // A submitted image and its AI identity belong to one frame, even when the
+            // callbacks execute a few microseconds apart. Never compare two independent clocks.
+            val time = submittedFrame?.timeNs ?: now()
             if (current.firstDrawNs == null) {
                 current.firstDrawNs = time
                 current.firstDrawBackend = backend
