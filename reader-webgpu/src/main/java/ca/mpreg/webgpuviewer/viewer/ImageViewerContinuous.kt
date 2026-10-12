@@ -360,6 +360,7 @@ fun ImageViewerContinuous(
                                 if (change.positionChanged()) lastMoveTime = change.uptimeMillis
 
                                 if (pan != Offset.Zero || zoom != 1f) {
+                                    ScrollTrace.input(android.os.SystemClock.uptimeMillis() - change.uptimeMillis, pan.y)
                                     longPressJob?.cancel()
 
                                     if (zoom != 1f) {

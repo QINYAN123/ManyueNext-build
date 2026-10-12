@@ -1550,7 +1550,14 @@ internal class TileRenderer(private val invalidate: () -> Unit) {
                         val req = nextRequest() ?: break
                         try {
                             val started = System.nanoTime()
-                            generate(req, this)?.let {
+                            val tracing = ca.mpreg.webgpuviewer.viewer.ScrollTrace.enabled
+                            if (tracing) android.os.Trace.beginSection("manyue.tile.generate")
+                            val measurement = try {
+                                generate(req, this)
+                            } finally {
+                                if (tracing) android.os.Trace.endSection()
+                            }
+                            measurement?.let {
                                 measurements.add(it)
                                 // Only a tile that really submitted - a no-op would drag the
                                 // average toward nothing.

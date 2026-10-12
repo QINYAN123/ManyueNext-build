@@ -270,6 +270,7 @@ class ImageViewerContinuousState : ImageViewerState(isVertical = true) {
             clampToDocumentEnd()
             if (!scrollYInternal.isSane()) scrollYInternal = 0.0
             if (!anchorDocYInternal.isSane()) anchorDocYInternal = 0.0
+            ScrollTrace.scroll(anchorDocYInternal + scrollYInternal)
         }
     }
 
@@ -577,6 +578,7 @@ class ImageViewerContinuousState : ImageViewerState(isVertical = true) {
 
     override fun onFrameSubmitted(snapshot: Any) {
         val frame = snapshot as ContinuousRenderSnapshot
+        ScrollTrace.submitted(frame.cameraDocY)
         onSubmittedImages?.invoke(
             visibleImages(frame).map { it.copy(contentSubmitted = it.page in frame.drawnImages) },
             System.nanoTime(),
@@ -609,7 +611,10 @@ class ImageViewerContinuousState : ImageViewerState(isVertical = true) {
                 ?.takeIf { it > 0f && pageHeight > 0f && pageHeight != it }
                 ?.let { (pageHeight / it).toDouble() }
             val wasPinned = ratio != null && maxScrollY()?.let { scrollYInternal >= it } == true
-            if (ratio != null) scrollYInternal *= ratio
+            if (ratio != null) {
+                ScrollTrace.heightCorrection(ratio)
+                scrollYInternal *= ratio
+            }
             if (pageHeight > 0f) currentPageHeight = pageHeight
             // A decode can shorten the document under a position already at its end.
             clampToDocumentEnd()
@@ -626,6 +631,12 @@ class ImageViewerContinuousState : ImageViewerState(isVertical = true) {
         // The point both the fast path and TileRenderer's continuous overloads zoom around, so
         // they agree on where a page belongs.
         val cameraDocY = anchorDocY - y0 + 0.5f * screenH / s
+        if (ScrollTrace.enabled) {
+            ScrollTrace.capture(
+                cameraDocY, getPage(0)?.let(::getPageSlotHeight) ?: 0f, getPage(0),
+                (if (isPanning) 1 else 0) or (if (isFlinging) 2 else 0) or (if (isScaleAnimating) 4 else 0),
+            )
+        }
 
         val pages = mutableListOf<VisiblePage>()
 
