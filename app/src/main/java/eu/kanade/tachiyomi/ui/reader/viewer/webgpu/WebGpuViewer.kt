@@ -1140,7 +1140,7 @@ open class WebGpuViewer(
             synchronized(lock) {
                 if (pageInCache(page) && !page.isDecoded) {
                     page.state = PageState.IDLE
-                    queueForDecode(page, prioritize = currentPage?.let { pageKey(it) == pageKey(page) } ?: false)
+                    queueForDecode(page, prioritize = isPageVisible(page))
                 } else if (pageInCache(page)) {
                     page.state = PageState.IDLE
                 }
@@ -1194,7 +1194,7 @@ open class WebGpuViewer(
                         if (page.page.status == Page.State.Ready && !page.isDecoded) {
                             queueForDecode(
                                 page,
-                                prioritize = currentPage?.let { pageKey(it) == pageKey(page) } ?: false,
+                                prioritize = isPageVisible(page),
                             )
                         }
                     }
@@ -1470,6 +1470,9 @@ open class WebGpuViewer(
             }
         }
     }
+
+    protected open fun isPageVisible(page: ViewerReaderPage): Boolean =
+        currentPage?.let { pageKey(it) == pageKey(page) } == true
 
     protected fun preloadPages(page: ViewerPage) {
         // page may be a stale copy - resolve the live cache entry.
