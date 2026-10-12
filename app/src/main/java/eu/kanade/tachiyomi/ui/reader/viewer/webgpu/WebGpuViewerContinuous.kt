@@ -43,6 +43,14 @@ class WebGpuViewerContinuous(activity: ReaderActivity, val useGap: Boolean = fal
         eligible = { ManyuePrefetchManager.isNextDisplayPage(it.page.chapter.chapter.id ?: 0L, it.page.index) },
         prepare = { owner, wanted -> owner.aiBridge.updateVisibility(false, prepareNext = wanted) },
     )
+    internal var nextPreparationEnabled = true
+        private set
+
+    internal fun benchmarkPrewarm(enabled: Boolean) {
+        nextPreparationEnabled = enabled
+        if (!enabled) nextPreparation.reset()
+        state.invalidate()
+    }
 
     override fun isPageVisible(page: ViewerReaderPage): Boolean = page in visibleManyueOwners || super.isPageVisible(page)
     private val detailFilter = ManyueWebGpuDetailFilter().apply { enabled = false }
@@ -129,7 +137,7 @@ class WebGpuViewerContinuous(activity: ReaderActivity, val useGap: Boolean = fal
                     entries.map { it.first },
                 )
             }
-            nextPreparation.update(owners, manyueHead to manyueGeneration)
+            nextPreparation.update(if (nextPreparationEnabled) owners else emptySet(), manyueHead to manyueGeneration)
             entries.forEach { (owner, image) ->
                 owner.aiBridge.updateVisibility(true)
                 ManyueReadingCoverage.exposure(

@@ -600,6 +600,11 @@ class ReaderActivity : BaseActivity() {
                     intent.getBooleanExtra("mipmaps", false)
                 viewModel.state.value.viewer?.refreshManyue()
             }
+            "prewarm" -> {
+                val viewer = viewModel.state.value.viewer as? eu.kanade.tachiyomi.ui.reader.viewer.webgpu.WebGpuViewerContinuous
+                    ?: return false
+                viewer.benchmarkPrewarm(intent.getBooleanExtra("enabled", true))
+            }
             "filters" -> {
                 // Change only requested display settings for a same-page composition check.
                 // Unlike configure, this never refreshes the reader or resets AI/crop options.
@@ -680,6 +685,7 @@ class ReaderActivity : BaseActivity() {
         val webgpu = viewModel.state.value.viewer as? eu.kanade.tachiyomi.ui.reader.viewer.webgpu.WebGpuViewerContinuous
         return org.json.JSONObject().apply {
             put("viewer", if (webtoon != null) "webtoon" else if (webgpu != null) "webgpu_continuous" else "other")
+            put("nextAiPreparation", webgpu?.nextPreparationEnabled ?: false)
             put("comfortScale", webtoon?.comfortScaleForPersistence() ?: webgpu?.comfortScaleForPersistence() ?: 1f)
             put("innerWindow", comfortInnerScreen)
             put("model", eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.aiModel.id)
