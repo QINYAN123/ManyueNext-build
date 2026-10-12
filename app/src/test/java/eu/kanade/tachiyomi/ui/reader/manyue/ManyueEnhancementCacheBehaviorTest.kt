@@ -28,6 +28,33 @@ import java.nio.file.Files
 @Config(application = Application::class, sdk = [34], manifest = Config.NONE)
 class ManyueEnhancementCacheBehaviorTest {
 
+    @Test fun `request retention profile uses explicit captured settings rather than later runtime settings`() {
+        val root = Files.createTempDirectory("manyue-cache-captured-profile").toFile()
+        val oldModel = ManyueRuntimeState.aiModel
+        try {
+            ManyueRuntimeState.updateAiModel(ManyueAiModel.QUALITY_REAL_ESRGAN)
+            val request = ManyueAiUpscaler.Request(
+                token = "explicit-profile", mangaId = 1, chapterId = 2, pageIndex = 3,
+                inputFile = File(root, "input.bin"), sourceWidth = 10, sourceHeight = 10,
+                targetMode = 2, targetWidth = 14, model = ManyueAiModel.MOBILE_LITE,
+                aiDetailStrength = 25, configuredScalePercent = 137, benchmarkNamespace = 73,
+            )
+            assertFalse(request.cacheProfile == ManyueEnhancementCache.currentProfile())
+            val original = request.cacheProfile
+            ManyueRuntimeState.updateAiModel(ManyueAiModel.MOBILE_LITE)
+            assertEquals(original, request.cacheProfile)
+            assertFalse(original == ManyueEnhancementCache.profileFor(
+                request.model, request.expectedMode, 150, 25, 73,
+            ))
+            assertFalse(original == ManyueEnhancementCache.profileFor(
+                request.model, request.expectedMode, 137, 25, 74,
+            ))
+        } finally {
+            ManyueRuntimeState.updateAiModel(oldModel)
+            root.deleteRecursively()
+        }
+    }
+
     @Test fun `visible old profile survives pressure until it leaves the viewport`() = runBlocking {
         val root = Files.createTempDirectory("manyue-cache-profile-visible-test").toFile()
         val context = IsolatedCacheContext(RuntimeEnvironment.getApplication(), root)

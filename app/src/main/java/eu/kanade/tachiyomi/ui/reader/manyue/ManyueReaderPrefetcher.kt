@@ -73,6 +73,7 @@ class ManyueReaderPrefetcher(context: Context) {
             return
         }
         val generation = ManyueRuntimeState.generation
+        val activeProfile = ManyueEnhancementCache.currentProfile()
         coordinator.reconcile(chapterId, current.index, generation, pages.size) { pageIndex, taskGeneration ->
             val page = pages.getOrNull(pageIndex)
                 ?: return@reconcile ManyuePrefetchWorkOutcome.FAILED
@@ -112,7 +113,7 @@ class ManyueReaderPrefetcher(context: Context) {
                             mangaId = currentMangaId,
                             chapterId = chapterId,
                             pageIndex = pageIndex,
-                            activeProfile = ManyueEnhancementCache.currentProfile(),
+                            activeProfile = activeProfile,
                         )
                     }
                     reservation = acquiredReservation

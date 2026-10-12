@@ -97,8 +97,11 @@ object ManyueAiUpscaler {
         @Volatile var outputHeight: Int = 0,
         @Volatile var predictiveStart: Boolean = false,
         val benchmarkNamespace: Int = ManyueBenchmarkControl.cacheNamespace,
-        val cacheProfile: String = ManyueEnhancementCache.currentProfile(),
     ) : Comparable<Request> {
+        val cacheProfile: String = ManyueEnhancementCache.profileFor(
+            model, expectedMode, configuredScalePercent, aiDetailStrength, benchmarkNamespace,
+            targetMode, targetScaleTenths,
+        )
         internal val terminal = CompletableDeferred<Int>()
         internal val blockedWorkSampler = ManyueBlockedWorkSampler()
         internal var lastBlockedReasonMask = 0

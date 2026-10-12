@@ -345,9 +345,26 @@ object ManyueEnhancementCache {
     /** Cache retention profile only; exact source/dimensions still use the existing full key. */
     internal fun currentProfile(): String {
         val model = ManyueRuntimeState.aiModel
-        val detail = if (model.continuousScale) ManyueRuntimeState.aiDetailStrength else 0
-        val raw = "$MODEL_VERSION|${model.cacheIdentity}|${ManyueRuntimeState.modeInt}|" +
-            "${model.outputScalePercent(ManyueRuntimeState.aiScalePercent)}|$detail|${ManyueBenchmarkControl.cacheNamespace}"
+        return profileFor(
+            model, ManyueRuntimeState.modeInt, ManyueRuntimeState.aiScalePercent,
+            ManyueRuntimeState.aiDetailStrength, ManyueBenchmarkControl.cacheNamespace,
+        )
+    }
+
+    // Per-image targetWidth and source fingerprint stay in the exact cache key, not a chapter
+    // retention profile. AUTO may therefore retain several output sizes until ordinary eviction.
+    internal fun profileFor(
+        model: ManyueAiModel,
+        mode: Int,
+        scalePercent: Int,
+        detailStrength: Int,
+        namespace: Int,
+        targetMode: Int = model.scale,
+        targetScaleTenths: Int = 20,
+    ): String {
+        val detail = if (model.continuousScale) detailStrength else 0
+        val raw = "$MODEL_VERSION|${model.cacheIdentity}|$mode|" +
+            "${model.outputScalePercent(scalePercent)}|$detail|$namespace|$targetMode|$targetScaleTenths"
         return MessageDigest.getInstance("MD5").digest(raw.toByteArray()).joinToString("") { "%02x".format(it) }
     }
 
@@ -813,7 +830,7 @@ object ManyueEnhancementCache {
         val rank: Int,
         val pageOrder: Int,
         val bytes: Long,
-        val profile: String?,
+        val profile: String? = null,
     )
 
     private fun evictUntil(
