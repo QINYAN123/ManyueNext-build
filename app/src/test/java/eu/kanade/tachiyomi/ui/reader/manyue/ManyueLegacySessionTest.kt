@@ -331,7 +331,6 @@ class ManyueLegacySessionTest {
             blocked,
         )
         val process = FakeProcess(input, ::writeOutputForRequest)
-        var cancellationChecks = 0
         val output = File(root, "cancel-during-read.out")
 
         assertThrows(ManyueAiRuntime.CancelledException::class.java) {
@@ -341,7 +340,9 @@ class ManyueLegacySessionTest {
                 "model-A",
                 { process },
                 "cancel-during-read.webp",
-                isCancelled = { ++cancellationChecks >= 3 },
+                // Poll count depends on host scheduling and can cancel during startup.
+                // Exercise cancellation only once the actual result read has blocked.
+                isCancelled = { blocked.entered.count == 0L },
             )
         }
 
@@ -571,14 +572,17 @@ class ManyueLegacySessionTest {
 
     private class CloseAwareBlockingInputStream : InputStream() {
         val closed = CountDownLatch(1)
+        val entered = CountDownLatch(1)
 
         override fun read(): Int {
+            entered.countDown()
             closed.await()
             return -1
         }
 
         override fun read(bytes: ByteArray, offset: Int, length: Int): Int {
             if (length == 0) return 0
+            entered.countDown()
             closed.await()
             return -1
         }
