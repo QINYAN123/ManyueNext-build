@@ -137,7 +137,6 @@ class WebGpuViewerContinuous(activity: ReaderActivity, val useGap: Boolean = fal
                     entries.map { it.first },
                 )
             }
-            nextPreparation.update(if (nextPreparationEnabled) owners else emptySet(), manyueHead to manyueGeneration)
             entries.forEach { (owner, image) ->
                 owner.aiBridge.updateVisibility(true)
                 ManyueReadingCoverage.exposure(
@@ -146,6 +145,8 @@ class WebGpuViewerContinuous(activity: ReaderActivity, val useGap: Boolean = fal
                     image.page.height.toFloat() * state.width / image.page.width.coerceAtLeast(1) * state.scale <= state.height,
                 )
             }
+            // Start visible source decisions before a newly admitted background neighbor.
+            nextPreparation.update(if (nextPreparationEnabled) owners else emptySet(), manyueHead to manyueGeneration)
         }
 
         state.onSubmittedImages = { submitted, _ ->
