@@ -48,6 +48,10 @@ class WebGpuViewerContinuous(activity: ReaderActivity, val useGap: Boolean = fal
     internal var nextPreparationEnabled = false
         private set
 
+    internal fun benchmarkPresentationChanged() {
+        state.invalidate()
+    }
+
     internal fun benchmarkPrewarm(enabled: Boolean) {
         nextPreparationEnabled = enabled
         if (!enabled) nextPreparation.reset()

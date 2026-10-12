@@ -19,6 +19,7 @@ import androidx.webgpu.GPUSurfaceConfiguration
 import androidx.webgpu.GPUSurfaceDescriptor
 import androidx.webgpu.GPUSurfaceSourceAndroidNativeWindow
 import androidx.webgpu.GPUTexture
+import androidx.webgpu.PresentMode
 import androidx.webgpu.SurfaceGetCurrentTextureStatus
 import androidx.webgpu.TextureUsage
 import androidx.webgpu.UncapturedErrorCallback
@@ -56,6 +57,18 @@ class WebGpuRenderer {
 
         var offsetX: Float = 0f
         var offsetY: Float = 0f
+
+        /** Non-persistent benchmark experiment. Normal readers retain FIFO. */
+        @Volatile
+        var benchmarkLatestFramePresentation = false
+
+        @Volatile
+        var benchmarkActualPresentMode: Int = PresentMode.Fifo
+            private set
+
+        @Volatile
+        var benchmarkMailboxSupported = false
+            private set
 
         /** Set if [init]'s adapter/device request throws, so a callsite can fail soft instead. */
         @Volatile
@@ -249,6 +262,13 @@ class WebGpuRenderer {
      */
     private var configuredFormat: Int = 0
 
+    private var configuredPresentMode: Int = PresentMode.Fifo
+    private var supportedPresentModes: IntArray = intArrayOf()
+
+    private fun requestedPresentMode(): Int = SurfacePresentationPolicy.choose(
+        benchmarkLatestFramePresentation, supportedPresentModes
+    )
+
     /**
      * Post-processing over the finished frame - see [FilterChain]. Empty by default, in which
      * case [render] hands the swapchain texture straight to its caller as it always did.
@@ -331,16 +351,26 @@ class WebGpuRenderer {
                     // without discarding a live one.
                     Hdr.resetContent()
                     Hdr.latchFrameFormat()
+                    supportedPresentModes = try {
+                        getCapabilities(adapter).presentModes
+                    } catch (e: Exception) {
+                        Log.w("WebGpuRenderer", "Could not read presentation capabilities - staying in FIFO", e)
+                        intArrayOf(PresentMode.Fifo)
+                    }
+                    benchmarkMailboxSupported = PresentMode.Mailbox in supportedPresentModes
+                    configuredPresentMode = requestedPresentMode()
                     configure(
                         GPUSurfaceConfiguration(
                             device,
                             this@WebGpuRenderer.width,
                             this@WebGpuRenderer.height,
                             Hdr.frameFormat,
-                            TextureUsage.RenderAttachment
+                            TextureUsage.RenderAttachment,
+                            presentMode = configuredPresentMode
                         )
                     )
                     this@WebGpuRenderer.configuredFormat = Hdr.frameFormat
+                    benchmarkActualPresentMode = configuredPresentMode
                 }
             }
         }
@@ -362,7 +392,7 @@ class WebGpuRenderer {
             }
 
             // Between frames and under the lock - the only place a rebuild is safe.
-            if (resizePending) {
+            if (resizePending || configuredPresentMode != requestedPresentMode()) {
                 resizePending = false
                 reconfigure(surface)
             }
@@ -439,12 +469,16 @@ class WebGpuRenderer {
     private fun reconfigure(surface: GPUSurface) {
         if (width < MIN_SURFACE_DIMENSION || height < MIN_SURFACE_DIMENSION) return
         try {
+            val presentMode = requestedPresentMode()
             surface.configure(
                 GPUSurfaceConfiguration(
-                    device, width, height, Hdr.frameFormat, TextureUsage.RenderAttachment
+                    device, width, height, Hdr.frameFormat, TextureUsage.RenderAttachment,
+                    presentMode = presentMode
                 )
             )
             configuredFormat = Hdr.frameFormat
+            configuredPresentMode = presentMode
+            benchmarkActualPresentMode = configuredPresentMode
         } catch (e: Exception) {
             Log.w("WebGpuRenderer", "Failed to reconfigure surface", e)
         }

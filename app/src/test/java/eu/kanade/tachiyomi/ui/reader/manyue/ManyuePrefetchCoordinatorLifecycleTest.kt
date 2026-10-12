@@ -94,6 +94,7 @@ class ManyuePrefetchCoordinatorLifecycleTest {
         val maxActive = AtomicInteger()
         val enqueued = Collections.synchronizedList(mutableListOf<Int>())
         val priorWorkerPendingAtNextEnqueue = CompletableDeferred<Unit>()
+        val allowFirstWork = CompletableDeferred<Unit>()
         val oldMode = ManyueRuntimeState.modeInt
         ManyueRuntimeState.updateMode(ManyueEnhancementMode.AI_2X.value)
         val generation = ManyueRuntimeState.generation
@@ -104,6 +105,9 @@ class ManyuePrefetchCoordinatorLifecycleTest {
             maxActive.updateAndGet { maxOf(it, running) }
             try {
                 startedByPage.getValue(pageIndex).complete(Unit)
+                // Keep the cursor alive until the test has observed it. Without a handshake,
+                // a fast executor can finish all 11 pages before the main test resumes.
+                if (pageIndex == 1) allowFirstWork.await()
                 if (pageIndex > 1 && !terminalByPage.getValue(pageIndex - 1).isCompleted) {
                     priorWorkerPendingAtNextEnqueue.complete(Unit)
                 }
@@ -126,6 +130,7 @@ class ManyuePrefetchCoordinatorLifecycleTest {
             coordinator.reconcileAfterDecision(91, 0, generation, 12, ManyueEnhancementMode.AI_2X.value, work)
             withTimeout(5_000) { startedByPage.getValue(1).await() }
             assertEquals(1, coordinator.activeCursorCount)
+            allowFirstWork.complete(Unit)
             for (pageIndex in 1..11) {
                 withTimeout(5_000) { startedByPage.getValue(pageIndex).await() }
             }
