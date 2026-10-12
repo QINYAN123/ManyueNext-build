@@ -612,6 +612,10 @@ class ReaderActivity : BaseActivity() {
                     intent.getBooleanExtra("latest", false)
                 viewer.benchmarkPresentationChanged()
             }
+            "dragstart" -> {
+                ca.mpreg.webgpuviewer.viewer.ContinuousDragControl.replayFirstDragEvent =
+                    intent.getBooleanExtra("enabled", true)
+            }
             "filters" -> {
                 // Change only requested display settings for a same-page composition check.
                 // Unlike configure, this never refreshes the reader or resets AI/crop options.
@@ -698,6 +702,7 @@ class ReaderActivity : BaseActivity() {
             put("latestFramePresentationRequested", ca.mpreg.webgpuviewer.renderer.WebGpuRenderer.benchmarkLatestFramePresentation)
             put("actualPresentMode", ca.mpreg.webgpuviewer.renderer.WebGpuRenderer.benchmarkActualPresentMode)
             put("mailboxSupported", ca.mpreg.webgpuviewer.renderer.WebGpuRenderer.benchmarkMailboxSupported)
+            put("replayFirstDragEvent", ca.mpreg.webgpuviewer.viewer.ContinuousDragControl.replayFirstDragEvent)
             put("comfortScale", webtoon?.comfortScaleForPersistence() ?: webgpu?.comfortScaleForPersistence() ?: 1f)
             put("innerWindow", comfortInnerScreen)
             put("model", eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.aiModel.id)

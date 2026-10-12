@@ -19,6 +19,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerEvent
 import androidx.compose.ui.input.pointer.changedToUp
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
@@ -160,7 +161,14 @@ fun ImageViewerContinuous(
                     )
                 }
 
-                if (waitForCleanUp(firstDown.id, doubleTapTimeout, touchSlop) != null) {
+                var firstDragEvent: PointerEvent? = null
+                var firstDragPan = Offset.Zero
+                // Capture the override per gesture; a benchmark switch cannot split a drag.
+                val replayDragStart = ContinuousDragControl.replayFirstDragEvent
+                val onDragStarted: ((PointerEvent, Offset) -> Unit)? = if (replayDragStart) {
+                    { event, pan -> firstDragEvent = event; firstDragPan = pan }
+                } else null
+                if (waitForCleanUp(firstDown.id, doubleTapTimeout, touchSlop, onDragStarted) != null) {
                     longPressJob?.cancel()
                     // A touch that only stopped motion can still be the first of a pair.
                     val secondDown = waitForDown(doubleTapTimeout)
@@ -333,7 +341,9 @@ fun ImageViewerContinuous(
                     state.isPanning = true
                     try {
                         do {
-                            val event = awaitPointerEvent()
+                            val startEvent = firstDragEvent
+                            firstDragEvent = null
+                            val event = startEvent ?: awaitPointerEvent()
                             canceled = event.changes.any { it.isConsumed }
                             if (!canceled) {
                                 val change = event.changes[0]
@@ -348,7 +358,7 @@ fun ImageViewerContinuous(
 
                                 velocityTracker.addPointerInputChange(change)
 
-                                val pan = event.calculatePan()
+                                val pan = if (startEvent != null) firstDragPan else event.calculatePan()
                                 // Off leaves two fingers panning without scaling.
                                 val zoom = if (state.pinchZoomEnabled) event.calculateZoom() else 1f
                                 // Any two fingers down: a quiet moment mid-pinch is still

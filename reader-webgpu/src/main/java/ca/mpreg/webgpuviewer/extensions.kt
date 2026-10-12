@@ -18,7 +18,8 @@ internal object NormalMotionDurationScale : MotionDurationScale {
 }
 
 suspend fun AwaitPointerEventScope.waitForCleanUp(
-    pointerId: PointerId, timeout: Long, touchSlop: Float
+    pointerId: PointerId, timeout: Long, touchSlop: Float,
+    onDragStarted: ((PointerEvent, Offset) -> Unit)? = null,
 ): PointerEvent? = try {
     withTimeout(timeout) {
         var acc = Offset.Zero
@@ -33,11 +34,15 @@ suspend fun AwaitPointerEventScope.waitForCleanUp(
             val change = event.changes.firstOrNull { it.id == pointerId } ?: return@withTimeout null
 
             if (event.changes.any { it.id != pointerId && it.pressed }) {
+                onDragStarted?.invoke(event, Offset.Zero)
                 return@withTimeout null
             }
 
             acc += event.calculatePan()
             if (acc.getDistance() > touchSlop) {
+                // Deliver this event before the caller awaits another one. Only movement beyond
+                // the recognition threshold belongs to the drag, matching ordinary touch slop.
+                onDragStarted?.invoke(event, acc * (1f - touchSlop / acc.getDistance()))
                 return@withTimeout null
             }
             if (change.changedToUp()) {
