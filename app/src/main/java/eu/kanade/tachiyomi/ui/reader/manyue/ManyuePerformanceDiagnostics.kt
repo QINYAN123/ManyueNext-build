@@ -108,6 +108,7 @@ object ManyuePerformanceDiagnostics {
                         "VISIBILITY_WAIT_FINISHED.WAIT_OUTCOME: 1 visible, 2 stale, 3 cancelled.",
                         "BLOCK_REASON_MASK bits: 1 thermal, 2 bad-frame, 4 fast-scroll; fast-scroll does not block priority >= 100.",
                         "WORK_BLOCKED status records the actual reader-gate and work-pacer decisions; reason mask is a diagnostic snapshot.",
+                        "PREFETCH_ENTER/EXIT.STATUS: 1 reconcile, 2 disabled, 3 missing pages, 4 cursor, 5 current decision, 6 reader gate, 7 worker slot, 8 cache reservation, 9 source, 10 enqueue, 11 candidate. WAIT_OUTCOME: 0 entry, 1 returned, 2 cancelled, 3 failed.",
                     ),
                 ),
             )

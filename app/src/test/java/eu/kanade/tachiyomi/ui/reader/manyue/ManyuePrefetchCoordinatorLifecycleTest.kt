@@ -26,6 +26,64 @@ import org.junit.jupiter.api.Test
 class ManyuePrefetchCoordinatorLifecycleTest {
 
     @Test
+    fun `closed current decision prevents future work until visible request has been offered`() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        val coordinator = ManyuePrefetchJobCoordinator(scope)
+        val oldMode = ManyueRuntimeState.modeInt
+        val mode = ManyueEnhancementMode.AI_2X.value
+        ManyueRuntimeState.updateMode(mode)
+        ManyuePrefetchManager.reset()
+        val generation = ManyueRuntimeState.generation
+        val future = CompletableDeferred<Int>()
+        try {
+            ManyuePrefetchManager.onPageChanged(92, 0)
+            coordinator.reconcile(92, 0, generation, 2, mode) { page, _ ->
+                future.complete(page)
+                ManyuePrefetchWorkOutcome.ENQUEUED
+            }
+            assertTrue(!future.isCompleted, "current holder must get the queue first")
+            ManyuePrefetchManager.releaseCurrent(92, 0, generation)
+            assertEquals(1, withTimeout(2_000) { future.await() })
+            withTimeout(2_000) { coordinator.awaitCursorIdle() }
+        } finally {
+            coordinator.cancelAll()
+            ManyuePrefetchManager.reset()
+            ManyueRuntimeState.updateMode(oldMode)
+            scope.cancel()
+        }
+    }
+
+    @Test
+    fun `old generation current decision cannot open a rebuilt reader cursor`() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        val coordinator = ManyuePrefetchJobCoordinator(scope)
+        val oldMode = ManyueRuntimeState.modeInt
+        val mode = ManyueEnhancementMode.AI_2X.value
+        ManyueRuntimeState.updateMode(ManyueEnhancementMode.OFF.value)
+        val staleGeneration = ManyueRuntimeState.generation
+        ManyueRuntimeState.updateMode(mode)
+        ManyuePrefetchManager.reset()
+        val generation = ManyueRuntimeState.generation
+        val future = CompletableDeferred<Int>()
+        try {
+            ManyuePrefetchManager.onPageChanged(93, 0)
+            coordinator.reconcile(93, 0, generation, 2, mode) { page, _ ->
+                future.complete(page)
+                ManyuePrefetchWorkOutcome.ENQUEUED
+            }
+            ManyuePrefetchManager.releaseCurrent(93, 0, staleGeneration)
+            assertTrue(!future.isCompleted, "an old holder must not release the new gate")
+            ManyuePrefetchManager.releaseCurrent(93, 0, generation)
+            assertEquals(1, withTimeout(2_000) { future.await() })
+        } finally {
+            coordinator.cancelAll()
+            ManyuePrefetchManager.reset()
+            ManyueRuntimeState.updateMode(oldMode)
+            scope.cancel()
+        }
+    }
+
+    @Test
     @OptIn(ExperimentalCoroutinesApi::class)
     fun `one source cursor advances after enqueue while earlier workers are still pending`() = runBlocking {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default.limitedParallelism(1))
