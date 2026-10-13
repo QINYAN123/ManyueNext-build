@@ -636,6 +636,7 @@ class ImageViewerContinuousState : ImageViewerState(isVertical = true) {
             ScrollTrace.capture(
                 cameraDocY, getPage(0)?.let(::getPageSlotHeight) ?: 0f, getPage(0),
                 (if (isPanning) 1 else 0) or (if (isFlinging) 2 else 0) or (if (isScaleAnimating) 4 else 0),
+                scale,
             )
         }
 

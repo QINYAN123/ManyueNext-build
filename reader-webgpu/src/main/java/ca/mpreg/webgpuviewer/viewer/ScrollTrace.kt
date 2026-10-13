@@ -28,12 +28,13 @@ internal object ScrollTrace {
         if (enabled) Trace.setCounter("manyue.scroll.documentY100", (documentY * 100).toLong())
     }
 
-    fun capture(cameraY: Float, pageHeight: Float, page: ImagePage?, motion: Int) {
+    fun capture(cameraY: Float, pageHeight: Float, page: ImagePage?, motion: Int, scale: Float) {
         if (!enabled) return
         Trace.setCounter("manyue.capture.cameraY100", (cameraY * 100).toLong())
         Trace.setCounter("manyue.capture.pageHeight100", (pageHeight * 100).toLong())
         Trace.setCounter("manyue.capture.pageObject", System.identityHashCode(page).toLong())
         Trace.setCounter("manyue.capture.motion", motion.toLong())
+        Trace.setCounter("manyue.capture.scale1000000", (scale * 1_000_000).toLong())
     }
 
     fun heightCorrection(ratio: Double) {

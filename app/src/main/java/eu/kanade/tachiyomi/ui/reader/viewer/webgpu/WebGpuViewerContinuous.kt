@@ -86,6 +86,11 @@ class WebGpuViewerContinuous(activity: ReaderActivity, val useGap: Boolean = fal
 
     fun comfortScaleForPersistence(): Float? = state.scale.takeIf { it.isFinite() && it >= .5f && it < 1f }
 
+    // Persistence deliberately ignores ordinary zoom-in. Diagnostics must not turn that null
+    // into a false claim that the viewport is exactly 1x.
+    internal fun benchmarkActualScale(): Float = state.scale
+    internal fun benchmarkHomeScale(): Float = state.homeScale
+
     fun restoreComfortScale(scale: Float) {
         val safe = scale.takeIf { it.isFinite() && it >= .5f && it < 1f } ?: 1f
         state.homeScale = safe

@@ -704,6 +704,10 @@ class ReaderActivity : BaseActivity() {
             put("mailboxSupported", ca.mpreg.webgpuviewer.renderer.WebGpuRenderer.benchmarkMailboxSupported)
             put("replayFirstDragEvent", ca.mpreg.webgpuviewer.viewer.ContinuousDragControl.replayFirstDragEvent)
             put("comfortScale", webtoon?.comfortScaleForPersistence() ?: webgpu?.comfortScaleForPersistence() ?: 1f)
+            webgpu?.let {
+                put("actualScale", it.benchmarkActualScale())
+                put("homeScale", it.benchmarkHomeScale())
+            }
             put("innerWindow", comfortInnerScreen)
             put("model", eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.aiModel.id)
             put("scalePercent", eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.aiScalePercent)
