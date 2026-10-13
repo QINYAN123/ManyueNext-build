@@ -19,6 +19,52 @@ import tachiyomi.core.common.preference.AndroidPreferenceStore
 class ManyueAiModelCompatibilityTest {
 
     @Test
+    fun `viewport detail retirement preserves AI and comfort settings`() {
+        val context = RuntimeEnvironment.getApplication()
+        val shared = context.getSharedPreferences("viewport-retirement-${System.nanoTime()}", Context.MODE_PRIVATE)
+        val prefs = ReaderPreferences(AndroidPreferenceStore(shared))
+        val old = RuntimeSnapshot.capture()
+        try {
+            prefs.manyueAiModel.set(ManyueAiModel.MOBILE_LITE.id)
+            prefs.manyueEnhancementMode.set(2)
+            prefs.manyueAiScalePercent.set(137)
+            prefs.manyueAiDetailStrength.set(60)
+            prefs.manyueComfortScales.set(setOf("retained-comfort-value"))
+            prefs.manyueGpuDisplayFilter.set(true)
+            prefs.manyueGpuDisplayStrength.set(100)
+            ManyueRuntimeState.syncFrom(prefs)
+            assertFalse(prefs.manyueGpuDisplayFilter.get())
+            assertTrue(prefs.manyueViewportDetailRetired.get())
+            assertEquals(100, prefs.manyueGpuDisplayStrength.get())
+            assertEquals(ManyueAiModel.MOBILE_LITE.id, prefs.manyueAiModel.get())
+            assertEquals(137, prefs.manyueAiScalePercent.get())
+            assertEquals(2, prefs.manyueEnhancementMode.get())
+            assertEquals(60, prefs.manyueAiDetailStrength.get())
+            assertEquals(setOf("retained-comfort-value"), prefs.manyueComfortScales.get())
+        } finally {
+            old.restore()
+            shared.edit().clear().apply()
+        }
+    }
+
+    @Test
+    fun `completed retirement does not disable benchmark comparison on every page`() {
+        val context = RuntimeEnvironment.getApplication()
+        val shared = context.getSharedPreferences("viewport-retirement-repeat-${System.nanoTime()}", Context.MODE_PRIVATE)
+        val prefs = ReaderPreferences(AndroidPreferenceStore(shared))
+        val old = RuntimeSnapshot.capture()
+        try {
+            ManyueRuntimeState.syncFrom(prefs)
+            prefs.manyueGpuDisplayFilter.set(true)
+            ManyueRuntimeState.syncFrom(prefs)
+            assertTrue(prefs.manyueGpuDisplayFilter.get())
+        } finally {
+            old.restore()
+            shared.edit().clear().apply()
+        }
+    }
+
+    @Test
     fun `only quality ESRGAN and Lite are offered as model choices`() {
         assertEquals(
             listOf(ManyueAiModel.QUALITY_REAL_ESRGAN, ManyueAiModel.MOBILE_LITE),

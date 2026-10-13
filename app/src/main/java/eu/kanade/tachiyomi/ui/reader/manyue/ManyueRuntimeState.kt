@@ -119,6 +119,12 @@ object ManyueRuntimeState {
     /** Read current values from the injected ReaderPreferences. Cheap; call on each page load. */
     fun syncFrom(prefs: ReaderPreferences) {
         ManyuePerformanceDiagnostics.setEnabled(prefs.manyuePerformanceDiagnostics.get())
+        // Retire the per-frame viewport pass once, keeping its strength for benchmark controls.
+        // This is a display-only migration: AI/cache identity and reading position do not change.
+        if (!prefs.manyueViewportDetailRetired.get()) {
+            prefs.manyueGpuDisplayFilter.set(false)
+            prefs.manyueViewportDetailRetired.set(true)
+        }
         val savedModelId = prefs.manyueAiModel.get()
         val canonicalModelId = ManyueAiModel.canonicalPreferenceId(savedModelId)
         if (canonicalModelId != savedModelId && canonicalModelId != null) {

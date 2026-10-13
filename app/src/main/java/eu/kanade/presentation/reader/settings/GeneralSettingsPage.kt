@@ -7,7 +7,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -194,57 +193,6 @@ internal fun ColumnScope.GeneralPage(viewModel: ReaderSettingsViewModel) {
     val aiModelId by viewModel.preferences.manyueAiModel.collectAsState()
     val selectedAiModel = eu.kanade.tachiyomi.ui.reader.manyue.ManyueAiModel.fromId(aiModelId)
     val readerActivity = LocalActivity.current as? ReaderActivity
-    val gpuEnabled by viewModel.preferences.manyueGpuDisplayFilter.collectAsState()
-    val gpuStrength by viewModel.preferences.manyueGpuDisplayStrength.collectAsState()
-    val gpuSupported = android.os.Build.VERSION.SDK_INT >= 33
-    var draftGpuStrength by remember(gpuStrength) { mutableIntStateOf(gpuStrength.coerceIn(0, 100)) }
-    DisposableEffect(readerActivity) {
-        onDispose {
-            // If a drag is cancelled by dismissing settings, discard its unsaved preview.
-            readerActivity?.onManyueGpuDisplayChanged(
-                viewModel.preferences.manyueGpuDisplayFilter.get(),
-                viewModel.preferences.manyueGpuDisplayStrength.get(),
-            )
-        }
-    }
-    Text("GPU 细节增强（可选）", style = MaterialTheme.typography.bodyMedium)
-    FilterChip(
-        selected = gpuEnabled,
-        enabled = gpuSupported || gpuEnabled,
-        onClick = {
-            val enabled = !gpuEnabled
-            viewModel.preferences.manyueGpuDisplayFilter.set(enabled)
-            readerActivity?.onManyueGpuDisplayChanged(enabled, gpuStrength)
-        },
-        label = { Text(if (gpuEnabled) "GPU 细节增强：开" else "GPU 细节增强：关") },
-    )
-    if (gpuEnabled && gpuSupported) {
-        Text("细节对比：$draftGpuStrength%", style = MaterialTheme.typography.bodyMedium)
-        tachiyomi.presentation.core.components.material.Slider(
-            value = draftGpuStrength,
-            valueRange = 0..100,
-            steps = 99,
-            onValueChange = {
-                draftGpuStrength = it
-                readerActivity?.onManyueGpuDisplayChanged(true, it)
-            },
-            onValueChangeFinished = {
-                viewModel.preferences.manyueGpuDisplayStrength.set(draftGpuStrength)
-            },
-        )
-    }
-    Text(
-        if (gpuSupported) {
-            "可选的小幅屏幕细节对比，默认不附加；建议 10–25%，设为 0% 可对照。它不补出真实缺失纹理，也不改原图文件或分辨率。"
-        } else {
-            "GPU 显示滤镜需要 Android 13 或以上；当前系统保留原有显示。"
-        },
-        style = MaterialTheme.typography.bodySmall,
-    )
-    if (readerActivity != null) {
-        val gpuStatus by readerActivity.manyueGpuDisplayStatus.collectAsState()
-        gpuStatus.label?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
-    }
     Text("增强模式", style = MaterialTheme.typography.bodyMedium)
     androidx.compose.foundation.layout.FlowRow {
         listOf(
