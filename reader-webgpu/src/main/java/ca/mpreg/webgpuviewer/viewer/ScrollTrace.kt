@@ -7,6 +7,17 @@ import android.os.Trace
 internal object ScrollTrace {
     val enabled: Boolean get() = Build.VERSION.SDK_INT >= 29 && Trace.isEnabled()
 
+    // Only wrap non-suspending calls: thread-local ATrace slices must not span a yield.
+    inline fun <T> section(name: String, block: () -> T): T {
+        if (!enabled) return block()
+        Trace.beginSection(name)
+        return try { block() } finally { Trace.endSection() }
+    }
+
+    fun counter(name: String, value: Long) {
+        if (enabled) Trace.setCounter(name, value)
+    }
+
     fun input(ageMs: Long, panY: Float) {
         if (!enabled) return
         Trace.setCounter("manyue.input.ageMs", ageMs)

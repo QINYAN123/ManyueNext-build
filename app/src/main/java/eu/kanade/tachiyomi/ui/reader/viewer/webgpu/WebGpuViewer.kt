@@ -38,6 +38,7 @@ import ca.mpreg.webgpuviewer.viewer.ImageViewerContinuousState
 import com.google.android.material.color.MaterialColors
 import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.ui.reader.ReaderActivity
+import eu.kanade.tachiyomi.ui.reader.manyue.manyueCpuTrace
 import eu.kanade.tachiyomi.ui.reader.manyue.ManyueWebGpuPageBridge
 import eu.kanade.tachiyomi.ui.reader.manyue.ManyueReadingCoverage
 import eu.kanade.tachiyomi.ui.reader.manyue.ManyueEnhancementCache
@@ -1089,9 +1090,9 @@ open class WebGpuViewer(
         try {
             withContext(ManyueWebGpuPageBridge.preparationDispatcher) {
                 image.file.inputStream().use { stream ->
-                    ImageDecoder.new(stream).use { decoder ->
+                    manyueCpuTrace("manyue.ai.open") { ImageDecoder.new(stream) }.use { decoder ->
                         check(decoder.pages == 1) { "AI cache is not a still image" }
-                        val frame = decoder.decodeNext()
+                        val frame = manyueCpuTrace("manyue.ai.decode") { decoder.decodeNext() }
                         check(frame.width == result.outputWidth && frame.height == result.outputHeight &&
                             frame.width == image.width && frame.height == image.height) { "AI output dimension mismatch" }
                         check(frame.width.toLong() == result.source.sourceWidth.toLong() * 2 &&
@@ -1242,7 +1243,7 @@ open class WebGpuViewer(
                 )
             }
 
-            ImageDecoder.new(input).use { dec ->
+            manyueCpuTrace("manyue.source.open") { ImageDecoder.new(input) }.use { dec ->
                 if (isDualPageMode()) {
                     page.taggedSpreadPosition = when (dec.getTag("PageName")) {
                         "Left" -> SpreadPosition.LEFT
@@ -1258,7 +1259,7 @@ open class WebGpuViewer(
 
                 val backgroundColor = if (config.automaticBackground) null else readerBackgroundColor()
 
-                val firstFrame = dec.decodeNext()
+                val firstFrame = manyueCpuTrace("manyue.source.decode") { dec.decodeNext() }
                 page.page.updateSourceImageInfo(
                     if (firstFrame.width > 0 && firstFrame.height > 0) {
                         SourceImageInfo.Available(firstFrame.width, firstFrame.height)

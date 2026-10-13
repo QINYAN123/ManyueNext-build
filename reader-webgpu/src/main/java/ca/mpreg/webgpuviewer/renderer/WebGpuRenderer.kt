@@ -26,6 +26,7 @@ import androidx.webgpu.UncapturedErrorCallback
 import androidx.webgpu.helper.Util.windowFromSurface
 import androidx.webgpu.helper.initLibrary
 import ca.mpreg.webgpuviewer.filter.FilterChain
+import ca.mpreg.webgpuviewer.viewer.ScrollTrace
 import ca.mpreg.webgpuviewer.renderer.WebGpuRenderer.Companion.mutex
 import ca.mpreg.webgpuviewer.renderer.WebGpuRenderer.Companion.withContext
 import kotlinx.coroutines.CancellationException
@@ -411,7 +412,7 @@ class WebGpuRenderer {
             }
 
             val current = try {
-                surface.getCurrentTexture()
+                ScrollTrace.section("manyue.frame.acquire") { surface.getCurrentTexture() }
             } catch (e: Exception) {
                 Log.w("WebGpuRenderer", "Failed to get current texture", e)
                 return FrameResult.Retry
@@ -437,8 +438,8 @@ class WebGpuRenderer {
                 // over it and lands the result on the swapchain.
                 fn(encoder, filters.beginFrame(texture))
                 filters.endFrame(encoder, texture)
-                device.queue.submitAndRelease(encoder)
-                surface.present()
+                ScrollTrace.section("manyue.frame.submit") { device.queue.submitAndRelease(encoder) }
+                ScrollTrace.section("manyue.frame.present") { surface.present() }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {

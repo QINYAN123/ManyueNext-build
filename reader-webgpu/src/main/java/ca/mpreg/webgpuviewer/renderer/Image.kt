@@ -10,6 +10,7 @@ import androidx.webgpu.GPUTextureView
 import androidx.webgpu.TextureFormat
 import ca.mpreg.webgpuviewer.ImageUtil
 import ca.mpreg.webgpuviewer.Trim
+import ca.mpreg.webgpuviewer.viewer.ScrollTrace
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.nio.ByteBuffer
@@ -277,8 +278,10 @@ class Image private constructor(
                     Log.d("Renderer", "Create mipmap using CPU ${scale} ${newWidth} ${newHeight}")
 
                     currentPixels = withContext(Dispatchers.Default) {
-                        if (keepHdr) ImageUtil.resizeF16(currentPixels, textureWidth, textureHeight)
-                        else ImageUtil.resize(currentPixels, textureWidth, textureHeight)
+                        ScrollTrace.section("manyue.image.mipCpu") {
+                            if (keepHdr) ImageUtil.resizeF16(currentPixels, textureWidth, textureHeight)
+                            else ImageUtil.resize(currentPixels, textureWidth, textureHeight)
+                        }
                     }
                     mipmapDataList.add(MipmapData(currentPixels, newWidth, newHeight, scale))
                     textureWidth = newWidth

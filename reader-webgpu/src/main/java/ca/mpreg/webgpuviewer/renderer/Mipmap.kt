@@ -14,6 +14,7 @@ import androidx.webgpu.GPUTextureView
 import androidx.webgpu.TextureFormat
 import androidx.webgpu.TextureUsage
 import kotlinx.coroutines.yield
+import ca.mpreg.webgpuviewer.viewer.ScrollTrace
 import java.nio.ByteBuffer
 import kotlin.math.ceil
 import kotlin.math.min
@@ -96,38 +97,45 @@ class Mipmap(
 
                 // Unyielded driver work - not on the back of the chunk just uploaded.
                 yield()
-                val texture = device.createTexture(
-                    GPUTextureDescriptor(
-                        size = GPUExtent3D(tileWidth, tileHeight),
-                        format = format,
-                        usage = TextureUsage.TextureBinding or TextureUsage.CopyDst or TextureUsage.RenderAttachment,
+                val texture = ScrollTrace.section("manyue.image.createTexture") {
+                    device.createTexture(
+                        GPUTextureDescriptor(
+                            size = GPUExtent3D(tileWidth, tileHeight),
+                            format = format,
+                            usage = TextureUsage.TextureBinding or TextureUsage.CopyDst or TextureUsage.RenderAttachment,
+                        )
                     )
-                )
+                }
+                // Own it before the first cancellable chunk. Otherwise cleanup() cannot see
+                // this tile when a yield or driver write fails partway through its upload.
+                textures.add(texture)
 
                 var row = 0
                 while (row < tileHeight) {
                     val rows = min(rowsPerChunk, tileHeight - row)
 
-                    device.queue.writeTexture(
-                        dataLayout = GPUTexelCopyBufferLayout(
-                            // Long arithmetic: y * width overflows Int well before the byte
-                            // offset does on a large page.
-                            offset = ((y + row).toLong() * width + x) * bytesPerPixel,
-                            bytesPerRow = width * bytesPerPixel,
-                            rowsPerImage = height,
-                        ),
-                        data = pixels,
-                        destination = GPUTexelCopyTextureInfo(
-                            texture = texture, origin = GPUOrigin3D(y = row)
-                        ),
-                        writeSize = GPUExtent3D(tileWidth, rows),
-                    )
+                    ScrollTrace.counter("manyue.image.uploadBytes", tileWidth.toLong() * rows * bytesPerPixel)
+                    ScrollTrace.section("manyue.image.uploadChunk") {
+                        device.queue.writeTexture(
+                            dataLayout = GPUTexelCopyBufferLayout(
+                                // Long arithmetic: y * width overflows Int well before the byte
+                                // offset does on a large page.
+                                offset = ((y + row).toLong() * width + x) * bytesPerPixel,
+                                bytesPerRow = width * bytesPerPixel,
+                                rowsPerImage = height,
+                            ),
+                            data = pixels,
+                            destination = GPUTexelCopyTextureInfo(
+                                texture = texture, origin = GPUOrigin3D(y = row)
+                            ),
+                            writeSize = GPUExtent3D(tileWidth, rows),
+                        )
+                    }
 
                     row += rows
                     yield()
                 }
 
-                textures.add(texture)
                 textureViews.add(texture.createView())
             }
         }

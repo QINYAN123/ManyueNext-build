@@ -274,11 +274,15 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
     suspend fun collect() = coroutineScope {
         val frameClock = currentCoroutineContext()[MonotonicFrameClock]
         var drawing: Job? = null
+        var busySkips = 0L
         while (true) {
             // Paced either way: called without a clock, the loop would spin on whatever is dirty.
             if (frameClock != null) frameClock.withFrameNanos { } else delay(8)
             // Still drawing: leave [dirty] set for the next frame.
-            if (drawing?.isActive == true) continue
+            if (drawing?.isActive == true) {
+                ScrollTrace.counter("manyue.frame.busySkips", ++busySkips)
+                continue
+            }
             // Anything invalidating from here belongs to the next frame.
             if (!dirty.getAndSet(false)) {
                 renderWake.receive()
@@ -287,8 +291,12 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
             // Drop the wake this frame's invalidate left, or going idle costs a spurious one.
             renderWake.tryReceive()
             // Captured here, drawn on the GPU thread below - see this function's doc.
-            val snapshot = captureRenderState() ?: continue
+            val snapshot = ScrollTrace.section("manyue.frame.capture") { captureRenderState() } ?: continue
+            val dispatchStartNs = if (ScrollTrace.enabled) System.nanoTime() else 0L
             drawing = launch(dispatcher) {
+                if (dispatchStartNs != 0L) {
+                    ScrollTrace.counter("manyue.frame.dispatchAgeNs", System.nanoTime() - dispatchStartNs)
+                }
                 when (renderer.render { encoder, texture ->
                     renderSnapshot(encoder, texture, snapshot)
                 }) {

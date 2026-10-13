@@ -1944,7 +1944,11 @@ internal class TileRenderer(private val invalidate: () -> Unit) {
         val end = timestamps.getLong(8)
         result.unmap()
         releaseTimestampBuffers(timing)
-        if (end > start) recordTileCost(tileSize, (end - start).toDouble())
+        if (end > start) {
+            recordTileCost(tileSize, (end - start).toDouble())
+            ca.mpreg.webgpuviewer.viewer.ScrollTrace.counter("manyue.tile.gpuNs", end - start)
+            ca.mpreg.webgpuviewer.viewer.ScrollTrace.counter("manyue.tile.size", tileSize.toLong())
+        }
     }
 
     private suspend fun awaitPumped(block: suspend () -> Unit) = coroutineScope {

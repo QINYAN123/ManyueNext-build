@@ -17,6 +17,7 @@ import ca.mpreg.webgpuviewer.viewer.ImageViewerContinuousState.Companion.MAX_VIS
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlin.math.max
+import kotlin.math.round
 
 class ImageViewerContinuousState : ImageViewerState(isVertical = true) {
     companion object {
@@ -753,6 +754,8 @@ class ImageViewerContinuousState : ImageViewerState(isVertical = true) {
         // anchor exactly, or the fast path, tile cache and Render pages disagree on placement.
         val anchorX = dstW / 2f + s.scale * (s.offsetX * dstW + WebGpuRenderer.offsetX * dstW)
         val anchorY = dstH / 2f - s.scale * s.cameraDocY + s.scale * WebGpuRenderer.offsetY * dstH
+        var fullyTiledPages = 0L
+        var fallbackPages = 0L
 
         if (hasImagePage) {
             renderPass(encoder, texture, s.backgroundColor) { pass ->
@@ -779,6 +782,7 @@ class ImageViewerContinuousState : ImageViewerState(isVertical = true) {
                         s.suppressGeneration
                     )
                     var drewContent = covered
+                    if (covered) fullyTiledPages++ else fallbackPages++
                     if (!covered) {
                         page.forEachImage { image, srcOffsetX, sideScale ->
                             if (image.mipmaps.isEmpty()) return@forEachImage
@@ -847,5 +851,10 @@ class ImageViewerContinuousState : ImageViewerState(isVertical = true) {
             page.renderLoaded(encoder, x, y, renderScale, texture)
             s.drawnImages.add(page)
         }
+        // Counts describe render paths, not an AI coverage percentage. A fallback page can
+        // also have some cached tiles; its placement stays fractional while tiles snap.
+        ScrollTrace.counter("manyue.frame.fullyTiledPages", fullyTiledPages)
+        ScrollTrace.counter("manyue.frame.fallbackPages", fallbackPages)
+        ScrollTrace.counter("manyue.frame.tileSnapErrorY100", ((round(anchorY) - anchorY) * 100).toLong())
     }
 }
