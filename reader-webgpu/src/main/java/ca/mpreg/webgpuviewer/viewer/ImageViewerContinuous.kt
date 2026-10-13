@@ -168,7 +168,19 @@ fun ImageViewerContinuous(
                 val onDragStarted: ((PointerEvent, Offset) -> Unit)? = if (replayDragStart) {
                     { event, pan -> firstDragEvent = event; firstDragPan = pan }
                 } else null
-                if (waitForCleanUp(firstDown.id, doubleTapTimeout, touchSlop, onDragStarted) != null) {
+                var recognitionCancelled = false
+                val firstUp = waitForCleanUp(
+                    firstDown.id, doubleTapTimeout, touchSlop,
+                    onCancelled = { recognitionCancelled = true },
+                    onDragStarted = onDragStarted,
+                )
+                // A null result also represents cancellation. Do not wait for another event
+                // in the pan loop after its recognizer has already lost this gesture.
+                if (recognitionCancelled) {
+                    longPressJob?.cancel()
+                    return@awaitEachGesture
+                }
+                if (firstUp != null) {
                     longPressJob?.cancel()
                     // A touch that only stopped motion can still be the first of a pair.
                     val secondDown = waitForDown(doubleTapTimeout)
@@ -184,7 +196,12 @@ fun ImageViewerContinuous(
                         return@awaitEachGesture
                     }
 
-                    if (waitForCleanUp(secondDown.id, doubleTapTimeout, touchSlop) != null) {
+                    val secondUp = waitForCleanUp(
+                        secondDown.id, doubleTapTimeout, touchSlop,
+                        onCancelled = { recognitionCancelled = true },
+                    )
+                    if (recognitionCancelled) return@awaitEachGesture
+                    if (secondUp != null) {
                         if (!state.doubleTapZoomEnabled) return@awaitEachGesture
                         if (!state.atHomeScale) {
                             val py = secondDown.position.y / state.height

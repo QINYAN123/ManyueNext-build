@@ -95,27 +95,52 @@ class ContinuousDragStartTest {
     @Test fun `consumed crossing is cancelled without delivering movement`() {
         val consumed = change(25f).also { it.consume() }
         var drag = false
-        val result = Events(listOf(PointerEvent(listOf(consumed))))
-            .run { waitForCleanUp(PointerId(1), 300, 10f) { _, _ -> drag = true } }
+        var cancellations = 0
+        val events = Events(listOf(PointerEvent(listOf(consumed)), PointerEvent(listOf(change(40f)))))
+        val result = events.run {
+            waitForCleanUp(PointerId(1), 300, 10f, onCancelled = { cancellations++ }) { _, _ -> drag = true }
+        }
         assertNull(result)
         assertTrue(!drag)
+        assertEquals(1, cancellations)
+        assertEquals(1, events.reads)
     }
 
     @Test fun `missing tracked pointer does not replay a different finger`() {
         var drag = false
+        var cancelled = false
         val result = Events(listOf(PointerEvent(listOf(change(25f, id = 2)))))
-            .run { waitForCleanUp(PointerId(1), 300, 10f) { _, _ -> drag = true } }
+            .run { waitForCleanUp(PointerId(1), 300, 10f, onCancelled = { cancelled = true }) { _, _ -> drag = true } }
         assertNull(result)
         assertTrue(!drag)
+        assertTrue(cancelled)
+    }
+
+    @Test fun `consumed final up signals cancellation without awaiting the next gesture`() {
+        val up = PointerEvent(listOf(change(5f, pressed = false).also { it.consume() }))
+        val events = Events(listOf(up, PointerEvent(listOf(change(50f, id = 2)))))
+        var cancelled = false
+        val result = events.run {
+            waitForCleanUp(PointerId(1), 300, 10f, onCancelled = { cancelled = true }) { _, _ ->
+                throw AssertionError("Cancelled UP must not start dragging")
+            }
+        }
+        assertNull(result)
+        assertTrue(cancelled)
+        assertEquals(1, events.reads)
     }
 
     @Test fun `second finger starts transform immediately without injecting accumulated pan`() {
         val event = PointerEvent(listOf(change(0f), change(30f, id = 2)))
         var delivered: PointerEvent? = null
         var delta = Offset(99f, 99f)
-        val result = Events(listOf(event)).run { waitForCleanUp(PointerId(1), 300, 10f) { e, pan -> delivered = e; delta = pan } }
+        var cancelled = false
+        val result = Events(listOf(event)).run {
+            waitForCleanUp(PointerId(1), 300, 10f, onCancelled = { cancelled = true }) { e, pan -> delivered = e; delta = pan }
+        }
         assertNull(result)
         assertSame(event, delivered)
         assertEquals(Offset.Zero, delta)
+        assertTrue(!cancelled)
     }
 }

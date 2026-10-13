@@ -19,6 +19,7 @@ internal object NormalMotionDurationScale : MotionDurationScale {
 
 suspend fun AwaitPointerEventScope.waitForCleanUp(
     pointerId: PointerId, timeout: Long, touchSlop: Float,
+    onCancelled: (() -> Unit)? = null,
     onDragStarted: ((PointerEvent, Offset) -> Unit)? = null,
 ): PointerEvent? = try {
     withTimeout(timeout) {
@@ -28,10 +29,15 @@ suspend fun AwaitPointerEventScope.waitForCleanUp(
             val event = awaitPointerEvent()
 
             if (event.changes.any { it.isConsumed }) {
+                onCancelled?.invoke()
                 return@withTimeout null
             }
 
-            val change = event.changes.firstOrNull { it.id == pointerId } ?: return@withTimeout null
+            val change = event.changes.firstOrNull { it.id == pointerId }
+            if (change == null) {
+                onCancelled?.invoke()
+                return@withTimeout null
+            }
 
             if (event.changes.any { it.id != pointerId && it.pressed }) {
                 onDragStarted?.invoke(event, Offset.Zero)

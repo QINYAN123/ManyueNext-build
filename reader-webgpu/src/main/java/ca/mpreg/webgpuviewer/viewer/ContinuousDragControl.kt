@@ -1,7 +1,7 @@
 package ca.mpreg.webgpuviewer.viewer
 
-/** Benchmark-only override allows a same-build comparison against the old event handoff. */
+/** Keep the rejected timing experiment opt-in, including after a process restart. */
 object ContinuousDragControl {
     @Volatile
-    var replayFirstDragEvent = true
+    var replayFirstDragEvent = false
 }
