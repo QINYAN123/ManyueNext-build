@@ -61,7 +61,7 @@ class WebGpuConfig(
     var dualPageView = ReaderPreferences.DualPageView.NEVER
         private set
 
-    var continuousMinWidth = 100
+    var continuousMinWidth = readerPreferences.continuousMinWidth.get()
         private set
 
     var zoomOutDisabled = false

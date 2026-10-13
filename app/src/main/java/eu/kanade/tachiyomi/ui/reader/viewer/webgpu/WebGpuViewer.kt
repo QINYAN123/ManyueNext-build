@@ -246,6 +246,7 @@ open class WebGpuViewer(
      * Configuration used by the pager, like allow taps, scale mode on images, page transitions...
      */
     val config = WebGpuConfig(this, scope, readerPreferences)
+    private val continuousWidth = WebGpuContinuousWidth(config.continuousMinWidth)
 
     // Read from the render and decode threads, via the prevChapter/nextChapter getters.
     @Volatile
@@ -915,6 +916,10 @@ open class WebGpuViewer(
     }
 
     init {
+        (pager.state as? ImageViewerContinuousState)?.apply {
+            homeScale = continuousWidth.initialScale
+            scale = homeScale
+        }
         pager.state.apply {
             fetchPage = fetch@{ index ->
                 val current = currentPage ?: return@fetch null
@@ -990,8 +995,10 @@ open class WebGpuViewer(
 
                 (this as? ImageViewerContinuousState)?.let {
                     backgroundColor = readerBackgroundColor()
-                    homeScale = config.continuousMinWidth / 100f
-                    scale = homeScale
+                    continuousWidth.changedScale(config.continuousMinWidth)?.let { requestedScale ->
+                        homeScale = requestedScale
+                        scale = homeScale
+                    }
                     minScale = if (config.zoomOutDisabled) 0f else 0.1f
 
                     (this@WebGpuViewer as? WebGpuViewerContinuous)?.let {

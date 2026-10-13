@@ -47,3 +47,20 @@ retention and per-frame scale on v76, then isolate presentation/Native competiti
 using a no-recorder workload; any rendering candidate needs benefit beyond baseline
 noise, static-quality preservation and matched pairs. Full Quality2 acceptance
 remains incomplete; a build or diagnostic improvement is not a smoothness cure.
+
+## Follow-up v77: viewport retention correctness candidate
+
+v76 was installed at the exact packaged hash. New actualScale telemetry confirmed
+that the same comic reopened at1.0 after leaving at0.86101836; the retention gate
+failed. Do not mark that installation as settings-retention PASS. Source inspection
+found every generic imagePropertyChanged callback unconditionally assigned both
+homeScale and scale from continuousMinWidth. Initial preference emissions are
+asynchronous, so they can overwrite the Activity's per-book restoration.
+
+Initialize the global width synchronously before per-book restoration. During
+later generic image callbacks, reset zoom only if that preference itself changed.
+Keep explicit width-setting changes effective. Four state-transition regressions
+cover initial/nondefault/repeated emissions and explicit changes back and forth.
+Device cold-reopen/setting-refresh retention still requires the current v77 APK.
+No shader, model, Native, sampling, inertia, fold-size or chapter-progress changes.
+This fixes a confirmed startup/configuration bug, not all reported scroll judder.
