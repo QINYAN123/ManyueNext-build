@@ -1,8 +1,8 @@
 # Third-party notices
 
 This experimental Mihon-based Manyue build includes an optional on-device
-Manyue Lite model with continuous1×–2× output and a fixed native2× quality
-model candidate. The following
+Manyue Lite model with continuous1×–2× output, the original4×→2× quality
+model and a separate native2× quality candidate. The following
 components are redistributed only for that feature. Their original license
 texts are preserved in the source at `app/src/main/assets/licenses/` and in the
 APK under `assets/licenses/`.
@@ -27,11 +27,22 @@ APK under `assets/licenses/`.
 
 The illustrations' creators do not endorse or participate in this application.
 
+## Original Real-ESRGAN animevideo-v3 quality model
+
+- Project: https://github.com/xinntao/Real-ESRGAN
+- Copyright: Xintao Wang and contributors; BSD3-Clause.
+- Asset folder: ai/models-Real-ESRGANv3-anime
+- x2.bin SHA256:548a36f9c3f4ab8da56cd3b13badf23968bee207b396dad14d04b830e5f2ab2d
+- x2.param SHA256:b88ff4f00ebf019a7fdac17fdd45a7fd3665d37509efc5baf2e4da2e24420a04
+- Original graph reconstructs4×, then interpolates to final2×.
+- Preserved as default and independent control; no new weight training.
+
 ## Experimental native2× derivative of Real-ESRGAN animevideo-v3
 
 - Project: https://github.com/xinntao/Real-ESRGAN
 - Copyright: Xintao Wang and contributors
 - License: BSD 3-Clause
+- Candidate asset folder: `ai/models-Real-ESRGANv3-anime-native2`
 - Bundled files: `x2.bin`, `x2.param`
 - SHA-256 (`x2.bin`): `a3a99b7bcc6a8dd094821af2cf8df8d0c1b5ae262571eb465bb9359ce28f8015`
 - SHA-256 (`x2.param`): `44f0e77ab0c793d42a2b2858b20969959d8ab985c575a8578b15e857bb518ac1`
@@ -41,7 +52,7 @@ on32 licensed Pepper&Carrot pages (CC BY4.0, David Revoy and contributors).
 The candidate uses PixelShuffle2 and a2× residual, followed by an identity
 Interp1; it has no internal4× image or downscale. No independent manga
 validation or sustained energy benefit is claimed. The original weights remain
-available from the v78 source revision. See model-manifest.json and
+also packaged as the separately selectable original model. See model-manifest.json and
 docs/QUALITY2_NATIVE2_V79.md for provenance and incomplete acceptance.
 
 ## RealSR / Real-ESRGAN NCNN Vulkan command-line integration

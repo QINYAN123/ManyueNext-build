@@ -1,0 +1,123 @@
+{
+  "scope": "PyTorch CUDA FP32 synthetic690x985 page; no Android energy or reader acceptance",
+  "round0": "Cold shape/runtime; report separately",
+  "cases": [
+    {
+      "model": "baseline",
+      "round": 0,
+      "shape": [
+        1,
+        3,
+        1970,
+        1380
+      ],
+      "kernelMs": 314.2655944824219,
+      "peakAllocatedBytes": 404541952,
+      "residentBytes": 13063168,
+      "extraPeakBytes": 391478784
+    },
+    {
+      "model": "native2",
+      "round": 0,
+      "shape": [
+        1,
+        3,
+        1970,
+        1380
+      ],
+      "kernelMs": 72.51455688476562,
+      "peakAllocatedBytes": 361600512,
+      "residentBytes": 13063168,
+      "extraPeakBytes": 348537344
+    },
+    {
+      "model": "native2",
+      "round": 1,
+      "shape": [
+        1,
+        3,
+        1970,
+        1380
+      ],
+      "kernelMs": 72.64153289794922,
+      "peakAllocatedBytes": 361600512,
+      "residentBytes": 13063168,
+      "extraPeakBytes": 348537344
+    },
+    {
+      "model": "baseline",
+      "round": 1,
+      "shape": [
+        1,
+        3,
+        1970,
+        1380
+      ],
+      "kernelMs": 75.99718475341797,
+      "peakAllocatedBytes": 404541952,
+      "residentBytes": 13063168,
+      "extraPeakBytes": 391478784
+    },
+    {
+      "model": "baseline",
+      "round": 2,
+      "shape": [
+        1,
+        3,
+        1970,
+        1380
+      ],
+      "kernelMs": 76.15286254882812,
+      "peakAllocatedBytes": 404541952,
+      "residentBytes": 13063168,
+      "extraPeakBytes": 391478784
+    },
+    {
+      "model": "native2",
+      "round": 2,
+      "shape": [
+        1,
+        3,
+        1970,
+        1380
+      ],
+      "kernelMs": 71.26322937011719,
+      "peakAllocatedBytes": 361600512,
+      "residentBytes": 13063168,
+      "extraPeakBytes": 348537344
+    },
+    {
+      "model": "native2",
+      "round": 3,
+      "shape": [
+        1,
+        3,
+        1970,
+        1380
+      ],
+      "kernelMs": 70.7215347290039,
+      "peakAllocatedBytes": 361600512,
+      "residentBytes": 13063168,
+      "extraPeakBytes": 348537344
+    },
+    {
+      "model": "baseline",
+      "round": 3,
+      "shape": [
+        1,
+        3,
+        1970,
+        1380
+      ],
+      "kernelMs": 75.65414428710938,
+      "peakAllocatedBytes": 404541952,
+      "residentBytes": 13063168,
+      "extraPeakBytes": 391478784
+    }
+  ],
+  "limitations": [
+    "cuDNN and memory allocator differ from ncnn/Vulkan",
+    "Concurrent Gradle host build; no Android inference comparison",
+    "Peak allocated memory is not device power/temperature"
+  ]
+}

@@ -783,7 +783,7 @@ class ReaderActivity : BaseActivity() {
     fun needsManyueCanvasViewer(): Boolean {
         val runtime = eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState
         val continuous = ReadingMode.fromPreference(viewModel.getMangaReadingMode()).type is ReadingMode.ViewerType.Webtoon
-        val qualityContinuous = continuous && runtime.aiModel == eu.kanade.tachiyomi.ui.reader.manyue.ManyueAiModel.QUALITY_REAL_ESRGAN &&
+        val qualityContinuous = continuous && runtime.aiModel.usesQualityRuntime &&
             runtime.modeInt == eu.kanade.tachiyomi.ui.reader.manyue.ManyueEnhancementMode.AI_2X.value
         return (isManyueEnhancementActive() && !qualityContinuous) ||
             (!continuous && Build.VERSION.SDK_INT >= 33 && readerPreferences.manyueGpuDisplayFilter.get())

@@ -14,8 +14,8 @@ class ManyueEnhancementCacheTest {
         fun key(identity: String) = ManyueEnhancementCache.cacheKey(
             1L, 2L, 3, 2, 2001, 2344, 0, "same-source", 20, identity, false,
         )
-        val model = ManyueAiModel.QUALITY_REAL_ESRGAN
-        val previous = "${model.id}:neutral-source-v1"
+        val model = ManyueAiModel.QUALITY_NATIVE2
+        val previous = ManyueAiModel.QUALITY_REAL_ESRGAN.cacheIdentity
         assertNotEquals(key(previous), key(model.cacheIdentity))
         assertEquals(key(model.cacheIdentity), key(model.cacheIdentity))
         assertNotEquals("models-Real-ESRGANv3-anime", model.runtimeDir)

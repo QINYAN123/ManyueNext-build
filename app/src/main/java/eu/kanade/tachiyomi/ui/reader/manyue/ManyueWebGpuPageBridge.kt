@@ -62,7 +62,7 @@ internal class ManyueWebGpuPageBridge(
     )
 
     private fun current(): Boolean = alive() && generation == ManyueRuntimeState.generation &&
-        mode == ManyueRuntimeState.modeInt && ManyueRuntimeState.aiModel == ManyueAiModel.QUALITY_REAL_ESRGAN
+        mode == ManyueRuntimeState.modeInt && ManyueRuntimeState.aiModel.usesQualityRuntime
 
     private fun wantedForDisplay(): Boolean = visible ||
         (prepareAhead && ManyuePrefetchManager.isNextDisplayPage(identity.chapterId, identity.pageIndex))

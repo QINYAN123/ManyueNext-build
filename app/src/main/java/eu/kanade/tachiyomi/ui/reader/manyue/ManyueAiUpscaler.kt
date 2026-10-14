@@ -48,6 +48,10 @@ object ManyueAiUpscaler {
             "up2x-no-denoise.param" to "91efac7489bf249f092faa3764e3a3d1d31ef290051e39f2afd2138c98ccce30",
         ),
         ManyueAiModel.QUALITY_REAL_ESRGAN to mapOf(
+            "x2.bin" to "548a36f9c3f4ab8da56cd3b13badf23968bee207b396dad14d04b830e5f2ab2d",
+            "x2.param" to "b88ff4f00ebf019a7fdac17fdd45a7fd3665d37509efc5baf2e4da2e24420a04",
+        ),
+        ManyueAiModel.QUALITY_NATIVE2 to mapOf(
             "x2.bin" to "a3a99b7bcc6a8dd094821af2cf8df8d0c1b5ae262571eb465bb9359ce28f8015",
             "x2.param" to "44f0e77ab0c793d42a2b2858b20969959d8ab985c575a8578b15e857bb518ac1",
         ),
@@ -237,7 +241,7 @@ object ManyueAiUpscaler {
     private fun predictiveCandidate(first: Request): Request? {
         val policy = ManyueReadAheadScheduler.policy
         val candidates = (queue.toList() + first).asSequence()
-            .filter { !it.cancelled && !it.completed && requestIsCurrent(it) && it.model == ManyueAiModel.QUALITY_REAL_ESRGAN }
+            .filter { !it.cancelled && !it.completed && requestIsCurrent(it) && it.model.usesQualityRuntime }
             .mapNotNull { req ->
                 val distance = policy.distance(req.chapterId, req.pageIndex, req.generation) ?: return@mapNotNull null
                 val lead = policy.preferredLead(req.chapterId, req.generation, req.sourceWidth, req.sourceHeight)
@@ -339,7 +343,7 @@ object ManyueAiUpscaler {
         // A predictive page is still ahead of the reader. Cancelling it whenever another
         // visible strip binds would recreate the start/cancel starvation this solves.
         // Passed pages, chapter/direction/settings changes are still cancelled by the manager.
-        if (active.predictiveStart && active.processing && active.model == ManyueAiModel.QUALITY_REAL_ESRGAN &&
+        if (active.predictiveStart && active.processing && active.model.usesQualityRuntime &&
             active.mangaId == visible.mangaId && active.chapterId == visible.chapterId && active.generation == visible.generation &&
             ManyueReadAheadScheduler.policy.distance(active.chapterId, active.pageIndex, active.generation) in
             1..ManyueAiSafetyPolicy.PREFETCH_WINDOW_PAGES
@@ -349,7 +353,7 @@ object ManyueAiUpscaler {
         val sameChapter = active.mangaId == visible.mangaId && active.chapterId == visible.chapterId
         val nearby = kotlin.math.abs(active.pageIndex.toLong() - visible.pageIndex.toLong()) <=
             ManyueAiSafetyPolicy.ACTIVE_COMPLETION_LOOK_BACK_PAGES
-        return active.model.continuousScale || active.model == ManyueAiModel.QUALITY_REAL_ESRGAN ||
+        return active.model.continuousScale || active.model.usesQualityRuntime ||
             !active.processing || !sameChapter || !nearby
     }
 
@@ -364,7 +368,7 @@ object ManyueAiUpscaler {
         if (req.completed) return
         val cooperative = synchronized(req) {
             if (req.cancelled) return
-            val cooperate = req.model == ManyueAiModel.QUALITY_REAL_ESRGAN && req.processing &&
+            val cooperate = req.model.usesQualityRuntime && req.processing &&
                 requestConfigurationCurrent(req)
             req.cancelled = true
             cooperate
@@ -954,7 +958,7 @@ object ManyueAiUpscaler {
                 0L
             }
             val postElapsedMs = SystemClock.elapsedRealtime() - postStartedAt
-            if (req.model == ManyueAiModel.QUALITY_REAL_ESRGAN) {
+            if (req.model.usesQualityRuntime) {
                 ManyueReadAheadScheduler.policy.completed(req.sourceWidth, req.sourceHeight, nativeElapsedMs + postElapsedMs)
             }
             ManyuePerformanceDiagnostics.event(

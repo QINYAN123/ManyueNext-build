@@ -1,0 +1,27 @@
+{
+  "scope": "HostFP32 exact Lite checkpoint/assets,2 private user-viewing QA crops,not training",
+  "cases": [
+    {
+      "case": "reader-color",
+      "checkpointExactAssets": true,
+      "strengthPercent": 100,
+      "scale": 2,
+      "meanRgbChangeFromBicubic": 0.10830744355916977,
+      "p99": 1.551498293876648,
+      "max": 12.515495300292969,
+      "residualLimit": 0.04
+    },
+    {
+      "case": "ordinary-bw",
+      "checkpointExactAssets": true,
+      "strengthPercent": 100,
+      "scale": 2,
+      "meanRgbChangeFromBicubic": 0.5839625000953674,
+      "p99": 10.200005531311035,
+      "max": 33.41796112060547,
+      "residualLimit": 0.04
+    }
+  ],
+  "androidSpeedEnergy": "NOT TESTED",
+  "independentQuality": "NOT TESTED"
+}

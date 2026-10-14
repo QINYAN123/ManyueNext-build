@@ -19,6 +19,36 @@ import tachiyomi.core.common.preference.AndroidPreferenceStore
 class ManyueAiModelCompatibilityTest {
 
     @Test
+    fun `quality graph switch keeps saved IDs isolated and invalidates in-flight results`() {
+        val oldState = RuntimeSnapshot.capture()
+        try {
+            val original = ManyueAiModel.QUALITY_REAL_ESRGAN
+            val native2 = ManyueAiModel.QUALITY_NATIVE2
+            assertEquals(2, original.ordinal)
+            assertEquals("realesrgan_quality", original.id)
+            assertNotEquals(original.runtimeDir, native2.runtimeDir)
+            assertNotEquals(original.cacheIdentity, native2.cacheIdentity)
+            assertEquals(native2, ManyueAiModel.fromId(native2.id))
+            assertTrue(original.usesQualityRuntime)
+            assertTrue(native2.usesQualityRuntime)
+            assertFalse(ManyueAiModel.MOBILE_LITE.usesQualityRuntime)
+            assertEquals(
+                ManyueAiRuntime.requiredLegacyRuntimeHashes(original),
+                ManyueAiRuntime.requiredLegacyRuntimeHashes(native2),
+            )
+            ManyueRuntimeState.updateAiModel(original)
+            val generation = ManyueRuntimeState.generation
+            ManyueRuntimeState.updateAiModel(native2)
+            assertEquals(generation + 1, ManyueRuntimeState.generation)
+            assertEquals(200, ManyueRuntimeState.aiScalePercent)
+            ManyueRuntimeState.updateAiModel(native2)
+            assertEquals(generation + 1, ManyueRuntimeState.generation)
+        } finally {
+            oldState.restore()
+        }
+    }
+
+    @Test
     fun `viewport detail retirement preserves AI and comfort settings`() {
         val context = RuntimeEnvironment.getApplication()
         val shared = context.getSharedPreferences("viewport-retirement-${System.nanoTime()}", Context.MODE_PRIVATE)
@@ -65,9 +95,9 @@ class ManyueAiModelCompatibilityTest {
     }
 
     @Test
-    fun `only quality ESRGAN and Lite are offered as model choices`() {
+    fun `original and native2 quality plus Lite are offered while CUGAN stays retired`() {
         assertEquals(
-            listOf(ManyueAiModel.QUALITY_REAL_ESRGAN, ManyueAiModel.MOBILE_LITE),
+            listOf(ManyueAiModel.QUALITY_REAL_ESRGAN, ManyueAiModel.QUALITY_NATIVE2, ManyueAiModel.MOBILE_LITE),
             ManyueAiModel.selectableModels,
         )
         assertFalse(ManyueAiModel.selectableModels.contains(ManyueAiModel.FAST_REAL_CUGAN))

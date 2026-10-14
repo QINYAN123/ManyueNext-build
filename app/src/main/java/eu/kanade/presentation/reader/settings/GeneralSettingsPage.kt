@@ -1,6 +1,8 @@
 package eu.kanade.presentation.reader.settings
 
 import androidx.activity.compose.LocalActivity
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
@@ -15,6 +17,7 @@ import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
 import eu.kanade.tachiyomi.ui.reader.ReaderActivity
 import eu.kanade.tachiyomi.ui.reader.manyue.ManyuePerformanceDiagnostics
 import eu.kanade.tachiyomi.ui.reader.setting.ReaderPreferences
@@ -296,6 +299,25 @@ internal fun ColumnScope.GeneralPage(viewModel: ReaderSettingsViewModel) {
                 label = { Text(model.label) },
             )
         }
+    }
+    val modelAssessment = eu.kanade.tachiyomi.ui.reader.manyue.ManyueModelAssessment.forModel(selectedAiModel)
+    Text(modelAssessment.summary, style = MaterialTheme.typography.bodySmall)
+    Text(modelAssessment.compact(), style = MaterialTheme.typography.bodySmall)
+    var showModelAssessment by remember { mutableStateOf(false) }
+    TextButton(onClick = { showModelAssessment = true }) { Text("查看评分依据与测试范围") }
+    if (showModelAssessment) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { showModelAssessment = false },
+            title = { Text(selectedAiModel.label) },
+            text = {
+                Text(
+                    modelAssessment.full(),
+                    modifier = Modifier.verticalScroll(rememberScrollState()),
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            },
+            confirmButton = { TextButton(onClick = { showModelAssessment = false }) { Text("知道了") } },
+        )
     }
     Text(
         if (selectedAiModel.continuousScale) {
