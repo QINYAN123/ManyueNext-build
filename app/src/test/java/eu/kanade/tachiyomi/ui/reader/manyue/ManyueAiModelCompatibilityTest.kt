@@ -66,7 +66,7 @@ class ManyueAiModelCompatibilityTest {
             assertFalse(prefs.manyueGpuDisplayFilter.get())
             assertTrue(prefs.manyueViewportDetailRetired.get())
             assertEquals(100, prefs.manyueGpuDisplayStrength.get())
-            assertEquals(ManyueAiModel.MOBILE_LITE.id, prefs.manyueAiModel.get())
+            assertEquals(ManyueAiModel.QUALITY_REAL_ESRGAN.id, prefs.manyueAiModel.get())
             assertEquals(137, prefs.manyueAiScalePercent.get())
             assertEquals(2, prefs.manyueEnhancementMode.get())
             assertEquals(60, prefs.manyueAiDetailStrength.get())
@@ -95,9 +95,9 @@ class ManyueAiModelCompatibilityTest {
     }
 
     @Test
-    fun `original and native2 quality plus Lite are offered while CUGAN stays retired`() {
+    fun `both quality graphs and hybrid are offered while Lite and CUGAN stay retired`() {
         assertEquals(
-            listOf(ManyueAiModel.QUALITY_REAL_ESRGAN, ManyueAiModel.QUALITY_NATIVE2, ManyueAiModel.MOBILE_LITE),
+            listOf(ManyueAiModel.QUALITY_REAL_ESRGAN, ManyueAiModel.QUALITY_NATIVE2, ManyueAiModel.QUALITY_HYBRID),
             ManyueAiModel.selectableModels,
         )
         assertFalse(ManyueAiModel.selectableModels.contains(ManyueAiModel.FAST_REAL_CUGAN))
@@ -120,7 +120,7 @@ class ManyueAiModelCompatibilityTest {
                 ManyueAiModel.QUALITY_REAL_ESRGAN,
                 ManyueAiModel.fromId(ManyueAiModel.FAST_REAL_CUGAN.id),
             )
-            assertEquals(ManyueAiModel.MOBILE_LITE, ManyueAiModel.fromId(ManyueAiModel.MOBILE_LITE.id))
+            assertEquals(ManyueAiModel.QUALITY_REAL_ESRGAN, ManyueAiModel.fromId(ManyueAiModel.MOBILE_LITE.id))
 
             // Also migrate when the older Lite migration marker is already set.
             for (migrationAlreadyMarked in listOf(false, true)) {
@@ -143,11 +143,11 @@ class ManyueAiModelCompatibilityTest {
     fun `unknown saved model still falls back to the configured default`() {
         assertEquals(ManyueAiModel.QUALITY_REAL_ESRGAN, ManyueAiModel.DEFAULT)
         assertEquals(ManyueAiModel.DEFAULT, ManyueAiModel.fromId("removed-or-unknown-model"))
-        assertEquals(ManyueAiModel.MOBILE_LITE, ManyueAiModel.fromId(ManyueAiModel.MOBILE_LITE.id))
+        assertEquals(ManyueAiModel.QUALITY_REAL_ESRGAN, ManyueAiModel.fromId(ManyueAiModel.MOBILE_LITE.id))
     }
 
     @Test
-    fun `legacy enhancement modes and Anime overlay migrate while saved Lite remains selected`() {
+    fun `legacy enhancement modes and Anime overlay migrate while Lite selection retires`() {
         val context = RuntimeEnvironment.getApplication()
         val shared = context.getSharedPreferences("mode-retirement-${System.nanoTime()}", Context.MODE_PRIVATE)
         val prefs = ReaderPreferences(AndroidPreferenceStore(shared))
@@ -164,8 +164,8 @@ class ManyueAiModelCompatibilityTest {
                 assertEquals(expectedMode, ManyueRuntimeState.modeInt)
                 assertFalse(prefs.manyueAnime4kOverlay.get())
                 assertFalse(ManyueRuntimeState.anime4kOverlay)
-                assertEquals(ManyueAiModel.MOBILE_LITE.id, prefs.manyueAiModel.get())
-                assertEquals(ManyueAiModel.MOBILE_LITE, ManyueRuntimeState.aiModel)
+                assertEquals(ManyueAiModel.QUALITY_REAL_ESRGAN.id, prefs.manyueAiModel.get())
+                assertEquals(ManyueAiModel.QUALITY_REAL_ESRGAN, ManyueRuntimeState.aiModel)
             }
         } finally {
             old.restore()
@@ -187,7 +187,7 @@ class ManyueAiModelCompatibilityTest {
     }
 
     @Test
-    fun `quality ignores saved fractional output without erasing the Lite choice`() {
+    fun `quality and retired Lite ignore saved fractional output without erasing preference`() {
         val context = RuntimeEnvironment.getApplication()
         val shared = context.getSharedPreferences("quality-fixed-scale-${System.nanoTime()}", Context.MODE_PRIVATE)
         val prefs = ReaderPreferences(AndroidPreferenceStore(shared))
@@ -200,7 +200,7 @@ class ManyueAiModelCompatibilityTest {
             assertEquals(125, prefs.manyueAiScalePercent.get())
             prefs.manyueAiModel.set(ManyueAiModel.MOBILE_LITE.id)
             ManyueRuntimeState.syncFrom(prefs)
-            assertEquals(125, ManyueRuntimeState.aiScalePercent)
+            assertEquals(200, ManyueRuntimeState.aiScalePercent)
         } finally {
             old.restore()
             shared.edit().clear().apply()

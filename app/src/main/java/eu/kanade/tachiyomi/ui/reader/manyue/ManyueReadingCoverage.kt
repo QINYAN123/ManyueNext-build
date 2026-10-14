@@ -36,6 +36,8 @@ object ManyueReadingCoverage {
         val outputWidth: Int,
         val outputHeight: Int,
         val token: String,
+        val physicalModel: Int = model,
+        val modelIdentity: String = "",
     )
 
     internal data class Configuration(val generation: Long, val model: Int, val mode: Int, val scale: Int)
@@ -429,6 +431,8 @@ object ManyueReadingCoverage {
                     put("outputHeight", stamp.outputHeight)
                     put("generation", stamp.generation)
                     put("model", stamp.model)
+                    put("physicalModel", stamp.physicalModel)
+                    put("modelIdentity", stamp.modelIdentity)
                     put("mode", stamp.mode)
                     put("scalePercent", stamp.scalePercent)
                     val readyRecord = ready[id]

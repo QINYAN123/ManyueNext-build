@@ -126,6 +126,7 @@ internal class ManyueWebGpuPageBridge(
                     if (received != token || generation != requestGeneration || mode != requestMode || !current()) return@OnAiCompleteListener
                     when (state) {
                         ManyueAiUpscaler.STATE_READY -> {
+                            cacheKey = ManyueAiUpscaler.cacheKeyForToken(received)
                             readyResult = ManyueAiUpscaler.coverageResultForToken(received)
                             if (readyResult == null) {
                                 terminalFailure = true

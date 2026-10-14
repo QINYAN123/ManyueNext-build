@@ -56,6 +56,7 @@ object ManyueAiUpscaler {
             "x2.param" to "44f0e77ab0c793d42a2b2858b20969959d8ab985c575a8578b15e857bb518ac1",
         ),
     )
+    private val hybridPolicy = ManyueHybridPolicy()
 
     fun interface OnAiCompleteListener {
         /** Main-thread lifecycle update: processing, ready, failed, or cancelled. */
@@ -102,7 +103,18 @@ object ManyueAiUpscaler {
         @Volatile var predictiveStart: Boolean = false,
         val benchmarkNamespace: Int = ManyueBenchmarkControl.cacheNamespace,
     ) : Comparable<Request> {
-        val cacheProfile: String = ManyueEnhancementCache.profileFor(
+        /** Selected mode stays fixed; only the serial worker may bind a physical hybrid model. */
+        @Volatile internal var physicalModel: ManyueAiModel? =
+            model.takeUnless { it == ManyueAiModel.QUALITY_HYBRID }
+            private set
+        internal val workModel: ManyueAiModel get() = physicalModel ?: model
+        internal fun bindPhysicalModel(value: ManyueAiModel) {
+            require(value == ManyueAiModel.QUALITY_REAL_ESRGAN || value == ManyueAiModel.QUALITY_NATIVE2)
+            check(physicalModel == null || physicalModel == value) { "Result model is already pinned" }
+            physicalModel = value
+        }
+        val cacheProfile: String get() = ManyueEnhancementCache.profileFor(
+            // Retain both hybrid variants in the active chapter. Exact keys below stay physical.
             model, expectedMode, configuredScalePercent, aiDetailStrength, benchmarkNamespace,
             targetMode, targetScaleTenths,
         )
@@ -613,7 +625,7 @@ object ManyueAiUpscaler {
     fun state(context: Context, token: String): Int {
         val req = requests[token] ?: return STATE_FAILED
         val key = cacheKeyFor(req)
-        if (ManyueEnhancementCache.getBundle(context, key) != null) return STATE_READY
+        if (req.physicalModel != null && ManyueEnhancementCache.getBundle(context, key) != null) return STATE_READY
         if (req.failedAt > 0L) return STATE_FAILED
         return STATE_PROCESSING
     }
@@ -696,13 +708,13 @@ object ManyueAiUpscaler {
         }
     }
 
-    private fun cacheKeyFor(req: Request): String =
+    internal fun cacheKeyFor(req: Request): String =
         ManyueEnhancementCache.cacheKey(
             req.mangaId, req.chapterId, req.pageIndex,
             ManyueEnhancementMode.AI_2X.value, req.targetMode, req.targetWidth, 0,
             req.sourceFingerprint,
             req.targetScaleTenths,
-            modelId = req.model.cacheIdentity,
+            modelId = req.workModel.cacheIdentity,
             anime4kOverlay = req.anime4kOverlay,
             aiDetailStrength = req.aiDetailStrength,
             benchmarkNamespace = req.benchmarkNamespace,
@@ -724,6 +736,8 @@ object ManyueAiUpscaler {
             ),
             req.generation, req.model.ordinal, req.expectedMode, req.configuredScalePercent,
             req.outputWidth, req.outputHeight, req.token,
+            physicalModel = req.physicalModel?.ordinal ?: req.model.ordinal,
+            modelIdentity = req.workModel.cacheIdentity,
         )
 
     private fun process(req: Request) {
@@ -742,6 +756,11 @@ object ManyueAiUpscaler {
         val preparationStartedAt = SystemClock.elapsedRealtime()
         try {
             if (!requestIsCurrent(req)) return
+            if (req.model == ManyueAiModel.QUALITY_HYBRID && req.physicalModel == null) {
+                // Resolve after resource waiting: queued jobs must not freeze an old thermal choice.
+                if (!awaitReaderIdle(req)) return
+                bindHybridModel(context, req)
+            }
             val key = cacheKeyFor(req)
             val cachedImage = ManyueEnhancementCache.getImage(context, key)
             if (cachedImage != null) {
@@ -759,8 +778,8 @@ object ManyueAiUpscaler {
                 return
             }
 
-            val modelDir = ensureModel(context, req.model)
-            if (ManyueAiRuntime.probe(context, req.model) != ManyueAiRuntime.Capability.READY) {
+            val modelDir = ensureModel(context, req.workModel)
+            if (ManyueAiRuntime.probe(context, req.workModel) != ManyueAiRuntime.Capability.READY) {
                 req.failedAt = System.currentTimeMillis()
                 return
             }
@@ -772,7 +791,7 @@ object ManyueAiUpscaler {
             // Refuse long pages before launch when the predicted 2x image exceeds the display
             // budget. The encoded result stays on disk and the reader decodes it off the main
             // thread through its tiled image path.
-            if (!ManyueAiSafetyPolicy.isNativeWorkSafe(req.model, req.sourceWidth, req.sourceHeight, req.targetWidth)) {
+            if (!ManyueAiSafetyPolicy.isNativeWorkSafe(req.workModel, req.sourceWidth, req.sourceHeight, req.targetWidth)) {
                 req.failureDetail = "所选模型的图像处理结果超过像素限制，已保留原图"
                 req.failedAt = System.currentTimeMillis()
                 return
@@ -834,7 +853,7 @@ object ManyueAiUpscaler {
                     outputFile = outFile,
                     modelDir = modelDir,
                     logFile = logFile,
-                    model = req.model,
+                    model = req.workModel,
                     targetWidth = resolved,
                     isCancelled = { nativeRequestCancelled(req) },
                     isConfigurationCurrent = { requestConfigurationCurrent(req) },
@@ -852,7 +871,8 @@ object ManyueAiUpscaler {
                     "mixed" -> "GPU+CPU"
                     else -> "未知设备"
                 }
-                inferenceDetail = "${req.model.label} · $backendLabel"
+                inferenceDetail = "${req.workModel.label} · $backendLabel" +
+                    if (req.model == ManyueAiModel.QUALITY_HYBRID) " · 智能混轴" else ""
             }
             val nativeElapsedMs = SystemClock.elapsedRealtime() - nativeStartedAt
             req.nativeCancellation = null
@@ -966,6 +986,7 @@ object ManyueAiUpscaler {
                 Metric.QUEUE_MS to waitMs, Metric.PREPARATION_MS to preparationElapsedMs,
                 Metric.NATIVE_MS to nativeElapsedMs, Metric.POST_MS to postElapsedMs,
                 Metric.WIDTH to outW.toLong(), Metric.HEIGHT to outH.toLong(),
+                Metric.MODEL to req.workModel.ordinal.toLong(),
             )
             logcat {
                 "Manyue AI timings chapter=${req.chapterId} page=${req.pageIndex} " +
@@ -1059,6 +1080,26 @@ object ManyueAiUpscaler {
 
     private fun requestIsCurrent(req: Request): Boolean {
         return !req.cancelled && requestConfigurationCurrent(req)
+    }
+
+    private fun bindHybridModel(context: Context, req: Request) {
+        val thermalStatus = if (android.os.Build.VERSION.SDK_INT >= 29) {
+            runCatching {
+                context.getSystemService(android.os.PowerManager::class.java)?.currentThermalStatus ?: -1
+            }.getOrDefault(-1)
+        } else -1
+        val nowMs = System.nanoTime() / 1_000_000L
+        val visible = requests.values.filter {
+            !it.cancelled && !it.completed && it.generation == req.generation &&
+                it.mangaId == req.mangaId && it.chapterId == req.chapterId &&
+                it.priority >= 100 && (it.queued || it.processing)
+        }
+        val deadlineMissed = visible.size >= 2 && visible.any {
+            nowMs - it.enqueuedAt >= ManyueHybridPolicy.VISIBLE_DEADLINE_MS
+        }
+        val physical = hybridPolicy.choose(req.generation, thermalStatus, deadlineMissed)
+        req.bindPhysicalModel(physical)
+        ManyueDiagnostics.record("智能混轴：${physical.label}（系统温控 $thermalStatus，可见页积压 $deadlineMissed）")
     }
 
     internal fun nativeRequestCancelled(req: Request): Boolean {

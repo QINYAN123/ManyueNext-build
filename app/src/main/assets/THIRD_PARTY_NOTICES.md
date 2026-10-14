@@ -1,13 +1,13 @@
 # Third-party notices
 
-This experimental Mihon-based Manyue build includes an optional on-device
-Manyue Lite model with continuous1×–2× output, the original4×→2× quality
-model and a separate native2× quality candidate. The following
+This experimental Mihon-based Manyue build includes the original4×→2× quality
+model, a separate native2× quality candidate, and experimental hybrid routing
+between those two graphs. Lite is retired and is not packaged in the APK. The following
 components are redistributed only for that feature. Their original license
 texts are preserved in the source at `app/src/main/assets/licenses/` and in the
 APK under `assets/licenses/`.
 
-## Manyue Lite training data and runtime
+## Archived Manyue Lite training data and runtime (source only)
 
 - Model: project-created 5,955-parameter continuous-scale residual network,
   trained from scratch; model files and training scripts use the project's Apache-2.0 license.
@@ -20,10 +20,10 @@ APK under `assets/licenses/`.
   chapters are separated between train, validation and test. Original training pages
   are not packaged in the APK. The dataset license and project model license are separate.
 - Model card, dataset provenance, quality measurements and exact weight digests:
-  `assets/ai/models-Manyue-Lite/` and `native/manyue-lite/training/` in the source archive.
+  `native/manyue-lite/retired/models-Manyue-Lite/` and `native/manyue-lite/training/` in the source archive.
 - Runtime: NCNN 20241226 Vulkan (BSD-3-Clause), stb_image and stb_image_write (MIT/public-domain dual license),
   libwebp 1.5.0 (BSD-style license and patent grant). Preserved texts appear in
-  `assets/licenses/`; the new `libmanyue_lite.so` uses these codecs and resident NCNN inference.
+  `assets/licenses/`; the archived `libmanyue_lite.so` uses these codecs and resident NCNN inference.
 
 The illustrations' creators do not endorse or participate in this application.
 

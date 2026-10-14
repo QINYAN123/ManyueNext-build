@@ -9,8 +9,8 @@ import struct
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-ASSETS = ROOT / 'app/src/main/assets/ai/models-Manyue-Lite'
-JNI = ROOT / 'app/src/main/jniLibs/arm64-v8a/libmanyue_lite.so'
+ASSETS = ROOT / 'native/manyue-lite/retired/models-Manyue-Lite'
+JNI = ROOT / 'native/manyue-lite/retired/native/libmanyue_lite.so'
 PIN = ROOT / 'app/src/main/java/eu/kanade/tachiyomi/ui/reader/manyue/ManyueLiteAssets.kt'
 
 

@@ -1,11 +1,9 @@
 package eu.kanade.tachiyomi.ui.reader.manyue
 
 /**
- * Lite reconstructs pixels directly at the requested size using a shared low-resolution
- * encoder. Quality offers the original4x->2x graph and a separate native2x
- * output-head candidate. The old Real-CUGAN
- * identity remains only for compatibility with in-flight requests and historical cache keys;
- * it is not a selectable product model and old saved selections migrate to Real-ESRGAN.
+ * Quality offers original4x->2x, native2x and experimental job-boundary hybrid routing.
+ * Lite and CUGAN retain their ordinals only for migration/tests and historical cache keys.
+ * Their saved selections migrate to original Quality; neither is a product choice.
  */
 enum class ManyueAiModel(
     val id: String,
@@ -50,16 +48,24 @@ enum class ManyueAiModel(
         runtimeDir = "models-Real-ESRGANv3-anime-native2-head3-a3a99b7b",
         modelFiles = listOf("x2.bin", "x2.param"),
     ),
+    QUALITY_HYBRID(
+        id = "realesrgan_hybrid_v1",
+        label = "智能混轴（性能友好）",
+        runnerName = "libmanyue_realesr.so",
+        assetDir = "ai/models-Real-ESRGANv3-anime",
+        runtimeDir = "models-Real-ESRGANv3-anime",
+        modelFiles = listOf("x2.bin", "x2.param"),
+    ),
     ;
 
     companion object {
         val DEFAULT = QUALITY_REAL_ESRGAN
 
         /** Models offered to readers. FAST_REAL_CUGAN remains an internal legacy identity. */
-        val selectableModels = listOf(QUALITY_REAL_ESRGAN, QUALITY_NATIVE2, MOBILE_LITE)
+        val selectableModels = listOf(QUALITY_REAL_ESRGAN, QUALITY_NATIVE2, QUALITY_HYBRID)
 
         fun canonicalPreferenceId(id: String?): String? =
-            if (id == FAST_REAL_CUGAN.id) QUALITY_REAL_ESRGAN.id else id
+            if (id == FAST_REAL_CUGAN.id || id == MOBILE_LITE.id) QUALITY_REAL_ESRGAN.id else id
 
         fun fromId(id: String?): ManyueAiModel {
             val canonicalId = canonicalPreferenceId(id)
@@ -72,12 +78,13 @@ enum class ManyueAiModel(
             continuousScale -> "$id:${ManyueLiteAssets.MODEL_REVISION}"
             this == QUALITY_REAL_ESRGAN -> "$id:neutral-source-v1"
             this == QUALITY_NATIVE2 -> "$id:native2-head3-a3a99b7b-neutral-source-v1"
+            this == QUALITY_HYBRID -> "$id:original-548a36f9-native2-a3a99b7b"
             else -> id
         }
 
     /** Both fixed2x quality graphs share verified submission and cancellation behavior. */
     val usesQualityRuntime: Boolean
-        get() = this == QUALITY_REAL_ESRGAN || this == QUALITY_NATIVE2
+        get() = this == QUALITY_REAL_ESRGAN || this == QUALITY_NATIVE2 || this == QUALITY_HYBRID
 
     /** Fractional reconstruction is a Lite feature; legacy quality work always outputs native 2x. */
     fun outputScalePercent(savedPercent: Int): Int =

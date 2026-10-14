@@ -229,7 +229,8 @@ class ManyuePageBridge(
                     }
                     return@launch
                 }
-                val (t, requestCacheKey) = request
+                val t = request.first
+                var requestCacheKey = request.second
                 if (!isCurrentBeforeToken(identity, mode, expectedGeneration)) {
                     // The request may be shared with prefetch; this view only drops its listener.
                     return@launch
@@ -310,6 +311,7 @@ class ManyuePageBridge(
                         )
                         return@OnAiCompleteListener
                     }
+                    requestCacheKey = ManyueAiUpscaler.cacheKeyForToken(tok) ?: requestCacheKey
                     onState(ManyueEnhancementState.AI_WAITING_DISPLAY, null)
                     ManyuePerformanceDiagnostics.event(Stage.DISPLAY_STARTED, identity.pageIndex, t)
                     val displayStartedAt = SystemClock.elapsedRealtime()

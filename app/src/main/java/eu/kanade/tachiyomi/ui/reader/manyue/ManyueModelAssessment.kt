@@ -46,6 +46,16 @@ internal object ManyueModelAssessment {
             evidence = "1000步冻结主干输出头迁移；PixelShuffle2，没有内部4×。" +
                 "仅训练Pepper&Carrot，独立作品泛化未验。实验选项，原模型与缓存单独保留。",
         )
+        ManyueAiModel.QUALITY_HYBRID -> Assessment(
+            summary = "实验策略：正常用原质量，系统温控或可见页积压时尝试原生2×；均输出2×。",
+            detail = Rating(null, "沿用两种质量权重，每页只用一种；混合阅读画质待验。"),
+            naturalness = Rating(null, "已完成的图不随负载变化反复替换；不同页的模型效果可能略有差异。"),
+            speed = Rating(null, "原生2×手机小图未证明更快；混轴及时显示收益待真机对照。"),
+            energy = Rating(null, "未证明省电或降温；原生2×保持原主干，仅减少部分输出工作。"),
+            sustained = Rating(null, "切换只在任务边界，恢复原模型需连续30秒无压力，防止频繁重载。"),
+            evidence = "手机离线，本轮仅主机策略/缓存/代次验证。系统LIGHT以上或两个可见请求积压且等待超过2秒时切换。" +
+                "缓存按实际模型隔离，完成页保留实际模型标签；严重温控仍遵守现有保护。默认继续原质量模型。",
+        )
         ManyueAiModel.MOBILE_LITE -> Assessment(
             summary = "轻量保底；支持1–2×，增强较温和，低清细节补全较弱。",
             detail = Rating(2, "本轮同样两个漫画裁剪在2×/100%下主要接近插值原图，线条/文字增益明显弱于质量模型。"),

@@ -43,6 +43,32 @@ class ManyueReadingCoverageTest {
     private fun expose(source: ManyueReadingCoverage.Source = this.source) =
         ManyueReadingCoverage.exposure(owner, source, 500, 400)
 
+    @Test fun hybridDrawKeepsLogicalSelectionAndExportsActualWeightIdentity() {
+        ManyueRuntimeState.updateAiModel(ManyueAiModel.QUALITY_HYBRID)
+        expose()
+        val result = stamp().copy(
+            physicalModel = ManyueAiModel.QUALITY_NATIVE2.ordinal,
+            modelIdentity = ManyueAiModel.QUALITY_NATIVE2.cacheIdentity,
+        )
+        ManyueReadingCoverage.ready(result, false)
+        ManyueReadingCoverage.drawn(owner, source, result)
+        now = 300_000_000
+        ManyueReadingCoverage.hidden(owner)
+        val snapshot = ManyueReadingCoverage.snapshot()
+        assertTrue(snapshot.getJSONArray("exposures").getJSONObject(0).getBoolean("displayedDuringExposure"))
+        val row = snapshot.getJSONArray("results").getJSONObject(0)
+        assertEquals(ManyueAiModel.QUALITY_HYBRID.ordinal, row.getInt("model"))
+        assertEquals(ManyueAiModel.QUALITY_NATIVE2.ordinal, row.getInt("physicalModel"))
+        assertEquals(ManyueAiModel.QUALITY_NATIVE2.cacheIdentity, row.getString("modelIdentity"))
+        // A manual model switch changes generation and prevents crediting the old hybrid image.
+        ManyueRuntimeState.updateAiModel(ManyueAiModel.QUALITY_REAL_ESRGAN)
+        expose()
+        ManyueReadingCoverage.drawn(owner, source, result)
+        now = 600_000_000
+        ManyueReadingCoverage.hidden(owner)
+        assertFalse(ManyueReadingCoverage.snapshot().getJSONArray("exposures").getJSONObject(1).getBoolean("displayedDuringExposure"))
+    }
+
     @Test fun webGpuPlaceholderFrameCannotBecomeFirstFrameAiCoverage() {
         expose()
         ManyueReadingCoverage.frameSubmitted(owner, ManyueReadingCoverage.DrawBackend.WEBGPU_SUBMISSION)

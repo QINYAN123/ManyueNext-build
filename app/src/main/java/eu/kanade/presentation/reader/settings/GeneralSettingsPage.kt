@@ -323,7 +323,7 @@ internal fun ColumnScope.GeneralPage(viewModel: ReaderSettingsViewModel) {
         if (selectedAiModel.continuousScale) {
             "轻量模型同时支持原尺寸修复和连续倍率超分，直接生成所选尺寸。优先使用 GPU；实际后端记录在每页完成状态中。"
         } else {
-            "质量模型固定输出 2×，使用完整质量网络。原图文件保留；低倍率设置仅用于轻量模型。"
+            "均固定输出2×。原模型内部4×缩回2×；原生候选直接生成2×，仍保留质量主干计算。原图文件保留。"
         },
         style = MaterialTheme.typography.bodySmall,
     )

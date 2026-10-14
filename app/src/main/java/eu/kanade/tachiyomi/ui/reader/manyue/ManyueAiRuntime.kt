@@ -95,7 +95,8 @@ object ManyueAiRuntime {
         require(!model.continuousScale) { "Lite has a separate resident runtime" }
         val runnerHash = when (model) {
             ManyueAiModel.FAST_REAL_CUGAN -> EXPECTED_REAL_CUGAN_SHA256
-            ManyueAiModel.QUALITY_REAL_ESRGAN, ManyueAiModel.QUALITY_NATIVE2 -> EXPECTED_REAL_ESRGAN_SHA256
+            ManyueAiModel.QUALITY_REAL_ESRGAN, ManyueAiModel.QUALITY_NATIVE2,
+            ManyueAiModel.QUALITY_HYBRID -> EXPECTED_REAL_ESRGAN_SHA256
             else -> error("Unknown legacy model: ${model.id}")
         }
         return mapOf(
