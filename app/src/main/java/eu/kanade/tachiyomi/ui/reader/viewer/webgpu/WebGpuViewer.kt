@@ -116,6 +116,11 @@ open class WebGpuViewer(
     @Volatile
     private var destroyed = false
 
+    private val thermalMonitor = eu.kanade.tachiyomi.ui.reader.manyue.ManyueWebGpuThermalMonitor(
+        pager,
+        activity.lifecycle,
+    )
+
     private val pageCache = LinkedHashMap<PageKey, ViewerPage>()
 
     // Processed LIFO - last added is highest priority.
@@ -1037,6 +1042,7 @@ open class WebGpuViewer(
     }
 
     override fun destroy() {
+        thermalMonitor.close()
         // Before the interrupt: taken mid-decode, only the flag stops the worker parking.
         destroyed = true
         scope.cancel()

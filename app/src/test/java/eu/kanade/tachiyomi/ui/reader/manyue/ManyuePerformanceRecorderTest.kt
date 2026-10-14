@@ -8,6 +8,20 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ManyuePerformanceRecorderTest {
+    @Test fun absoluteMonotonicOriginReconstructsEventTimeAndSurvivesStop() {
+        var now = 1_000_000L
+        val recorder = ManyuePerformanceRecorder(clock = { now })
+        recorder.setEnabled(true)
+        val origin = recorder.snapshot().startedAtMonotonicNs
+        now += 75L
+        recorder.event(ManyuePerformanceRecorder.Stage.AI_READY)
+        assertEquals(now, origin + recorder.snapshot().events.last().timeNs)
+        recorder.setEnabled(false)
+        now += 1_000L
+        assertEquals(origin, recorder.snapshot().startedAtMonotonicNs)
+        recorder.clear()
+        assertEquals(now, recorder.snapshot().startedAtMonotonicNs)
+    }
     @Test fun sharedMonotonicTimeIsResetAndFrozenWithTheRecorderSession() {
         var time = 500L
         val recorder = ManyuePerformanceRecorder(clock = { time })

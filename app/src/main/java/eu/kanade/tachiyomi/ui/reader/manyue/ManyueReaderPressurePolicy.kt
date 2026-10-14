@@ -9,6 +9,7 @@ internal class ManyueReaderPressurePolicy(
 ) {
     private var owner: Any? = null
     private var thermalPressure = false
+    private var speculativeThermalPressure = false
     private var fastScrollUntilNanos: Long? = null
     private var badFrameUntilNanos: Long? = null
     private var lastScrollAtNanos: Long? = null
@@ -155,12 +156,13 @@ internal class ManyueReaderPressurePolicy(
     fun reportThermalStatus(reader: Any, status: Int) {
         if (owner !== reader) return
         thermalPressure = status >= THERMAL_STATUS_SEVERE
+        speculativeThermalPressure = status >= THERMAL_STATUS_MODERATE
     }
 
     @Synchronized
     fun isBlocked(): Boolean {
         val now = nanoTime()
-        return thermalPressure || isBefore(now, fastScrollUntilNanos) || isBefore(now, badFrameUntilNanos)
+        return speculativeThermalPressure || isBefore(now, fastScrollUntilNanos) || isBefore(now, badFrameUntilNanos)
     }
 
     /** Current and nearest read-ahead jobs continue through motion; jank/heat still pause them. */
@@ -173,7 +175,7 @@ internal class ManyueReaderPressurePolicy(
     fun aiWorkBlockReasonMask(priority: Int): Int {
         val now = nanoTime()
         var reasons = 0
-        if (thermalPressure) reasons = reasons or BLOCK_REASON_THERMAL
+        if (thermalPressure || (priority < 50 && speculativeThermalPressure)) reasons = reasons or BLOCK_REASON_THERMAL
         if (isBefore(now, badFrameUntilNanos)) reasons = reasons or BLOCK_REASON_BAD_FRAME
         if (priority < 50 && isBefore(now, fastScrollUntilNanos)) {
             reasons = reasons or BLOCK_REASON_FAST_SCROLL
@@ -197,6 +199,7 @@ internal class ManyueReaderPressurePolicy(
 
     private fun clearSignals() {
         thermalPressure = false
+        speculativeThermalPressure = false
         fastScrollUntilNanos = null
         badFrameUntilNanos = null
         resetScrollSampling()
@@ -255,6 +258,7 @@ internal class ManyueReaderPressurePolicy(
     private fun isBefore(now: Long, deadline: Long?): Boolean = deadline?.let { now - it < 0L } == true
 
     companion object {
+        const val THERMAL_STATUS_MODERATE = 2
         const val THERMAL_STATUS_SEVERE = 3
         const val NANOS_PER_SECOND = 1_000_000_000.0
         const val MIN_SCROLL_SAMPLE_NANOS = 8_000_000L

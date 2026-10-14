@@ -88,6 +88,8 @@ object ManyuePerformanceDiagnostics {
             put("session", snapshot.session)
             put("recording", snapshot.enabled)
             put("durationMs", snapshot.durationNs / 1_000_000)
+            put("eventClock", "ANDROID_MONOTONIC_SYSTEM_NANOTIME")
+            put("eventOriginMonotonicNs", snapshot.startedAtMonotonicNs)
             put("overwrittenEvents", snapshot.overwrittenEvents)
             put("overwrittenFrames", snapshot.overwrittenFrames)
             put("frameCallbackDrops", snapshot.callbackDrops)

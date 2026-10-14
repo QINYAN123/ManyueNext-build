@@ -121,6 +121,7 @@ internal class ManyuePerformanceRecorder(
         val overwrittenEvents: Long,
         val overwrittenFrames: Long,
         val callbackDrops: Long,
+        val startedAtMonotonicNs: Long,
     )
 
     init {
@@ -206,6 +207,7 @@ internal class ManyuePerformanceRecorder(
         overwrittenEvents,
         overwrittenFrames,
         callbackDrops,
+        startedAt,
     )
 }
 

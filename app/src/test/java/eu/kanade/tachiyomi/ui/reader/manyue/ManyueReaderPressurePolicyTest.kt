@@ -204,7 +204,37 @@ class ManyueReaderPressurePolicyTest {
         assertTrue(policy.isBlocked())
         assertFalse(policy.isDisplayBlocked(), "thermal protection must not indefinitely hide a ready frame")
         policy.reportThermalStatus(currentReader, 2)
+        assertTrue(policy.isBlocked(), "moderate heat holds distant speculative work")
+        assertFalse(policy.isVisibleWorkBlocked(), "current and near pages continue at moderate heat")
+        assertFalse(policy.isDisplayBlocked())
+    }
+
+    @Test
+    fun `moderate thermal restriction is priority aware and leaves display available`() {
+        val policy = ManyueReaderPressurePolicy()
+        val reader = Any()
+        policy.update(reader, active = false)
+        policy.reportThermalStatus(reader, 2)
+        assertTrue(policy.isBlocked())
+        assertFalse(policy.isVisibleWorkBlocked())
+        assertFalse(policy.isDisplayBlocked())
+        assertEquals(ManyueReaderPressurePolicy.BLOCK_REASON_THERMAL, policy.aiWorkBlockReasonMask(1))
+        assertEquals(0, policy.aiWorkBlockReasonMask(50))
+        assertEquals(0, policy.aiWorkBlockReasonMask(100))
+    }
+
+    @Test
+    fun `cooling restores speculative work without changing image quality`() {
+        val policy = ManyueReaderPressurePolicy()
+        val reader = Any()
+        policy.update(reader, active = false)
+        policy.reportThermalStatus(reader, 2)
+        assertTrue(policy.isBlocked())
+        policy.reportThermalStatus(reader, 1)
         assertFalse(policy.isBlocked())
+        assertFalse(policy.isVisibleWorkBlocked())
+        policy.reportThermalStatus(reader, 3)
+        assertTrue(policy.isVisibleWorkBlocked())
         assertFalse(policy.isDisplayBlocked())
     }
 
