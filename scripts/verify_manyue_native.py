@@ -22,12 +22,12 @@ RUNNERS = {
 }
 MODELS = {
     "app/src/main/assets/ai/models-Real-ESRGANv3-anime/x2.bin": (
-        1_247_368,
-        "548a36f9c3f4ab8da56cd3b13badf23968bee207b396dad14d04b830e5f2ab2d",
+        1_205_752,
+        "a3a99b7bcc6a8dd094821af2cf8df8d0c1b5ae262571eb465bb9359ce28f8015",
     ),
     "app/src/main/assets/ai/models-Real-ESRGANv3-anime/x2.param": (
-        3_173,
-        "b88ff4f00ebf019a7fdac17fdd45a7fd3665d37509efc5baf2e4da2e24420a04",
+        3_215,
+        "44f0e77ab0c793d42a2b2858b20969959d8ab985c575a8578b15e857bb518ac1",
     ),
 }
 

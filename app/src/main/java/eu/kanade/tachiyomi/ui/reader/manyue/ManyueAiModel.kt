@@ -2,7 +2,8 @@ package eu.kanade.tachiyomi.ui.reader.manyue
 
 /**
  * Lite reconstructs pixels directly at the requested size using a shared low-resolution
- * encoder. Real-ESRGAN anime reconstructs at 4x internally, then resamples to 2x before native target sizing. The old Real-CUGAN
+ * encoder. This experimental Real-ESRGAN derivative reconstructs directly at 2x
+ * with a distilled 12-channel output head and unchanged backbone. The old Real-CUGAN
  * identity remains only for compatibility with in-flight requests and historical cache keys;
  * it is not a selectable product model and old saved selections migrate to Real-ESRGAN.
  */
@@ -38,7 +39,7 @@ enum class ManyueAiModel(
         label = "质量 · Real-ESRGAN x2",
         runnerName = "libmanyue_realesr.so",
         assetDir = "ai/models-Real-ESRGANv3-anime",
-        runtimeDir = "models-Real-ESRGANv3-anime",
+        runtimeDir = "models-Real-ESRGANv3-anime-native2-head3-a3a99b7b",
         modelFiles = listOf("x2.bin", "x2.param"),
     ),
     ;
@@ -61,7 +62,7 @@ enum class ManyueAiModel(
     val cacheIdentity: String
         get() = when {
             continuousScale -> "$id:${ManyueLiteAssets.MODEL_REVISION}"
-            this == QUALITY_REAL_ESRGAN -> "$id:neutral-source-v1"
+            this == QUALITY_REAL_ESRGAN -> "$id:native2-head3-a3a99b7b-neutral-source-v1"
             else -> id
         }
 

@@ -1,0 +1,201 @@
+{
+  "status": "TRAINED HEAD CONVERSION CANDIDATE; not accepted/installed manga model",
+  "backboneFrozen": true,
+  "trainedSteps": 1000,
+  "initialProbe": [
+    {
+      "name": "synthetic-random",
+      "mean": 0.05839913338422775,
+      "maximum": 0.20476335287094116
+    },
+    {
+      "name": "synthetic-lines-and-gray",
+      "mean": 0.030257849022746086,
+      "maximum": 0.20994418859481812
+    }
+  ],
+  "finalProbe": [
+    {
+      "name": "synthetic-random",
+      "mean": 0.025509648025035858,
+      "maximum": 0.1277676820755005
+    },
+    {
+      "name": "synthetic-lines-and-gray",
+      "mean": 0.005074144806712866,
+      "maximum": 0.06799304485321045
+    }
+  ],
+  "history": [
+    {
+      "step": 100,
+      "probe": [
+        {
+          "name": "synthetic-random",
+          "mean": 0.04005130007863045,
+          "maximum": 0.20606285333633423
+        },
+        {
+          "name": "synthetic-lines-and-gray",
+          "mean": 0.009034284390509129,
+          "maximum": 0.11770141124725342
+        }
+      ]
+    },
+    {
+      "step": 200,
+      "probe": [
+        {
+          "name": "synthetic-random",
+          "mean": 0.034894272685050964,
+          "maximum": 0.21876150369644165
+        },
+        {
+          "name": "synthetic-lines-and-gray",
+          "mean": 0.011288966983556747,
+          "maximum": 0.10781174898147583
+        }
+      ]
+    },
+    {
+      "step": 300,
+      "probe": [
+        {
+          "name": "synthetic-random",
+          "mean": 0.04560982063412666,
+          "maximum": 0.24117684364318848
+        },
+        {
+          "name": "synthetic-lines-and-gray",
+          "mean": 0.020145399495959282,
+          "maximum": 0.17274516820907593
+        }
+      ]
+    },
+    {
+      "step": 400,
+      "probe": [
+        {
+          "name": "synthetic-random",
+          "mean": 0.03268177807331085,
+          "maximum": 0.15611732006072998
+        },
+        {
+          "name": "synthetic-lines-and-gray",
+          "mean": 0.0054528433829545975,
+          "maximum": 0.09662291407585144
+        }
+      ]
+    },
+    {
+      "step": 500,
+      "probe": [
+        {
+          "name": "synthetic-random",
+          "mean": 0.028261661529541016,
+          "maximum": 0.14601212739944458
+        },
+        {
+          "name": "synthetic-lines-and-gray",
+          "mean": 0.005487615708261728,
+          "maximum": 0.06871187686920166
+        }
+      ]
+    },
+    {
+      "step": 600,
+      "probe": [
+        {
+          "name": "synthetic-random",
+          "mean": 0.026601996272802353,
+          "maximum": 0.13387244939804077
+        },
+        {
+          "name": "synthetic-lines-and-gray",
+          "mean": 0.0054953256621956825,
+          "maximum": 0.07401961088180542
+        }
+      ]
+    },
+    {
+      "step": 700,
+      "probe": [
+        {
+          "name": "synthetic-random",
+          "mean": 0.025509648025035858,
+          "maximum": 0.1277676820755005
+        },
+        {
+          "name": "synthetic-lines-and-gray",
+          "mean": 0.005074144806712866,
+          "maximum": 0.06799304485321045
+        }
+      ]
+    },
+    {
+      "step": 800,
+      "probe": [
+        {
+          "name": "synthetic-random",
+          "mean": 0.026054246351122856,
+          "maximum": 0.1292242705821991
+        },
+        {
+          "name": "synthetic-lines-and-gray",
+          "mean": 0.0046891323290765285,
+          "maximum": 0.0685029923915863
+        }
+      ]
+    },
+    {
+      "step": 900,
+      "probe": [
+        {
+          "name": "synthetic-random",
+          "mean": 0.02875444106757641,
+          "maximum": 0.15279346704483032
+        },
+        {
+          "name": "synthetic-lines-and-gray",
+          "mean": 0.007319844327867031,
+          "maximum": 0.09496545791625977
+        }
+      ]
+    },
+    {
+      "step": 1000,
+      "probe": [
+        {
+          "name": "synthetic-random",
+          "mean": 0.048031605780124664,
+          "maximum": 0.23490875959396362
+        },
+        {
+          "name": "synthetic-lines-and-gray",
+          "mean": 0.012882933020591736,
+          "maximum": 0.18061256408691406
+        }
+      ]
+    }
+  ],
+  "gatePassed": true,
+  "diagnosticMeanReductionFraction": 0.6550323279518369,
+  "oldConvMacPerInputPixel": 619200,
+  "native2ConvMacPerInputPixel": 598464,
+  "convMacReductionFraction": 0.03348837209302326,
+  "native2InternalImageUpscale": 2,
+  "finalIdentityScale": 1,
+  "internal4xImage": false,
+  "outputDownscale": false,
+  "binSha256": "a3a99b7bcc6a8dd094821af2cf8df8d0c1b5ae262571eb465bb9359ce28f8015",
+  "paramSha256": "44f0e77ab0c793d42a2b2858b20969959d8ab985c575a8578b15e857bb518ac1",
+  "baselineBinSha256": "548a36f9c3f4ab8da56cd3b13badf23968bee207b396dad14d04b830e5f2ab2d",
+  "teacher": "Analytic native2x folded old model with context padding",
+  "limitations": [
+    "No independent manga validation work",
+    "Numerical teacher approximation not true detail improvement",
+    "Android Vulkan numerical/performance and tile seams not tested",
+    "Existing segmented Native shape guard compatible by graph names/types, not yet verified on device",
+    "Original model still in APK; do not install these weights until accepted"
+  ]
+}

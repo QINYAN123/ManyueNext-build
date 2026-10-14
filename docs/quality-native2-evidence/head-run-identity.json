@@ -1,0 +1,26 @@
+{
+  "purpose": "Frozen-trunk native2x output-head distillation, not manga enhancement",
+  "steps": 1000,
+  "trainImages": 32,
+  "validation": "Procedural diagnostic drawings; no independent manga validation",
+  "seed": 7814,
+  "baselineBinSha256": "548a36f9c3f4ab8da56cd3b13badf23968bee207b396dad14d04b830e5f2ab2d",
+  "datasetSha256": "28d283ee5b9fde8b7cfffcc1a8d833639113cece71b0edb71c9b029f32814028",
+  "initialProbe": [
+    {
+      "name": "synthetic-random",
+      "mean": 0.05839913338422775,
+      "maximum": 0.20476335287094116
+    },
+    {
+      "name": "synthetic-lines-and-gray",
+      "mean": 0.030257849022746086,
+      "maximum": 0.20994418859481812
+    }
+  ],
+  "inferenceUpscale": 2,
+  "identityTailScale": 1,
+  "prospectiveGate": "20% lower mean diagnostic teacher error; no Android/quality acceptance implied",
+  "executedScriptSha256": "6dc13582faf6da5b0faffb88c1f138dff58fcd0e2039eaa94f0923a8c5c220eb",
+  "configSha256": "7b0492a5975672508ed344ded76980f9b5d75ab37b8a2216612d764053c6be7f"
+}

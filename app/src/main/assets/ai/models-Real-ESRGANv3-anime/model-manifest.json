@@ -1,0 +1,34 @@
+{
+  "status": "EXPERIMENTAL; not accepted quality/energy upgrade",
+  "revision": "native2-head3-a3a99b7b",
+  "originalBinSha256": "548a36f9c3f4ab8da56cd3b13badf23968bee207b396dad14d04b830e5f2ab2d",
+  "binSha256": "a3a99b7bcc6a8dd094821af2cf8df8d0c1b5ae262571eb465bb9359ce28f8015",
+  "paramSha256": "44f0e77ab0c793d42a2b2858b20969959d8ab985c575a8578b15e857bb518ac1",
+  "internalUpscale": 2,
+  "pixelShuffle": 2,
+  "finalInterp": 1,
+  "internal4x": false,
+  "outputDownscale": false,
+  "originalBackboneByteIdentical": true,
+  "method": "1000 step output-head distillation, frozen original SRVGG-style backbone, Conv64to12 kernel3",
+  "training": {
+    "work": "Pepper&Carrot",
+    "creator": "David Revoy and contributors",
+    "license": "CC BY4.0",
+    "source": "https://www.peppercarrot.com/",
+    "pages": 32,
+    "independentValidationWork": false
+  },
+  "modelLicense": "Derived Real-ESRGAN BSD-3-Clause, original license retained",
+  "evidence": {
+    "androidIsolatedRequests": 24,
+    "hostAndroidArithmetic": "PASS on2 synthetic fixtures; not generalized quality",
+    "performanceImprovement": "NOT PROVEN",
+    "sustainedThermalValidation": "NOT EXECUTED"
+  },
+  "limits": [
+    "No independent manga validation",
+    "No physical scroll or20+page current candidate validation",
+    "No full backbone fine-tuning or actual-detail recovery claim"
+  ]
+}

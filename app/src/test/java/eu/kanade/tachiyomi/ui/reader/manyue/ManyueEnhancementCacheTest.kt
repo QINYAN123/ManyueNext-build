@@ -10,6 +10,17 @@ import java.nio.file.Files
 
 class ManyueEnhancementCacheTest {
 
+    @Test fun `native2 quality output cannot reuse previous model cache`() {
+        fun key(identity: String) = ManyueEnhancementCache.cacheKey(
+            1L, 2L, 3, 2, 2001, 2344, 0, "same-source", 20, identity, false,
+        )
+        val model = ManyueAiModel.QUALITY_REAL_ESRGAN
+        val previous = "${model.id}:neutral-source-v1"
+        assertNotEquals(key(previous), key(model.cacheIdentity))
+        assertEquals(key(model.cacheIdentity), key(model.cacheIdentity))
+        assertNotEquals("models-Real-ESRGANv3-anime", model.runtimeDir)
+    }
+
     @Test fun `cache key is stable and unique`() {
         val k1 = ManyueEnhancementCache.cacheKey(1L, 2L, 3, 0, 2001, 2344, 25)
         val k2 = ManyueEnhancementCache.cacheKey(1L, 2L, 3, 0, 2001, 2344, 25)

@@ -1,0 +1,179 @@
+{
+  "status": "ARITHMETIC PASS",
+  "prospectiveInteriorGate": "mean<=2,p99<=8 in8-bit RGB,48px output border excluded; both models",
+  "arithmetic": [
+    {
+      "case": "synthetic-color",
+      "model": "baseline",
+      "hostBoundary": "reflect",
+      "whole": {
+        "mean": 0.44644775390625,
+        "p99": 1.0,
+        "maximum": 6
+      },
+      "interior": {
+        "mean": 0.44139782475490197,
+        "p99": 1.0,
+        "maximum": 6
+      }
+    },
+    {
+      "case": "synthetic-color",
+      "model": "baseline",
+      "hostBoundary": "replicate",
+      "whole": {
+        "mean": 0.4480335053943452,
+        "p99": 1.0,
+        "maximum": 6
+      },
+      "interior": {
+        "mean": 0.44139782475490197,
+        "p99": 1.0,
+        "maximum": 6
+      }
+    },
+    {
+      "case": "synthetic-color",
+      "model": "head3-native2",
+      "hostBoundary": "reflect",
+      "whole": {
+        "mean": 0.46856282552083334,
+        "p99": 1.0,
+        "maximum": 5
+      },
+      "interior": {
+        "mean": 0.4623904718137255,
+        "p99": 1.0,
+        "maximum": 5
+      }
+    },
+    {
+      "case": "synthetic-color",
+      "model": "head3-native2",
+      "hostBoundary": "replicate",
+      "whole": {
+        "mean": 0.46894938151041665,
+        "p99": 1.0,
+        "maximum": 5
+      },
+      "interior": {
+        "mean": 0.4623904718137255,
+        "p99": 1.0,
+        "maximum": 5
+      }
+    },
+    {
+      "case": "synthetic-gray",
+      "model": "baseline",
+      "hostBoundary": "reflect",
+      "whole": {
+        "mean": 0.79788818359375,
+        "p99": 3.0,
+        "maximum": 7
+      },
+      "interior": {
+        "mean": 0.7930124080882353,
+        "p99": 3.0,
+        "maximum": 6
+      }
+    },
+    {
+      "case": "synthetic-gray",
+      "model": "baseline",
+      "hostBoundary": "replicate",
+      "whole": {
+        "mean": 1.3635044642857144,
+        "p99": 17.0,
+        "maximum": 90
+      },
+      "interior": {
+        "mean": 0.7930124080882353,
+        "p99": 3.0,
+        "maximum": 6
+      }
+    },
+    {
+      "case": "synthetic-gray",
+      "model": "head3-native2",
+      "hostBoundary": "reflect",
+      "whole": {
+        "mean": 0.7960484095982143,
+        "p99": 3.0,
+        "maximum": 7
+      },
+      "interior": {
+        "mean": 0.789921875,
+        "p99": 3.0,
+        "maximum": 5
+      }
+    },
+    {
+      "case": "synthetic-gray",
+      "model": "head3-native2",
+      "hostBoundary": "replicate",
+      "whole": {
+        "mean": 1.3598301478794643,
+        "p99": 17.0,
+        "maximum": 89
+      },
+      "interior": {
+        "mean": 0.789921875,
+        "p99": 3.0,
+        "maximum": 5
+      }
+    }
+  ],
+  "fidelity": [
+    {
+      "case": "synthetic-color",
+      "source": "procedural drawing",
+      "androidOldToCandidate": {
+        "mean": 0.4892328171502976,
+        "p99": 5.0,
+        "maximum": 15
+      }
+    },
+    {
+      "case": "synthetic-gray",
+      "source": "procedural drawing",
+      "androidOldToCandidate": {
+        "mean": 0.6704328264508929,
+        "p99": 3.0,
+        "maximum": 14
+      }
+    },
+    {
+      "case": "ordinary-bw",
+      "source": "Private user viewing QA; not training",
+      "inputSize": [
+        192,
+        192
+      ],
+      "hostOldToCandidate": {
+        "mean": 0.13350197120949073,
+        "p99": 1.0,
+        "maximum": 9
+      }
+    },
+    {
+      "case": "reader-color",
+      "source": "Private user viewing QA; not training",
+      "inputSize": [
+        192,
+        192
+      ],
+      "hostOldToCandidate": {
+        "mean": 0.12468578197337964,
+        "p99": 1.0,
+        "maximum": 4
+      }
+    }
+  ],
+  "qualityAcceptance": false,
+  "limitations": [
+    "Host FP32 vs AndroidVulkan FP16, quantized assets",
+    "Neutral projection/8-bit conversion applied only when entire input exactly gray",
+    "Private crops/synthetic samples are diagnostic, not independent legal manga benchmark",
+    "No model generalization, animation stability, thermal or performance acceptance"
+  ]
+}

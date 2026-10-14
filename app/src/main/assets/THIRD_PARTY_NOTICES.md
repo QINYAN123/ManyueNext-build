@@ -1,8 +1,8 @@
 # Third-party notices
 
-This Mihon-based Manyue build includes an optional, on-device continuously
-scaled Manyue Lite model and legacy fixed-2× AI paths with configurable 1×–2×
-output dimensions. The following
+This experimental Mihon-based Manyue build includes an optional on-device
+Manyue Lite model with continuous1×–2× output and a fixed native2× quality
+model candidate. The following
 components are redistributed only for that feature. Their original license
 texts are preserved in the source at `app/src/main/assets/licenses/` and in the
 APK under `assets/licenses/`.
@@ -27,14 +27,22 @@ APK under `assets/licenses/`.
 
 The illustrations' creators do not endorse or participate in this application.
 
-## Real-ESRGAN animevideo-v3 model
+## Experimental native2× derivative of Real-ESRGAN animevideo-v3
 
 - Project: https://github.com/xinntao/Real-ESRGAN
 - Copyright: Xintao Wang and contributors
 - License: BSD 3-Clause
 - Bundled files: `x2.bin`, `x2.param`
-- SHA-256 (`x2.bin`): `548a36f9c3f4ab8da56cd3b13badf23968bee207b396dad14d04b830e5f2ab2d`
-- SHA-256 (`x2.param`): `b88ff4f00ebf019a7fdac17fdd45a7fd3665d37509efc5baf2e4da2e24420a04`
+- SHA-256 (`x2.bin`): `a3a99b7bcc6a8dd094821af2cf8df8d0c1b5ae262571eb465bb9359ce28f8015`
+- SHA-256 (`x2.param`): `44f0e77ab0c793d42a2b2858b20969959d8ab985c575a8578b15e857bb518ac1`
+
+The original backbone is retained; the output head was distilled for1000 steps
+on32 licensed Pepper&Carrot pages (CC BY4.0, David Revoy and contributors).
+The candidate uses PixelShuffle2 and a2× residual, followed by an identity
+Interp1; it has no internal4× image or downscale. No independent manga
+validation or sustained energy benefit is claimed. The original weights remain
+available from the v78 source revision. See model-manifest.json and
+docs/QUALITY2_NATIVE2_V79.md for provenance and incomplete acceptance.
 
 ## RealSR / Real-ESRGAN NCNN Vulkan command-line integration
 
@@ -42,13 +50,13 @@ The illustrations' creators do not endorse or participate in this application.
 - Upstream inference project: https://github.com/xinntao/Real-ESRGAN-ncnn-vulkan
 - Source used: tag `1.11.1`, commit `5eb6e3d`, with the local target-output and error-propagation patches
 - License: MIT; refer to the upstream project and release asset for the complete text
-- Bundled executable SHA-256: `b8d3746847e6f0e3e5e3f8bf60aa3c594489535ab74534b5ae77f5adaf0640d7`
+- Bundled executable SHA-256: `a4c5581ef5b0d6e0f96e3b7c6d607d7a6f97565f80cc1f6760b1f3953c3f2698`
 
 The executable is named `libmanyue_realesr.so` so Android installs it inside the
 app's executable native-library directory. It is rebuilt from the pinned source;
 it differs from the upstream release executable. The patch and build recipe are
-in `native/manyue-target-output/`. Model weights and the bundled ncnn runtime
-remain unchanged.
+in `native/manyue-target-output/`. The bundled worker and ncnn runtime are
+unchanged from v78; only the quality model graph and output-head weights change.
 
 ## Real-CUGAN NCNN Vulkan command-line integration
 

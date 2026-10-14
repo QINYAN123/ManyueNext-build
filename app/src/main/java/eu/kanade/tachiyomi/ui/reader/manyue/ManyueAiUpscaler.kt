@@ -48,8 +48,8 @@ object ManyueAiUpscaler {
             "up2x-no-denoise.param" to "91efac7489bf249f092faa3764e3a3d1d31ef290051e39f2afd2138c98ccce30",
         ),
         ManyueAiModel.QUALITY_REAL_ESRGAN to mapOf(
-            "x2.bin" to "548a36f9c3f4ab8da56cd3b13badf23968bee207b396dad14d04b830e5f2ab2d",
-            "x2.param" to "b88ff4f00ebf019a7fdac17fdd45a7fd3665d37509efc5baf2e4da2e24420a04",
+            "x2.bin" to "a3a99b7bcc6a8dd094821af2cf8df8d0c1b5ae262571eb465bb9359ce28f8015",
+            "x2.param" to "44f0e77ab0c793d42a2b2858b20969959d8ab985c575a8578b15e857bb518ac1",
         ),
     )
 
