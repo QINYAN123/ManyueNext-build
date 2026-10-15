@@ -217,16 +217,77 @@ class ManyueReaderPressurePolicyTest {
         policy.update(reader, active = false)
         policy.reportThermalStatus(reader, 2)
         assertFalse(policy.isBlocked(), "the first job may start without waiting for thermal recovery")
+        assertTrue(policy.isAiWorkBlocked(ManyueAiSafetyPolicy.CONTINUOUS_PREFETCH_PRIORITY))
+        assertFalse(policy.isAiWorkBlocked(10), "window work may start immediately at MODERATE")
+        assertFalse(policy.isAiWorkBlocked(40), "nearest read-ahead may start immediately at MODERATE")
+        assertFalse(policy.isAiWorkBlocked(50), "N+1 remains on the existing nearest-work path")
+        assertFalse(policy.isAiWorkBlocked(100), "visible work remains available at MODERATE")
         policy.afterAiWork(2_000_000_000L)
         assertTrue(policy.isBlocked())
+        assertTrue(policy.isAiWorkBlocked(1), "far continuous prefetch remains held for the full warm period")
+        assertTrue(policy.isAiWorkBlocked(10), "window work retains the existing finite thermal interval")
+        assertTrue(policy.isAiWorkBlocked(40))
         assertFalse(policy.isVisibleWorkBlocked())
+        assertFalse(policy.isAiWorkBlocked(50))
+        assertFalse(policy.isAiWorkBlocked(100))
         assertFalse(policy.isDisplayBlocked())
         assertEquals(ManyueReaderPressurePolicy.BLOCK_REASON_THERMAL, policy.aiWorkBlockReasonMask(1))
         assertEquals(0, policy.aiWorkBlockReasonMask(50))
         assertEquals(0, policy.aiWorkBlockReasonMask(100))
         clock.advance(500_000_000L)
         assertFalse(policy.isBlocked())
+        assertTrue(policy.isAiWorkBlocked(1), "the distant-work hold lasts until thermal status falls below MODERATE")
+        assertFalse(policy.isAiWorkBlocked(10), "window work resumes when its finite interval expires")
+        assertFalse(policy.isAiWorkBlocked(40))
+        assertEquals(ManyueReaderPressurePolicy.BLOCK_REASON_THERMAL, policy.aiWorkBlockReasonMask(1))
+        assertEquals(0, policy.aiWorkBlockReasonMask(40))
+        listOf(1, 10, 40, 50, 100).forEach { priority ->
+            assertEquals(
+                policy.aiWorkBlockReasonMask(priority) != 0,
+                policy.isAiWorkBlocked(priority),
+                "diagnostic reason must match the scheduling decision for priority $priority",
+            )
+        }
+        assertFalse(policy.isDisplayBlocked(), "warm thermal policy must not strand a completed image")
+    }
+
+    @Test
+    fun `reprioritizing far work into the window or cooling releases only the relevant thermal hold`() {
+        val clock = FakeClock(1_000_000_000L)
+        val policy = ManyueReaderPressurePolicy(clock::now)
+        val reader = Any()
+        policy.update(reader, active = false)
+        policy.reportThermalStatus(reader, 2)
+
+        assertTrue(policy.isAiWorkBlocked(1), "future continuous prefetch is held while warm")
+        assertFalse(policy.isAiWorkBlocked(40), "queued work can run after being reprioritized into the window")
+        policy.afterAiWork(2_000_000_000L)
+        assertTrue(policy.isAiWorkBlocked(40), "window work still obeys its existing finite interval")
+        clock.advance(500_000_000L)
+        assertFalse(policy.isAiWorkBlocked(40), "reprioritized work resumes when the interval expires")
+        assertTrue(policy.isAiWorkBlocked(1), "the far-prefetch hold remains active at MODERATE")
+
+        policy.reportThermalStatus(reader, 1)
+        assertFalse(policy.isAiWorkBlocked(1), "cooling below MODERATE automatically restores far prefetch")
         assertEquals(0, policy.aiWorkBlockReasonMask(1))
+    }
+
+    @Test
+    fun `severe heat blocks every new AI priority while display remains available`() {
+        val policy = ManyueReaderPressurePolicy()
+        val reader = Any()
+        policy.update(reader, active = false)
+        policy.reportThermalStatus(reader, ManyueReaderPressurePolicy.THERMAL_STATUS_SEVERE)
+
+        listOf(1, 10, 40, 50, 100, 120).forEach { priority ->
+            assertTrue(policy.isAiWorkBlocked(priority), "priority $priority must stay blocked at SEVERE")
+            assertEquals(
+                ManyueReaderPressurePolicy.BLOCK_REASON_THERMAL,
+                policy.aiWorkBlockReasonMask(priority),
+                "thermal diagnostic reason must match the scheduling decision for priority $priority",
+            )
+        }
+        assertFalse(policy.isDisplayBlocked(), "SEVERE blocks new inference without hiding completed images")
     }
 
     @Test
@@ -237,11 +298,14 @@ class ManyueReaderPressurePolicyTest {
         policy.reportThermalStatus(reader, 2)
         policy.afterAiWork(2_000_000_000L)
         assertTrue(policy.isBlocked())
+        assertTrue(policy.isAiWorkBlocked(1))
         policy.reportThermalStatus(reader, 1)
         assertFalse(policy.isBlocked())
+        assertFalse(policy.isAiWorkBlocked(1))
         assertFalse(policy.isVisibleWorkBlocked())
         policy.reportThermalStatus(reader, 3)
         assertTrue(policy.isVisibleWorkBlocked())
+        assertTrue(policy.isAiWorkBlocked(1))
         assertFalse(policy.isDisplayBlocked())
     }
 
@@ -257,31 +321,47 @@ class ManyueReaderPressurePolicyTest {
             clock.advance(100_000_000L)
             policy.reportThermalStatus(reader, 2)
             assertTrue(policy.isBlocked())
+            assertTrue(policy.isAiWorkBlocked(1))
         }
         clock.advance(100_000_000L)
         policy.reportThermalStatus(reader, 2)
         assertFalse(policy.isBlocked())
+        assertTrue(policy.isAiWorkBlocked(1), "callbacks do not release the far-prefetch warm hold")
     }
 
     @Test
-    fun `moderate warm reading keeps progressing while severe heat still stops inference`() {
+    fun `moderate warm reading keeps window work progressing while severe heat stops inference`() {
         val clock = FakeClock(1_000_000_000L)
         val policy = ManyueReaderPressurePolicy(clock::now)
         val reader = Any()
         policy.update(reader, active = false)
         policy.reportThermalStatus(reader, 2)
         repeat(12) {
-            assertFalse(policy.isBlocked(), "text dwell should allow another distant page")
+            assertTrue(policy.isAiWorkBlocked(1), "moderate heat holds continuous work beyond the window")
+            assertFalse(policy.isAiWorkBlocked(10), "window work remains available during text dwell")
+            assertFalse(policy.isAiWorkBlocked(40))
+            assertFalse(policy.isAiWorkBlocked(50), "N+1 remains available during text dwell")
+            assertFalse(policy.isAiWorkBlocked(100))
             clock.advance(2_000_000_000L)
             policy.afterAiWork(2_000_000_000L)
-            assertTrue(policy.isBlocked())
+            assertTrue(policy.isAiWorkBlocked(1))
+            assertTrue(policy.isAiWorkBlocked(10), "window work retains its finite per-job thermal interval")
+            assertTrue(policy.isAiWorkBlocked(40))
             assertFalse(policy.isVisibleWorkBlocked(), "a newly visible request bypasses thermal pacing")
+            assertFalse(policy.isAiWorkBlocked(50))
+            assertFalse(policy.isAiWorkBlocked(100))
             clock.advance(500_000_000L)
+            assertFalse(policy.isAiWorkBlocked(10))
+            assertFalse(policy.isAiWorkBlocked(40))
+            assertTrue(policy.isAiWorkBlocked(1))
         }
         for (status in 3..6) {
             policy.reportThermalStatus(reader, status)
             clock.advance(10_000_000_000L)
             assertTrue(policy.isBlocked())
+            listOf(1, 10, 40, 50, 100).forEach { priority ->
+                assertTrue(policy.isAiWorkBlocked(priority), "priority $priority stays blocked at thermal status $status")
+            }
             assertTrue(policy.isVisibleWorkBlocked())
             assertFalse(policy.isDisplayBlocked(), "completed pictures remain displayable")
         }
@@ -339,6 +419,13 @@ class ManyueReaderPressurePolicyTest {
         assertEquals(0, policy.aiWorkBlockReasonMask(100), "visible work continues during fast scroll")
         assertEquals(policy.aiWorkBlockReasonMask(49) != 0, policy.isBlocked())
         assertEquals(policy.aiWorkBlockReasonMask(100) != 0, policy.isVisibleWorkBlocked())
+        listOf(1, 10, 40, 49, 50, 99, 100).forEach { priority ->
+            assertEquals(
+                policy.aiWorkBlockReasonMask(priority) != 0,
+                policy.isAiWorkBlocked(priority),
+                "diagnostic reason must match the scheduling decision for priority $priority",
+            )
+        }
 
         clock.advance(FAST_SCROLL_HOLD_NANOS + 1L)
         repeat(3) {
@@ -352,6 +439,13 @@ class ManyueReaderPressurePolicyTest {
             policy.aiWorkBlockReasonMask(100),
         )
         assertEquals(policy.aiWorkBlockReasonMask(100) != 0, policy.isVisibleWorkBlocked())
+        listOf(1, 10, 40, 49, 50, 99, 100).forEach { priority ->
+            assertEquals(
+                policy.aiWorkBlockReasonMask(priority) != 0,
+                policy.isAiWorkBlocked(priority),
+                "diagnostic reason must match the scheduling decision for priority $priority",
+            )
+        }
     }
 
     private class FakeClock(private var currentNanos: Long) {

@@ -55,8 +55,7 @@ object ManyueReaderWorkGate {
     @Synchronized
     fun isBlocked(): Boolean = policy.isBlocked()
 
-    fun isAiWorkBlocked(priority: Int): Boolean =
-        if (priority >= 50) policy.isVisibleWorkBlocked() else policy.isBlocked()
+    fun isAiWorkBlocked(priority: Int): Boolean = policy.isAiWorkBlocked(priority)
 
     fun afterAiWork(elapsedNanos: Long) = policy.afterAiWork(elapsedNanos)
 

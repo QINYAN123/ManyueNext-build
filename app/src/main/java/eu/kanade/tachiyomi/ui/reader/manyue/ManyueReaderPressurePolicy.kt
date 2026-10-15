@@ -184,12 +184,21 @@ internal class ManyueReaderPressurePolicy(
     fun isVisibleWorkBlocked(): Boolean =
         thermalPressure || isBefore(nanoTime(), badFrameUntilNanos)
 
+    /** Applies thermal pacing to current priorities while holding distant continuous prefetch warm. */
+    @Synchronized
+    fun isAiWorkBlocked(priority: Int): Boolean {
+        val now = nanoTime()
+        return isThermalBlocked(priority, now) ||
+            isBefore(now, badFrameUntilNanos) ||
+            (priority < 50 && isBefore(now, fastScrollUntilNanos))
+    }
+
     /** Diagnostic-only reason snapshot at one clock sample; it does not control work scheduling. */
     @Synchronized
     fun aiWorkBlockReasonMask(priority: Int): Int {
         val now = nanoTime()
         var reasons = 0
-        if (thermalPressure || (priority < 50 && isSpeculativeThermalBlocked(now))) reasons = reasons or BLOCK_REASON_THERMAL
+        if (isThermalBlocked(priority, now)) reasons = reasons or BLOCK_REASON_THERMAL
         if (isBefore(now, badFrameUntilNanos)) reasons = reasons or BLOCK_REASON_BAD_FRAME
         if (priority < 50 && isBefore(now, fastScrollUntilNanos)) {
             reasons = reasons or BLOCK_REASON_FAST_SCROLL
@@ -206,6 +215,15 @@ internal class ManyueReaderPressurePolicy(
 
     private fun isSpeculativeThermalBlocked(now: Long): Boolean =
         thermalPressure || (thermalStatus >= THERMAL_STATUS_MODERATE && isBefore(now, speculativeThermalReadyAtNanos))
+
+    private fun isThermalBlocked(priority: Int, now: Long): Boolean {
+        if (thermalPressure) return true
+        if (priority >= 50) return false
+        val continuousFarPrefetchHeld =
+            priority == ManyueAiSafetyPolicy.CONTINUOUS_PREFETCH_PRIORITY && thermalStatus >= THERMAL_STATUS_MODERATE
+        return continuousFarPrefetchHeld ||
+            (thermalStatus >= THERMAL_STATUS_MODERATE && isBefore(now, speculativeThermalReadyAtNanos))
+    }
 
     private fun resetScrollSampling() {
         lastScrollAtNanos = null
