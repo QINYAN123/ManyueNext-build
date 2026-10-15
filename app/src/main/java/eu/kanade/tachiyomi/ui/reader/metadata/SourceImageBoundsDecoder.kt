@@ -4,6 +4,15 @@ import android.graphics.BitmapFactory
 import okio.BufferedSource
 
 object SourceImageBoundsDecoder {
+    /** The caller already owns encoded bytes: avoid copying them into an intermediate Buffer. */
+    fun decode(bytes: ByteArray): SourceImageInfo {
+        val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        return runCatching {
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
+            fromBounds(options.outWidth, options.outHeight)
+        }.getOrDefault(SourceImageInfo.Unavailable)
+    }
+
     fun decode(source: BufferedSource): SourceImageInfo {
         val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         return runCatching {

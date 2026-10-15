@@ -369,16 +369,16 @@ object ManyueEnhancementCache {
     }
 
     /** Returns the bundle dir if its complete image and dimension manifest exist. */
-    fun getBundle(context: Context, key: String): File? {
+    fun getBundle(context: Context, key: String): File? = getImage(context, key)?.file?.parentFile
+
+    fun getImage(context: Context, key: String): CachedImage? {
         val dir = File(cacheDir(context), key)
         if (isBundleDeleting(key)) return null
-        if (cachedImage(dir) == null) return null
+        // Keep the validated manifest instead of reopening and reparsing it via getBundle().
+        val image = cachedImage(dir) ?: return null
         dir.setLastModified(System.currentTimeMillis())
-        return dir
+        return image
     }
-
-    fun getImage(context: Context, key: String): CachedImage? =
-        getBundle(context, key)?.let { cachedImage(it) }
 
     fun getClassicImage(context: Context, key: String, strength: Int): CachedImage? {
         val name = classicVariantName(strength) ?: return null

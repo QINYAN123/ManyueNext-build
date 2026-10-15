@@ -24,7 +24,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
-import okio.Buffer
 import okio.buffer
 import okio.source
 import logcat.LogPriority
@@ -176,7 +175,7 @@ class ManyueReaderPrefetcher(context: Context) {
         } ?: return null
         coordinator.ensureCurrent(chapterId, generation, mode)
         val info = withContext(Dispatchers.IO) {
-            SourceImageBoundsDecoder.decode(Buffer().write(bytes))
+            SourceImageBoundsDecoder.decode(bytes)
         }
         page.updateSourceImageInfo(info)
         coordinator.ensureCurrent(chapterId, generation, mode)

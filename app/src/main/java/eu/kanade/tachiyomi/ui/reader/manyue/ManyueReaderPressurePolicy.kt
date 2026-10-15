@@ -9,7 +9,8 @@ internal class ManyueReaderPressurePolicy(
 ) {
     private var owner: Any? = null
     private var thermalPressure = false
-    private var speculativeThermalPressure = false
+    private var thermalStatus = -1
+    private var speculativeThermalReadyAtNanos: Long? = null
     private var fastScrollUntilNanos: Long? = null
     private var badFrameUntilNanos: Long? = null
     private var lastScrollAtNanos: Long? = null
@@ -156,13 +157,26 @@ internal class ManyueReaderPressurePolicy(
     fun reportThermalStatus(reader: Any, status: Int) {
         if (owner !== reader) return
         thermalPressure = status >= THERMAL_STATUS_SEVERE
-        speculativeThermalPressure = status >= THERMAL_STATUS_MODERATE
+        thermalStatus = status
+        // Repeated vendor callbacks must not keep extending a finite work interval.
+        if (status < THERMAL_STATUS_MODERATE) speculativeThermalReadyAtNanos = null
+    }
+
+    /** Pace distant AI at MODERATE instead of waiting indefinitely for the device to cool.
+     * Visible/nearest requests bypass this interval; SEVERE still blocks new inference.
+     * Call only after native work, never for cache hits or cheap request preparation.
+     */
+    @Synchronized
+    fun afterAiWork(elapsedNanos: Long) {
+        if (owner == null || thermalStatus < THERMAL_STATUS_MODERATE) return
+        val rest = (elapsedNanos.coerceAtLeast(0L) / 4L).coerceAtMost(MAX_THERMAL_GAP_NANOS)
+        speculativeThermalReadyAtNanos = nanoTime() + rest
     }
 
     @Synchronized
     fun isBlocked(): Boolean {
         val now = nanoTime()
-        return speculativeThermalPressure || isBefore(now, fastScrollUntilNanos) || isBefore(now, badFrameUntilNanos)
+        return isSpeculativeThermalBlocked(now) || isBefore(now, fastScrollUntilNanos) || isBefore(now, badFrameUntilNanos)
     }
 
     /** Current and nearest read-ahead jobs continue through motion; jank/heat still pause them. */
@@ -175,7 +189,7 @@ internal class ManyueReaderPressurePolicy(
     fun aiWorkBlockReasonMask(priority: Int): Int {
         val now = nanoTime()
         var reasons = 0
-        if (thermalPressure || (priority < 50 && speculativeThermalPressure)) reasons = reasons or BLOCK_REASON_THERMAL
+        if (thermalPressure || (priority < 50 && isSpeculativeThermalBlocked(now))) reasons = reasons or BLOCK_REASON_THERMAL
         if (isBefore(now, badFrameUntilNanos)) reasons = reasons or BLOCK_REASON_BAD_FRAME
         if (priority < 50 && isBefore(now, fastScrollUntilNanos)) {
             reasons = reasons or BLOCK_REASON_FAST_SCROLL
@@ -190,6 +204,9 @@ internal class ManyueReaderPressurePolicy(
         return isBefore(now, badFrameUntilNanos)
     }
 
+    private fun isSpeculativeThermalBlocked(now: Long): Boolean =
+        thermalPressure || (thermalStatus >= THERMAL_STATUS_MODERATE && isBefore(now, speculativeThermalReadyAtNanos))
+
     private fun resetScrollSampling() {
         lastScrollAtNanos = null
         scrollWindowStartNanos = null
@@ -199,7 +216,8 @@ internal class ManyueReaderPressurePolicy(
 
     private fun clearSignals() {
         thermalPressure = false
-        speculativeThermalPressure = false
+        thermalStatus = -1
+        speculativeThermalReadyAtNanos = null
         fastScrollUntilNanos = null
         badFrameUntilNanos = null
         resetScrollSampling()
@@ -260,6 +278,7 @@ internal class ManyueReaderPressurePolicy(
     companion object {
         const val THERMAL_STATUS_MODERATE = 2
         const val THERMAL_STATUS_SEVERE = 3
+        const val MAX_THERMAL_GAP_NANOS = 1_000_000_000L
         const val NANOS_PER_SECOND = 1_000_000_000.0
         const val MIN_SCROLL_SAMPLE_NANOS = 8_000_000L
         const val MAX_SCROLL_SAMPLE_NANOS = 250_000_000L

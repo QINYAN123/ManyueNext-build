@@ -204,23 +204,29 @@ class ManyueReaderPressurePolicyTest {
         assertTrue(policy.isBlocked())
         assertFalse(policy.isDisplayBlocked(), "thermal protection must not indefinitely hide a ready frame")
         policy.reportThermalStatus(currentReader, 2)
-        assertTrue(policy.isBlocked(), "moderate heat holds distant speculative work")
+        assertFalse(policy.isBlocked(), "moderate heat alone must not indefinitely hold distant work")
         assertFalse(policy.isVisibleWorkBlocked(), "current and near pages continue at moderate heat")
         assertFalse(policy.isDisplayBlocked())
     }
 
     @Test
     fun `moderate thermal restriction is priority aware and leaves display available`() {
-        val policy = ManyueReaderPressurePolicy()
+        val clock = FakeClock(1_000_000_000L)
+        val policy = ManyueReaderPressurePolicy(clock::now)
         val reader = Any()
         policy.update(reader, active = false)
         policy.reportThermalStatus(reader, 2)
+        assertFalse(policy.isBlocked(), "the first job may start without waiting for thermal recovery")
+        policy.afterAiWork(2_000_000_000L)
         assertTrue(policy.isBlocked())
         assertFalse(policy.isVisibleWorkBlocked())
         assertFalse(policy.isDisplayBlocked())
         assertEquals(ManyueReaderPressurePolicy.BLOCK_REASON_THERMAL, policy.aiWorkBlockReasonMask(1))
         assertEquals(0, policy.aiWorkBlockReasonMask(50))
         assertEquals(0, policy.aiWorkBlockReasonMask(100))
+        clock.advance(500_000_000L)
+        assertFalse(policy.isBlocked())
+        assertEquals(0, policy.aiWorkBlockReasonMask(1))
     }
 
     @Test
@@ -229,6 +235,7 @@ class ManyueReaderPressurePolicyTest {
         val reader = Any()
         policy.update(reader, active = false)
         policy.reportThermalStatus(reader, 2)
+        policy.afterAiWork(2_000_000_000L)
         assertTrue(policy.isBlocked())
         policy.reportThermalStatus(reader, 1)
         assertFalse(policy.isBlocked())
@@ -236,6 +243,63 @@ class ManyueReaderPressurePolicyTest {
         policy.reportThermalStatus(reader, 3)
         assertTrue(policy.isVisibleWorkBlocked())
         assertFalse(policy.isDisplayBlocked())
+    }
+
+    @Test
+    fun `moderate thermal callbacks cannot perpetually postpone prefetch`() {
+        val clock = FakeClock(-5_000_000_000L)
+        val policy = ManyueReaderPressurePolicy(clock::now)
+        val reader = Any()
+        policy.update(reader, active = false)
+        policy.reportThermalStatus(reader, 2)
+        policy.afterAiWork(20_000_000_000L) // Even long pages get at most a one-second interval.
+        repeat(9) {
+            clock.advance(100_000_000L)
+            policy.reportThermalStatus(reader, 2)
+            assertTrue(policy.isBlocked())
+        }
+        clock.advance(100_000_000L)
+        policy.reportThermalStatus(reader, 2)
+        assertFalse(policy.isBlocked())
+    }
+
+    @Test
+    fun `moderate warm reading keeps progressing while severe heat still stops inference`() {
+        val clock = FakeClock(1_000_000_000L)
+        val policy = ManyueReaderPressurePolicy(clock::now)
+        val reader = Any()
+        policy.update(reader, active = false)
+        policy.reportThermalStatus(reader, 2)
+        repeat(12) {
+            assertFalse(policy.isBlocked(), "text dwell should allow another distant page")
+            clock.advance(2_000_000_000L)
+            policy.afterAiWork(2_000_000_000L)
+            assertTrue(policy.isBlocked())
+            assertFalse(policy.isVisibleWorkBlocked(), "a newly visible request bypasses thermal pacing")
+            clock.advance(500_000_000L)
+        }
+        for (status in 3..6) {
+            policy.reportThermalStatus(reader, status)
+            clock.advance(10_000_000_000L)
+            assertTrue(policy.isBlocked())
+            assertTrue(policy.isVisibleWorkBlocked())
+            assertFalse(policy.isDisplayBlocked(), "completed pictures remain displayable")
+        }
+    }
+
+    @Test
+    fun `thermal work interval is cleared by detach and not inherited by the next reader`() {
+        val clock = FakeClock(1_000_000_000L)
+        val policy = ManyueReaderPressurePolicy(clock::now)
+        val reader = Any()
+        policy.update(reader, active = false)
+        policy.reportThermalStatus(reader, 2)
+        policy.afterAiWork(2_000_000_000L)
+        assertTrue(policy.isBlocked())
+        policy.release(reader)
+        policy.afterAiWork(2_000_000_000L)
+        policy.update(Any(), active = false)
+        assertFalse(policy.isBlocked())
     }
 
     @Test

@@ -1025,6 +1025,7 @@ object ManyueAiUpscaler {
         } finally {
             expensiveWorkStartedAt?.let {
                 workPacer.afterWork(it, pressureActive = ManyueReaderWorkGate.isAiWorkBlocked(effectiveWorkPriority(req)))
+                if (requestIsCurrent(req)) ManyueReaderWorkGate.afterAiWork(System.nanoTime() - it)
             }
             req.runningProcess = null
             req.nativeCancellation = null
