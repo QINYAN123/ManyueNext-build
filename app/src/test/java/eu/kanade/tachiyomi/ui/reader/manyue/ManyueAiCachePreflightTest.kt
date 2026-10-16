@@ -3,9 +3,11 @@ package eu.kanade.tachiyomi.ui.reader.manyue
 import android.app.Application
 import android.content.ContextWrapper
 import android.os.Looper
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -232,6 +234,90 @@ class ManyueAiCachePreflightTest {
                 removeRegisteredRequest(it)
             }
             ManyueAiUpscaler.appContext = previousContext
+            ManyueRuntimeState.updateAiModel(previousModel)
+            ManyueRuntimeState.updateMode(previousMode)
+            isolatedDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `releasing cancelled claims completes worker cleanup without requeue`() {
+        val previousMode = ManyueRuntimeState.modeInt
+        val previousModel = ManyueRuntimeState.aiModel
+        val isolatedDir = Files.createTempDirectory("manyue-cancelled-claim").toFile()
+        val unrelatedInput = File(isolatedDir, "unrelated.bin").apply { writeBytes(byteArrayOf(9)) }
+        val activeField = ManyueAiUpscaler.javaClass.getDeclaredField("activeRequest").apply { isAccessible = true }
+        val queueField = ManyueAiUpscaler.javaClass.getDeclaredField("queue").apply { isAccessible = true }
+        val previousActive = activeField.get(ManyueAiUpscaler)
+        val releaseClaim = ManyueAiUpscaler.javaClass.getDeclaredMethod(
+            "releaseClaim",
+            ManyueAiUpscaler.Request::class.java,
+            Boolean::class.javaPrimitiveType!!,
+        ).apply { isAccessible = true }
+        val queue = queueField.get(ManyueAiUpscaler) as java.util.concurrent.BlockingQueue<*>
+        val statesByToken = mutableMapOf<String, MutableList<Int>>()
+        val tokens = mutableListOf<String>()
+
+        try {
+            ManyueRuntimeState.updateAiModel(ManyueAiModel.QUALITY_REAL_ESRGAN)
+            ManyueRuntimeState.updateMode(ManyueEnhancementMode.AI_2X.value)
+            listOf(false, true).forEachIndexed { index, requeue ->
+                val input = File(isolatedDir, "claim-$index.bin").apply { writeBytes(byteArrayOf(index.toByte())) }
+                val token = ManyueAiUpscaler.register(
+                    mangaId = 1100L + index,
+                    chapterId = 1200L + index,
+                    pageIndex = index,
+                    inputFile = input,
+                    sourceWidth = 100,
+                    sourceHeight = 200,
+                    targetMode = ManyueEnhancementMode.AI_2X.value,
+                    targetWidth = 200,
+                    priority = 100,
+                    expectedMode = ManyueEnhancementMode.AI_2X.value,
+                    generation = ManyueRuntimeState.generation,
+                    sourceFingerprint = "cancelled-claim-$index",
+                    model = ManyueAiModel.QUALITY_REAL_ESRGAN,
+                )
+                tokens += token
+                val request = makeRequest(token)
+                val states = mutableListOf<Int>()
+                statesByToken[token] = states
+                val lease = ManyueEnhancementCache.CacheLease(null)
+                request.cachedImageLease = lease
+                request.processing = true
+                activeField.set(ManyueAiUpscaler, request)
+                ManyueAiUpscaler.addListener(token) { _, state, _ -> states += state }
+
+                ManyueAiUpscaler.cancel(token)
+                assertTrue(request.cancelled)
+                assertFalse(request.completed)
+                assertTrue("cooperative cancellation leaves file cleanup to the worker", input.exists())
+                releaseClaim.invoke(ManyueAiUpscaler, request, requeue)
+
+                assertFalse(request.processing)
+                assertFalse(request.queued)
+                assertFalse(queue.contains(request))
+                assertTrue(request.completed)
+                assertEquals(ManyueAiUpscaler.STATE_CANCELLED, request.completionState)
+                assertTrue(request.terminal.isCompleted)
+                assertEquals(ManyueAiUpscaler.STATE_CANCELLED, runBlocking { request.terminal.await() })
+                assertNull(request.cachedImageLease)
+                val closedField = lease.javaClass.getDeclaredField("closed").apply { isAccessible = true }
+                assertTrue((closedField.get(lease) as java.util.concurrent.atomic.AtomicBoolean).get())
+                assertFalse(input.exists())
+                assertNull(activeField.get(ManyueAiUpscaler))
+            }
+            shadowOf(Looper.getMainLooper()).idle()
+
+            statesByToken.values.forEach { assertEquals(listOf(ManyueAiUpscaler.STATE_CANCELLED), it) }
+            assertTrue("cleanup must leave unrelated input untouched", unrelatedInput.exists())
+        } finally {
+            tokens.forEach {
+                ManyueAiUpscaler.removeListener(it)
+                ManyueAiUpscaler.cancel(it)
+                removeRegisteredRequest(it)
+            }
+            activeField.set(ManyueAiUpscaler, previousActive)
             ManyueRuntimeState.updateAiModel(previousModel)
             ManyueRuntimeState.updateMode(previousMode)
             isolatedDir.deleteRecursively()

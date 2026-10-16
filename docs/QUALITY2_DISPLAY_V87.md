@@ -1,0 +1,11 @@
+# Quality2 v87 cache cancellation cleanup
+
+Base v86 75670381cddc71d5e3e47735e8488d55ce2e4c53; inherits v85 bottom-visible AI head and original-decode priority. Model weights, Native libraries, shaders, sampling and output sizes unchanged. See QUALITY2_DISPLAY_V86.md for cache-before-inference-gate and optional visible-first next-page preparation semantics.
+
+Root review identified a worker-ownership hole after claim but before process(): concurrent cooperative cancellation could notify CANCELLED while handing input cleanup to the worker; the new early-return path cleared processing and skipped process/finally, leaving an unfinished request and input. Both early exits now cancel before releasing the claim; release of an already-cancelled pre-Native claim finalizes terminal/queued/processing/completed state, closes its cache lease and deletes only its input. It does not duplicate listener notification. Deferred completion and filesystem deletion happen outside request/global locks.
+
+Regression test exercises both requeue=false and requeue=true after actual cooperative cancel, checking the file initially remains worker-owned, then is removed, the lease closes, no requeue occurs, one cancellation callback is delivered and an unrelated input is untouched. No new Native work or performance strategy is added.
+
+v86 prospective calibration stopped before any ON arms: OFF ReaderSurface post-to-presentP95 was38/21/28ms, exceeding the5ms noise gate; first calibration arm also had6Native operations, others0. The new visible-first preparation policy is therefore UNVALIDATED on device and remains defaultOFF. v85 measured first-frame benefit33/36 vs9/36 is historical submission evidence, not v87 adoption/energy proof. Visible AI upload/replacement and background Native reading still continue while scrolling; only the extra offscreen GPU-preparation candidate remains disabled.
+
+Host/build/installed identities and current device checks are recorded in frozen output manifests and device notes. No claim of sustainable optimum, reduced neural MAC, lower temperature/watts, physical scanout acceptance or full Quality2 PASS. Same benchmark certificate supports data-preserving ARM64 upgrade.

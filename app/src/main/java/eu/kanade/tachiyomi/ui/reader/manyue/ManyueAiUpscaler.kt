@@ -269,8 +269,8 @@ object ManyueAiUpscaler {
                     }
                     if (!claimed) continue
                     if (!requestIsCurrent(req)) {
-                        releaseClaim(req, requeue = false)
                         cancel(req.token)
+                        releaseClaim(req, requeue = false)
                         continue
                     }
                     if (req.cachePreflight.outcome is ManyueAiCacheProbe.Hit<*>) {
@@ -284,8 +284,8 @@ object ManyueAiUpscaler {
                         }
                         req.cachedImageLease = pinnedImage?.lease
                         if (!requestIsCurrent(req)) {
-                            releaseClaim(req, requeue = false)
                             cancel(req.token)
+                            releaseClaim(req, requeue = false)
                             continue
                         }
                         if (!req.cachePreflight.bypassesPreInferenceGates) {
@@ -341,13 +341,34 @@ object ManyueAiUpscaler {
 
     private fun releaseClaim(req: Request, requeue: Boolean) {
         closeCachedImageLease(req)
+        val cancelled = synchronized(req) {
+            req.processing = false
+            if (req.cancelled) {
+                req.queued = false
+                if (!req.completed) {
+                    req.completionState = STATE_CANCELLED
+                    req.completed = true
+                }
+                true
+            } else {
+                if (requeue && !req.completed) {
+                    req.queued = true
+                    queue.offer(req)
+                } else {
+                    req.queued = false
+                }
+                false
+            }
+        }
         synchronized(this) {
             if (activeRequest === req) activeRequest = null
-            req.processing = false
-            if (requeue && !req.cancelled && !req.completed) {
-                req.queued = true
-                queue.offer(req)
-            }
+        }
+        if (cancelled) {
+            // A cooperative cancellation can hand cleanup to the worker before Native starts.
+            // This request has no process to finish it, so close its input here without re-notifying.
+            req.terminal.complete(STATE_CANCELLED)
+            req.inputFile.delete()
+            cleanupFinished()
         }
     }
 
