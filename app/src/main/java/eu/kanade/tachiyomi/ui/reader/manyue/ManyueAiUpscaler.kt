@@ -21,6 +21,45 @@ import java.util.concurrent.PriorityBlockingQueue
 import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
 
+internal sealed class ManyueAiCacheProbe<out T> {
+    object NotAttempted : ManyueAiCacheProbe<Nothing>()
+    object Miss : ManyueAiCacheProbe<Nothing>()
+    data class Hit<T>(val value: T) : ManyueAiCacheProbe<T>()
+    data class Failed(val error: Throwable) : ManyueAiCacheProbe<Nothing>()
+}
+
+/** Memoizes cache lookup results across the worker's pressure-gate polling. */
+internal class ManyueAiCachePreflight<T> {
+    @Volatile
+    var outcome: ManyueAiCacheProbe<T> = ManyueAiCacheProbe.NotAttempted
+        private set
+
+    val bypassesPreInferenceGates: Boolean
+        get() = outcome is ManyueAiCacheProbe.Hit<*>
+
+    // The request has one serialized worker. Keep filesystem work outside synchronized blocks.
+    fun probeOnce(probe: () -> T?): ManyueAiCacheProbe<T> {
+        if (outcome !== ManyueAiCacheProbe.NotAttempted) return outcome
+        outcome = try {
+            probe()?.let { ManyueAiCacheProbe.Hit(it) } ?: ManyueAiCacheProbe.Miss
+        } catch (error: Throwable) {
+            ManyueAiCacheProbe.Failed(error)
+        }
+        return outcome
+    }
+
+    /** Rechecks a hit after claim, so any returned cache lease can protect its file through READY. */
+    fun revalidateHit(probe: () -> T?): ManyueAiCacheProbe<T> {
+        if (outcome !is ManyueAiCacheProbe.Hit<*>) return outcome
+        outcome = try {
+            probe()?.let { ManyueAiCacheProbe.Hit(it) } ?: ManyueAiCacheProbe.Miss
+        } catch (error: Throwable) {
+            ManyueAiCacheProbe.Failed(error)
+        }
+        return outcome
+    }
+}
+
 /**
  * AI upscaling scheduler. Single-thread priority queue.
  * Process() is asynchronous: register -> queue -> listeners notified on main thread.
@@ -123,6 +162,8 @@ object ManyueAiUpscaler {
         internal var lastBlockedReasonMask = 0
         internal var lastReaderGateBlocked = false
         internal var lastWorkPacerBlocked = false
+        internal val cachePreflight = ManyueAiCachePreflight<ManyueEnhancementCache.CachedImage>()
+        internal var cachedImageLease: ManyueEnhancementCache.CacheLease? = null
 
         override fun compareTo(other: Request): Int =
             other.priority.compareTo(this.priority).takeIf { it != 0 }
@@ -184,11 +225,21 @@ object ManyueAiUpscaler {
                         cancel(req.token)
                         continue
                     }
+                    preflightCacheBeforeGate(req)
+                    if (!requestIsCurrent(req)) {
+                        finishBlockedWork(req, cancelled = true)
+                        cancel(req.token)
+                        continue
+                    }
                     val diagnosticsEnabled = ManyuePerformanceDiagnostics.enabled
-                    val readerGateBlocked = ManyueReaderWorkGate.isAiWorkBlocked(effectiveWorkPriority(req))
+                    val applyPreInferenceGates = shouldApplyPreInferenceGates(req)
+                    val readerGateBlocked = applyPreInferenceGates &&
+                        ManyueReaderWorkGate.isAiWorkBlocked(effectiveWorkPriority(req))
                     // Preserve the original short-circuit when diagnostics are off. When enabled,
                     // read the pacer even if the reader gate already blocks so both reasons export.
-                    val workPacerBlocked = if (readerGateBlocked && !diagnosticsEnabled) {
+                    val workPacerBlocked = if (
+                        !applyPreInferenceGates || (readerGateBlocked && !diagnosticsEnabled)
+                    ) {
                         false
                     } else {
                         workPacer.isBlocked()
@@ -217,25 +268,51 @@ object ManyueAiUpscaler {
                         }
                     }
                     if (!claimed) continue
-                    req.processingStartedAt = System.nanoTime() / 1_000_000L
-                    if (req.predictiveStart) ManyuePerformanceDiagnostics.event(
-                        Stage.READ_AHEAD_SELECTED, req.pageIndex, req.token,
-                        Metric.AHEAD_PAGES to (ManyueReadAheadScheduler.policy.distance(
-                            req.chapterId, req.pageIndex, req.generation,
-                        ) ?: 0).toLong(),
-                    )
-                    ManyuePerformanceDiagnostics.event(
-                        Stage.STARTED,
-                        req.pageIndex,
-                        req.token,
-                        Metric.QUEUE_MS to (req.processingStartedAt - req.enqueuedAt).coerceAtLeast(0L),
-                        Metric.PRIORITY to req.priority.toLong(),
-                        Metric.QUEUE_DEPTH to queue.size.toLong(),
-                    )
-                    notifyProgress(req, STATE_PREPARING)
+                    if (!requestIsCurrent(req)) {
+                        releaseClaim(req, requeue = false)
+                        cancel(req.token)
+                        continue
+                    }
+                    if (req.cachePreflight.outcome is ManyueAiCacheProbe.Hit<*>) {
+                        var pinnedImage: ManyueEnhancementCache.PinnedCachedImage? = null
+                        val context = appContext
+                        req.cachePreflight.revalidateHit {
+                            pinnedImage = context?.let {
+                                ManyueEnhancementCache.pinCachedImage(it, cacheKeyFor(req))
+                            }
+                            pinnedImage?.image
+                        }
+                        req.cachedImageLease = pinnedImage?.lease
+                        if (!requestIsCurrent(req)) {
+                            releaseClaim(req, requeue = false)
+                            cancel(req.token)
+                            continue
+                        }
+                        if (!req.cachePreflight.bypassesPreInferenceGates) {
+                            releaseClaim(req, requeue = true)
+                            continue
+                        }
+                    }
                     try {
+                        req.processingStartedAt = System.nanoTime() / 1_000_000L
+                        if (req.predictiveStart) ManyuePerformanceDiagnostics.event(
+                            Stage.READ_AHEAD_SELECTED, req.pageIndex, req.token,
+                            Metric.AHEAD_PAGES to (ManyueReadAheadScheduler.policy.distance(
+                                req.chapterId, req.pageIndex, req.generation,
+                            ) ?: 0).toLong(),
+                        )
+                        ManyuePerformanceDiagnostics.event(
+                            Stage.STARTED,
+                            req.pageIndex,
+                            req.token,
+                            Metric.QUEUE_MS to (req.processingStartedAt - req.enqueuedAt).coerceAtLeast(0L),
+                            Metric.PRIORITY to req.priority.toLong(),
+                            Metric.QUEUE_DEPTH to queue.size.toLong(),
+                        )
+                        notifyProgress(req, STATE_PREPARING)
                         process(req)
                     } finally {
+                        closeCachedImageLease(req)
                         req.processing = false
                         activeRequest = null
                     }
@@ -245,6 +322,38 @@ object ManyueAiUpscaler {
                 }
             }
         }
+    }
+
+    private fun preflightCacheBeforeGate(req: Request) {
+        val context = appContext ?: return
+        if (!shouldPreflightCacheBeforeGate(req, hasContext = true)) return
+        req.cachePreflight.probeOnce {
+            ManyueEnhancementCache.getImage(context, cacheKeyFor(req))
+        }
+    }
+
+    internal fun shouldPreflightCacheBeforeGate(req: Request, hasContext: Boolean): Boolean =
+        hasContext && req.physicalModel != null &&
+            req.cachePreflight.outcome === ManyueAiCacheProbe.NotAttempted
+
+    internal fun shouldApplyPreInferenceGates(req: Request): Boolean =
+        !req.cachePreflight.bypassesPreInferenceGates
+
+    private fun releaseClaim(req: Request, requeue: Boolean) {
+        closeCachedImageLease(req)
+        synchronized(this) {
+            if (activeRequest === req) activeRequest = null
+            req.processing = false
+            if (requeue && !req.cancelled && !req.completed) {
+                req.queued = true
+                queue.offer(req)
+            }
+        }
+    }
+
+    private fun closeCachedImageLease(req: Request) {
+        req.cachedImageLease?.close()
+        req.cachedImageLease = null
     }
 
     /** Choose the nearest prepared future input that has enough lead for this device's cost.
@@ -762,7 +871,13 @@ object ManyueAiUpscaler {
                 bindHybridModel(context, req)
             }
             val key = cacheKeyFor(req)
-            val cachedImage = ManyueEnhancementCache.getImage(context, key)
+            val cachedImage = when (val preflight = req.cachePreflight.outcome) {
+                is ManyueAiCacheProbe.Hit<*> -> preflight.value as? ManyueEnhancementCache.CachedImage
+                    ?: throw IllegalStateException("Invalid cached image preflight result")
+                ManyueAiCacheProbe.Miss -> null
+                is ManyueAiCacheProbe.Failed -> throw preflight.error
+                ManyueAiCacheProbe.NotAttempted -> ManyueEnhancementCache.getImage(context, key)
+            }
             if (cachedImage != null) {
                 req.outputWidth = cachedImage.width
                 req.outputHeight = cachedImage.height
@@ -1039,7 +1154,11 @@ object ManyueAiUpscaler {
             if (state == STATE_FAILED) ManyuePerformanceDiagnostics.event(Stage.AI_FAILED, req.pageIndex, req.token)
             req.inputFile.delete()
             outDir?.deleteRecursively()
-            notify(req, state)
+            try {
+                notify(req, state)
+            } finally {
+                closeCachedImageLease(req)
+            }
             cleanupFinished()
         }
     }

@@ -41,7 +41,9 @@ class WebGpuViewerContinuous(activity: ReaderActivity, val useGap: Boolean = fal
     private val nextPreparation = WebGpuNextPagePreparation<ViewerReaderPage>(
         neighbors = { listOfNotNull(it.prev as? ViewerReaderPage, it.next as? ViewerReaderPage) },
         eligible = { ManyuePrefetchManager.isNextDisplayPage(it.page.chapter.chapter.id ?: 0L, it.page.index) },
-        prepare = { owner, wanted -> owner.aiBridge.updateVisibility(false, prepareNext = wanted) },
+        prepare = { owner, visible, allowPreparation ->
+            owner.aiBridge.updateVisibility(visible, prepareNext = allowPreparation)
+        },
     )
     // Same-APK fast-reading trial missed its prospective benefit gate. Keep benchmark access
     // for further study, without enabling an unaccepted extra GPU workload by default.
@@ -54,8 +56,22 @@ class WebGpuViewerContinuous(activity: ReaderActivity, val useGap: Boolean = fal
 
     internal fun benchmarkPrewarm(enabled: Boolean) {
         nextPreparationEnabled = enabled
-        if (!enabled) nextPreparation.reset()
+        if (!enabled) nextPreparation.reset(visibleManyueOwners)
         state.invalidate()
+    }
+
+    private fun allVisibleAiImagesSubmitted(owners: Set<ViewerReaderPage>): Boolean = owners.all { owner ->
+        val result = owner.aiResult
+        result != null && owner.submittedAiToken == result.token && owner.aiBridge.current(result)
+    }
+
+    private fun updateNextPreparation(owners: Set<ViewerReaderPage>) {
+        if (!nextPreparationEnabled) return
+        nextPreparation.update(
+            visible = owners,
+            revision = manyueHead to manyueGeneration,
+            allowPreparation = owners.isNotEmpty() && allVisibleAiImagesSubmitted(owners),
+        )
     }
 
     override fun isPageVisible(page: ViewerReaderPage): Boolean = page in visibleManyueOwners || super.isPageVisible(page)
@@ -163,7 +179,7 @@ class WebGpuViewerContinuous(activity: ReaderActivity, val useGap: Boolean = fal
                 )
             }
             // Start visible source decisions before a newly admitted background neighbor.
-            nextPreparation.update(if (nextPreparationEnabled) owners else emptySet(), manyueHead to manyueGeneration)
+            updateNextPreparation(owners)
         }
 
         state.onSubmittedImages = { submitted, _ ->
@@ -178,6 +194,7 @@ class WebGpuViewerContinuous(activity: ReaderActivity, val useGap: Boolean = fal
                         ManyueGpuDisplayStatus(ManyueGpuDisplayStatus.State.ACTIVE, effectStrength),
                     )
                 }
+                var submittedCurrentAiImage = false
                 submitted.forEach { image ->
                     val owner = viewerPageFor(image.page) as? ViewerReaderPage ?: return@forEach
                     if (owner !in visibleManyueOwners) return@forEach
@@ -192,10 +209,16 @@ class WebGpuViewerContinuous(activity: ReaderActivity, val useGap: Boolean = fal
                     )
                     if (result != null && owner.submittedAiToken != result.token) {
                         owner.submittedAiToken = result.token
+                        submittedCurrentAiImage = true
                         owner.page.updateEnhancementState(ManyueEnhancementState.AI_READY)
                         owner.page.updateEnhancedImageInfo(result.outputWidth, result.outputHeight)
                         ManyuePerformanceDiagnostics.event(ManyuePerformanceRecorder.Stage.DISPLAYED, owner.page.index, result.token)
                     }
+                }
+                // The final visible AI submission can open the offscreen preparation gate
+                // without waiting for another viewport invalidation/frame callback.
+                if (submittedCurrentAiImage && nextPreparationEnabled) {
+                    updateNextPreparation(visibleManyueOwners)
                 }
             }
         }
@@ -251,9 +274,9 @@ class WebGpuViewerContinuous(activity: ReaderActivity, val useGap: Boolean = fal
 
     override fun destroy() {
         detailFilter.onFailure = null
+        nextPreparation.reset(visibleManyueOwners)
         visibleManyueOwners.forEach { ManyueReadingCoverage.hidden(it) }
         visibleManyueOwners = emptySet()
-        nextPreparation.reset()
         decodeDemand.reset()
         state.onVisibleImages = null
         state.onSubmittedImages = null
@@ -265,7 +288,7 @@ class WebGpuViewerContinuous(activity: ReaderActivity, val useGap: Boolean = fal
     }
 
     override fun refreshManyue() {
-        nextPreparation.reset()
+        nextPreparation.reset(visibleManyueOwners)
         decodeDemand.reset()
         manyuePrefetcher.reset()
         manyueHead = null
