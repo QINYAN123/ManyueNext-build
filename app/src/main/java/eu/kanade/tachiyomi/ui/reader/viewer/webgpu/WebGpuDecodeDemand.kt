@@ -17,8 +17,9 @@ internal class WebGpuDecodeDemand<T : Any>(
         if (changed) preloadWindow(anchor)
         if (changed || pages != visible) {
             visible = pages.toList()
-            // The decoder takes the last prioritized page first: topmost visible wins.
-            pages.asReversed().forEach(prioritizeVisible)
+            // Geometry arrives top-to-bottom. The decoder is LIFO, so the newly revealed
+            // bottom strip wins while every other visible original remains ahead of preloads.
+            pages.forEach(prioritizeVisible)
         }
     }
 

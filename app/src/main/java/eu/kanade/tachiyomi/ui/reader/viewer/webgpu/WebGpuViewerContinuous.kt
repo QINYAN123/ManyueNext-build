@@ -126,7 +126,10 @@ class WebGpuViewerContinuous(activity: ReaderActivity, val useGap: Boolean = fal
             } else emptyList()
             val owners = entries.mapTo(linkedSetOf()) { it.first }
             val pageKeys = owners.mapTo(linkedSetOf()) { (it.page.chapter.chapter.id ?: 0L) to it.page.index }
-            val head = (currentPage as? ViewerReaderPage)?.page
+            val head = WebGpuViewportAiHead.head(
+                owners,
+                currentPage as? ViewerReaderPage,
+            )?.page
             val headKey = head?.let { (it.chapter.chapter.id ?: 0L) to it.index }
             if (head != null && (headKey != manyueHead || manyueGeneration != ManyueRuntimeState.generation)) {
                 manyueHead = headKey
@@ -148,7 +151,10 @@ class WebGpuViewerContinuous(activity: ReaderActivity, val useGap: Boolean = fal
                     entries.map { it.first },
                 )
             }
-            entries.forEach { (owner, image) ->
+            // All visible owners are protected by the manager above. Start bottom work first,
+            // and reset a stale bridge before its source is used by the exposure recorder.
+            for (index in entries.lastIndex downTo 0) {
+                val (owner, image) = entries[index]
                 owner.aiBridge.updateVisibility(true)
                 ManyueReadingCoverage.exposure(
                     owner, owner.aiBridge.source,

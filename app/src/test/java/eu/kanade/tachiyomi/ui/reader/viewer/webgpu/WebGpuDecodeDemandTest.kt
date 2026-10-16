@@ -14,8 +14,8 @@ class WebGpuDecodeDemandTest {
         frame()
         frame(1060, 2376, 5, listOf("head", "bottom", "new-bottom"))
         assertEquals(listOf("head", "head"), windows)
-        assertEquals("new-bottom", priorities[priorities.size - 3])
-        assertEquals("head", priorities.last())
+        assertEquals("head", priorities[priorities.size - 3])
+        assertEquals("new-bottom", priorities.last())
     }
 
     @Test fun `decode revealing short pages refreshes reach at the same screen size`() {
@@ -29,13 +29,13 @@ class WebGpuDecodeDemandTest {
         priorities.clear()
         frame(pages = listOf("head", "bottom", "entering"))
         assertEquals(1, windows.size)
-        assertEquals(listOf("entering", "bottom", "head"), priorities)
+        assertEquals(listOf("head", "bottom", "entering"), priorities)
     }
 
     @Test fun `unchanged frames do not repeatedly rebuild the original queue`() {
         repeat(120) { frame() }
         assertEquals(listOf("head"), windows)
-        assertEquals(listOf("bottom", "head"), priorities)
+        assertEquals(listOf("head", "bottom"), priorities)
     }
 
     @Test fun `reader rebuilding at the same location admits original pages again`() {
@@ -52,5 +52,14 @@ class WebGpuDecodeDemandTest {
         assertEquals(emptyList<String>(), windows)
         frame()
         assertEquals(listOf("head"), windows)
+    }
+
+    @Test fun `three visible strips decode bottom first while preserving middle and top demand`() {
+        // Model the production worker's LIFO take, rather than just callback ordering.
+        frame(pages = listOf("top", "middle", "bottom"))
+        val queue = ArrayDeque(priorities)
+        assertEquals("bottom", queue.removeLast())
+        assertEquals("middle", queue.removeLast())
+        assertEquals("top", queue.removeLast())
     }
 }
