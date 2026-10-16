@@ -94,7 +94,9 @@ internal class ManyueWebGpuPageBridge(
             val decision = PageDecisionReleaseGuard(identity.chapterId, identity.pageIndex, requestGeneration)
             try {
                 val bytes = withContext(Dispatchers.IO) {
-                    page.stream?.invoke()?.let(::readBoundedPrefetchBytes)
+                    val loader = page.chapter.pageLoader
+                    val stream = if (loader != null) loader.openPageStream(page) else page.stream?.invoke()
+                    stream?.let(::readBoundedPrefetchBytes)
                 } ?: error("original source unavailable or exceeds input budget")
                 if (!current() || generation != requestGeneration || mode != requestMode || !wantedForDisplay()) return@launch
                 inputFingerprint = withContext(Dispatchers.IO) { ManyueAiUpscaler.fingerprint(bytes) }

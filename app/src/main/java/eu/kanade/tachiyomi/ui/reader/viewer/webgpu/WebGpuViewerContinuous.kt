@@ -150,6 +150,12 @@ class WebGpuViewerContinuous(activity: ReaderActivity, val useGap: Boolean = fal
             if (head != null && (headKey != manyueHead || manyueGeneration != ManyueRuntimeState.generation)) {
                 manyueHead = headKey
                 manyueGeneration = ManyueRuntimeState.generation
+                ManyuePerformanceDiagnostics.event(
+                    ManyuePerformanceRecorder.Stage.AI_VIEWPORT_HEAD_CHANGED, head.index,
+                    null,
+                    ManyuePerformanceRecorder.Metric.CURRENT_GENERATION to manyueGeneration,
+                    ManyuePerformanceRecorder.Metric.VISIBLE_PAGE_COUNT to owners.size.toLong(),
+                )
                 ManyuePrefetchManager.onPageChanged(headKey!!.first, head.index, pageKeys)
                 // The AI head follows the viewport. This does not change read-through progress.
                 manyuePrefetcher.onPageSelected(head, managerAlreadyUpdated = true)

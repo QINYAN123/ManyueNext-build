@@ -870,6 +870,16 @@ object ManyueAiUpscaler {
             modelIdentity = req.workModel.cacheIdentity,
         )
 
+    /** Runtime-call boundaries include resident startup/waits, not just GPU execution. */
+    private inline fun <T> recordNativeCall(req: Request, block: () -> T): T {
+        ManyuePerformanceDiagnostics.event(Stage.NATIVE_CALL_STARTED, req.pageIndex, req.token)
+        return try {
+            block()
+        } finally {
+            ManyuePerformanceDiagnostics.event(Stage.NATIVE_CALL_FINISHED, req.pageIndex, req.token)
+        }
+    }
+
     private fun process(req: Request) {
         val context = appContext ?: run {
             req.failedAt = System.currentTimeMillis()
@@ -963,19 +973,21 @@ object ManyueAiUpscaler {
             var inferenceDetail: String? = null
             if (req.model.continuousScale) {
                 ManyueAiRuntime.releaseResidentOnWorker()
-                val telemetry = ManyueLiteRuntime.upscale(
-                    modelDir,
-                    req.inputFile,
-                    outFile,
-                    resolved,
-                    req.aiDetailStrength,
-                    isCancelled = { req.cancelled || !requestIsCurrent(req) },
-                    onCancellationReady = { cancel ->
-                        req.nativeCancellation = cancel
-                        if (req.cancelled || !requestIsCurrent(req)) cancel()
-                        notifyProgress(req, STATE_PROCESSING)
-                    },
-                )
+                val telemetry = recordNativeCall(req) {
+                    ManyueLiteRuntime.upscale(
+                        modelDir,
+                        req.inputFile,
+                        outFile,
+                        resolved,
+                        req.aiDetailStrength,
+                        isCancelled = { req.cancelled || !requestIsCurrent(req) },
+                        onCancellationReady = { cancel ->
+                            req.nativeCancellation = cancel
+                            if (req.cancelled || !requestIsCurrent(req)) cancel()
+                            notifyProgress(req, STATE_PROCESSING)
+                        },
+                    )
+                }
                 logFile.writeText(telemetry)
                 ManyuePerformanceDiagnostics.nativeDetail(req.pageIndex, req.token, telemetry)
                 inferenceDetail =
@@ -983,21 +995,23 @@ object ManyueAiUpscaler {
                     if (req.aiDetailStrength <= 0) "；AI 修复强度为 0，仅普通插值" else ""
             } else {
                 ManyueLiteRuntime.releaseOnWorker()
-                val telemetry = ManyueAiRuntime.upscaleResident(
-                    context = context,
-                    inputFile = req.inputFile,
-                    outputFile = outFile,
-                    modelDir = modelDir,
-                    logFile = logFile,
-                    model = req.workModel,
-                    targetWidth = resolved,
-                    isCancelled = { nativeRequestCancelled(req) },
-                    isConfigurationCurrent = { requestConfigurationCurrent(req) },
-                    onProcessStarted = {
-                        req.runningProcess = it
-                        notifyProgress(req, STATE_PROCESSING)
-                    },
-                )
+                val telemetry = recordNativeCall(req) {
+                    ManyueAiRuntime.upscaleResident(
+                        context = context,
+                        inputFile = req.inputFile,
+                        outputFile = outFile,
+                        modelDir = modelDir,
+                        logFile = logFile,
+                        model = req.workModel,
+                        targetWidth = resolved,
+                        isCancelled = { nativeRequestCancelled(req) },
+                        isConfigurationCurrent = { requestConfigurationCurrent(req) },
+                        onProcessStarted = {
+                            req.runningProcess = it
+                            notifyProgress(req, STATE_PROCESSING)
+                        },
+                    )
+                }
                 logFile.writeText(telemetry)
                 ManyuePerformanceDiagnostics.nativeDetail(req.pageIndex, req.token, telemetry)
                 val backend = org.json.JSONObject(telemetry).getString("backend")

@@ -26,7 +26,6 @@ import tachiyomi.domain.chapter.service.ChapterRecognition
 import tachiyomi.domain.library.service.LibraryPreferences
 import tachiyomi.domain.manga.model.Manga
 import tachiyomi.source.local.isLocal
-import java.lang.Long.max
 import java.util.TreeSet
 import kotlin.time.Clock
 
@@ -85,10 +84,6 @@ class SyncChaptersWithSource(
             }
         }
 
-        // Used to not set upload date of older chapters
-        // to a higher value than newer chapters
-        var maxSeenUploadDate = 0L
-
         for (sourceChapter in sourceChapters) {
             var chapter = sourceChapter
 
@@ -107,14 +102,8 @@ class SyncChaptersWithSource(
             val dbChapter = dbChapters.find { it.url == chapter.url }
 
             if (dbChapter == null) {
-                val toAddChapter = if (chapter.dateUpload == 0L) {
-                    val altDateUpload = if (maxSeenUploadDate == 0L) nowMillis else maxSeenUploadDate
-                    chapter.copy(dateUpload = altDateUpload)
-                } else {
-                    maxSeenUploadDate = max(maxSeenUploadDate, sourceChapter.dateUpload)
-                    chapter
-                }
-                newChapters.add(toAddChapter)
+                // Keep missing source upload dates unknown instead of substituting fetch time.
+                newChapters.add(chapter)
             } else {
                 if (shouldUpdateDbChapter.await(dbChapter, chapter)) {
                     val shouldRenameChapter = downloadProvider.isChapterDirNameChanged(dbChapter, chapter) &&

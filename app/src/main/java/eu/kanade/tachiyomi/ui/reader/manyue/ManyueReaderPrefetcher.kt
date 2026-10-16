@@ -231,8 +231,8 @@ class ManyueReaderPrefetcher(context: Context) {
             }
         }
         if (ready != Page.State.Ready) return@withContext null
-        val stream = page.stream ?: return@withContext null
-        readBoundedPrefetchBytes(stream())
+        val stream = loader.openPageStream(page) ?: return@withContext null
+        readBoundedPrefetchBytes(stream)
     }
 
     fun reset() {

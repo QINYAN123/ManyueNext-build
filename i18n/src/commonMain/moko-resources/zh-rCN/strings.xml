@@ -228,6 +228,7 @@
     <string name="set_as_cover">设为封面</string>
     <string name="cover_updated">封面已更新</string>
     <string name="chapter_progress">第 %1$d 页</string>
+    <string name="chapter_upload_date_unknown">上传时间未知</string>
     <string name="no_next_chapter">后面没有啦</string>
     <string name="decode_image_error">加载图片失败</string>
     <string name="confirm_set_image_as_cover">要将此页设为封面吗？</string>

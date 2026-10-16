@@ -28,13 +28,13 @@ ORDER BY date_fetch DESC;
 getRecentUpdates:
 SELECT *
 FROM updatesView
-WHERE dateUpload > :after
+WHERE (dateUpload > :after OR (dateUpload = 0 AND datefetch > :after))
 LIMIT :limit;
 
 getRecentUpdatesWithFilters:
 SELECT *
 FROM updatesView
-WHERE dateUpload > :after
+WHERE (dateUpload > :after OR (dateUpload = 0 AND datefetch > :after))
 AND (:read IS NULL OR read = :read)
 -- Started means some progress but not finished, Read means finished chapter, thus:
 AND (
@@ -79,5 +79,5 @@ getUpdatesByReadStatus:
 SELECT *
 FROM updatesView
 WHERE read = :read
-AND dateUpload > :after
+AND (dateUpload > :after OR (dateUpload = 0 AND datefetch > :after))
 LIMIT :limit;

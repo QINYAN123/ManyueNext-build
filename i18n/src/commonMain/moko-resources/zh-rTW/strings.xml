@@ -235,6 +235,7 @@
     <string name="confirm_delete_chapters">確定要刪除所選的章節嗎？</string>
     <string name="error_category_exists">已有名稱相同的類別！</string>
     <string name="chapter_progress">第 %1$d 頁</string>
+    <string name="chapter_upload_date_unknown">上傳時間未知</string>
     <string name="no_next_chapter">找不到下一章</string>
     <string name="transition_finished">已閱畢：</string>
     <string name="transition_next">接下來：</string>

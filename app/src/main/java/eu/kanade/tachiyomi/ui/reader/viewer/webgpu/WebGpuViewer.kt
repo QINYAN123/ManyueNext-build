@@ -68,6 +68,7 @@ import logcat.LogPriority
 import mihon.app.di.appGraph
 import tachiyomi.core.common.util.system.logcat
 import java.util.TreeSet
+import java.io.FileNotFoundException
 import java.util.concurrent.Executors
 import kotlin.math.abs
 import kotlin.math.min
@@ -1205,7 +1206,13 @@ open class WebGpuViewer(
                 synchronized(lock) {
                     if (pageInCache(page) && page.state == PageState.LOADING) {
                         page.state = PageState.IDLE
-                        if (page.page.status == Page.State.Ready && !page.isDecoded) {
+                        val failure = page.page.status as? Page.State.Error
+                        if (failure != null && !page.isDecoded && !page.imagePage.destroyed) {
+                            val oldImagePage = page.imagePage
+                            page.imagePage = ErrorPage(failure.error.message ?: "Failed to load image", page.spreadPosition)
+                            cleanupImage(oldImagePage)
+                            page.imagePage.invalidate()
+                        } else if (page.page.status == Page.State.Ready && !page.isDecoded) {
                             queueForDecode(
                                 page,
                                 prioritize = isPageVisible(page),
@@ -1226,7 +1233,15 @@ open class WebGpuViewer(
             return
         }
 
-        val stream = page.page.stream?.invoke() ?: run {
+        val stream = try {
+            page.page.stream?.invoke()
+        } catch (error: FileNotFoundException) {
+            if (page.page.chapter.pageLoader?.recoverMissingSource(page.page, error) != true) throw error
+            // Do not await a network request on the single decode worker. Its existing
+            // status watcher requeues this page when Ready; other cached pages can decode.
+            startPageLoad(page)
+            return
+        } ?: run {
             synchronized(lock) { if (pageInCache(page)) page.state = PageState.IDLE }
             return
         }

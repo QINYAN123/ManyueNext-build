@@ -697,6 +697,28 @@ class ReaderActivity : BaseActivity() {
         val webtoon = viewModel.state.value.viewer as? WebtoonViewer
         val webgpu = viewModel.state.value.viewer as? eu.kanade.tachiyomi.ui.reader.viewer.webgpu.WebGpuViewerContinuous
         return org.json.JSONObject().apply {
+            val current = viewModel.state.value
+            put("readerResumed", manyueReaderResumed)
+            put("currentPage", current.currentPage)
+            current.viewerChapters?.let { chapters ->
+                // Process-local object identity only, never a database ID or title. Drivers
+                // still verify the actual UI header at each arm/recreation boundary.
+                put("chapterInstance", System.identityHashCode(chapters.currChapter))
+                put("pageCount", chapters.currChapter.pages?.size ?: 0)
+                put("progressSnapshotScope", "in_memory;not_database_receipt")
+                put("chapterProgress", org.json.JSONArray().apply {
+                    listOf("previous" to chapters.prevChapter, "current" to chapters.currChapter, "next" to chapters.nextChapter)
+                        .forEach { (role, chapter) ->
+                            if (chapter != null) put(org.json.JSONObject().apply {
+                                put("role", role)
+                                put("chapterInstance", System.identityHashCode(chapter))
+                                put("read", chapter.chapter.read)
+                                put("lastPageRead", chapter.chapter.last_page_read)
+                                put("requestedPage", chapter.requestedPage)
+                            })
+                        }
+                })
+            }
             put("viewer", if (webtoon != null) "webtoon" else if (webgpu != null) "webgpu_continuous" else "other")
             put("nextAiPreparation", webgpu?.nextPreparationEnabled ?: false)
             put("latestFramePresentationRequested", ca.mpreg.webgpuviewer.renderer.WebGpuRenderer.benchmarkLatestFramePresentation)

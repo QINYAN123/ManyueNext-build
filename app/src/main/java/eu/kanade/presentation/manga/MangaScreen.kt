@@ -775,7 +775,11 @@ private fun LazyListScope.sharedChapterItems(
                     } else {
                         item.chapter.name
                     },
-                    date = relativeDateText(item.chapter.dateUpload),
+                    date = if (item.chapter.dateUpload == 0L) {
+                        stringResource(MR.strings.chapter_upload_date_unknown)
+                    } else {
+                        relativeDateText(item.chapter.dateUpload)
+                    },
                     readProgress = item.chapter.lastPageRead
                         .takeIf { !item.chapter.read && it > 0L }
                         ?.let {

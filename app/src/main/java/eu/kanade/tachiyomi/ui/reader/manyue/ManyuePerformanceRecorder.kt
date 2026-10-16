@@ -43,6 +43,9 @@ internal class ManyuePerformanceRecorder(
         PREFETCH_ENTER,
         PREFETCH_EXIT,
         PREFETCH_CACHE_PRESSURE,
+        AI_VIEWPORT_HEAD_CHANGED,
+        NATIVE_CALL_STARTED,
+        NATIVE_CALL_FINISHED,
     }
 
     enum class Metric {
@@ -101,6 +104,7 @@ internal class ManyuePerformanceRecorder(
         READER_GATE_BLOCKED,
         WORK_PACER_BLOCKED,
         BLOCKED_ELAPSED_MS,
+        VISIBLE_PAGE_COUNT,
     }
 
     data class Event(val timeNs: Long, val stage: Stage, val page: Int, val job: Int, val metrics: Map<Metric, Long>)

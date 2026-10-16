@@ -13,10 +13,15 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.suspendCancellableCoroutine
 import tachiyomi.core.common.util.lang.launchIO
 import tachiyomi.core.common.util.lang.withIOContext
+import java.io.FileNotFoundException
+import java.io.InputStream
 import java.util.concurrent.PriorityBlockingQueue
 import kotlin.concurrent.atomics.AtomicInt
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
@@ -38,6 +43,8 @@ internal class HttpPageLoader(
      * A queue used to manage requests one by one while allowing priorities.
      */
     private val queue = PriorityBlockingQueue<PriorityPage>()
+    private val recoveryLock = Any()
+    private val recycledSignal = MutableStateFlow(false)
 
     private val preloadSize = 4
 
@@ -59,6 +66,43 @@ internal class HttpPageLoader(
     }
 
     override var isLocal: Boolean = false
+
+    override fun recoverMissingSource(page: ReaderPage, error: FileNotFoundException): Boolean {
+        val url = page.imageUrl ?: return false
+        if (chapterCache.getImageFile(url).exists()) return false
+        return synchronized(recoveryLock) {
+            if (isRecycled) return false
+            synchronized(page) {
+                when (page.status) {
+                    Page.State.Ready -> {
+                        // A Ready stream can outlive the disk LRU entry (or cache clearing).
+                        // Reuse the serial source queue; concurrent AI/decoder recovery must
+                        // not create parallel downloads or force-refresh an existing file.
+                        page.status = Page.State.Queue
+                        queue.offer(PriorityPage(page, PriorityPage.DEFAULT))
+                        true
+                    }
+                    Page.State.Queue, Page.State.LoadPage, Page.State.DownloadImage -> true
+                    is Page.State.Error -> false
+                }
+            }
+        }
+    }
+
+    override suspend fun openPageStream(page: ReaderPage): InputStream? = withIOContext {
+        try {
+            super.openPageStream(page)
+        } catch (error: FileNotFoundException) {
+            if (!recoverMissingSource(page, error)) throw error
+            val status = combine(page.statusFlow, recycledSignal) { status, recycled ->
+                if (recycled) throw CancellationException("Page loader recycled during source recovery")
+                status
+            }.first { it == Page.State.Ready || it is Page.State.Error }
+            if (status is Page.State.Error) throw status.error
+            // One recovery only: a second missing/denied file is a real failure, not a loop.
+            super.openPageStream(page)
+        }
+    }
 
     /**
      * Returns the page list for a chapter. It tries to return the page list from the local cache,
@@ -123,9 +167,12 @@ internal class HttpPageLoader(
     }
 
     override fun recycle() {
-        super.recycle()
-        scope.cancel()
-        queue.clear()
+        synchronized(recoveryLock) {
+            super.recycle()
+            recycledSignal.value = true
+            scope.cancel()
+            queue.clear()
+        }
 
         // Cache current page list progress for online chapters to allow a faster reopen
         chapter.pages?.let { pages ->

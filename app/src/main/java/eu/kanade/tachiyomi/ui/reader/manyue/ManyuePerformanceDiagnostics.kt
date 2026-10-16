@@ -101,6 +101,8 @@ object ManyuePerformanceDiagnostics {
                         "Pre-request visibility waits pair by page, captured generation, and event time.",
                         "CACHE_HIT is distinct from new inference. Events can begin/end outside the capture window.",
                         "INFER_MS includes native tile preparation, dispatch and stitching, not only GPU execution.",
+                        "NATIVE_CALL_STARTED/FINISHED bracket the runtime wrapper including startup/waits, not an isolated GPU kernel; FINISHED also occurs on failure/cancellation.",
+                        "AI_VIEWPORT_HEAD_CHANGED records the actual bottom visible AI head at head/generation changes; page is local to the chapter, job=0. It is not reading progress or a draw receipt.",
                         "OUTPUT_TILE and GPU_READBACK_BYTES are bounded numeric native telemetry; GPU device names are not exported.",
                         "SWAP_WAIT_NS includes scheduling and safety gates after base tiles are ready.",
                         "SWAP_CPU_NS measures the view commit; later GPU drawing is in frame samples.",
