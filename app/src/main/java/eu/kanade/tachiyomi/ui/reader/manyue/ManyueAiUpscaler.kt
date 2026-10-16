@@ -141,6 +141,7 @@ object ManyueAiUpscaler {
         @Volatile var outputHeight: Int = 0,
         @Volatile var predictiveStart: Boolean = false,
         val benchmarkNamespace: Int = ManyueBenchmarkControl.cacheNamespace,
+        val readerSessionEpoch: Long = ManyueReaderForegroundGate.currentSessionEpoch,
     ) : Comparable<Request> {
         /** Selected mode stays fixed; only the serial worker may bind a physical hybrid model. */
         @Volatile internal var physicalModel: ManyueAiModel? =
@@ -233,6 +234,8 @@ object ManyueAiUpscaler {
                     }
                     val diagnosticsEnabled = ManyuePerformanceDiagnostics.enabled
                     val applyPreInferenceGates = shouldApplyPreInferenceGates(req)
+                    val foregroundBlocked = applyPreInferenceGates &&
+                        !ManyueReaderForegroundGate.isForeground(req.readerSessionEpoch)
                     val readerGateBlocked = applyPreInferenceGates &&
                         ManyueReaderWorkGate.isAiWorkBlocked(effectiveWorkPriority(req))
                     // Preserve the original short-circuit when diagnostics are off. When enabled,
@@ -244,12 +247,17 @@ object ManyueAiUpscaler {
                     } else {
                         workPacer.isBlocked()
                     }
-                    if (readerGateBlocked || workPacerBlocked) {
-                        if (diagnosticsEnabled) recordBlockedWork(req, readerGateBlocked, workPacerBlocked)
+                    if (foregroundBlocked || readerGateBlocked || workPacerBlocked) {
+                        if (diagnosticsEnabled && (readerGateBlocked || workPacerBlocked)) {
+                            recordBlockedWork(req, readerGateBlocked, workPacerBlocked)
+                        }
                         synchronized(this@ManyueAiUpscaler) {
                             if (!req.cancelled && !req.completed) queue.offer(req)
                         }
-                        Thread.sleep(workPacer.pollDelayMillis(readerGateBlocked))
+                        Thread.sleep(
+                            if (foregroundBlocked) ManyueReaderForegroundGate.POLL_DELAY_MS
+                            else workPacer.pollDelayMillis(readerGateBlocked),
+                        )
                         continue
                     }
                     finishBlockedWork(req, cancelled = false)
@@ -416,9 +424,11 @@ object ManyueAiUpscaler {
         @Suppress("UNUSED_PARAMETER") anime4kOverlay: Boolean = false,
         aiDetailStrength: Int = if (model.continuousScale) ManyueRuntimeState.aiDetailStrength else 0,
     ): String {
+        val readerSessionEpoch = ManyueReaderForegroundGate.currentSessionEpoch
         val requestKey = listOf(
             mangaId, chapterId, pageIndex, targetMode, targetWidth, targetScaleTenths,
             expectedMode, generation, sourceFingerprint, model.cacheIdentity, false, aiDetailStrength,
+            readerSessionEpoch,
         ).joinToString("|")
         tokensByRequestKey[requestKey]?.let { existingToken ->
             val existing = requests[existingToken]
@@ -436,6 +446,7 @@ object ManyueAiUpscaler {
             sourceWidth, sourceHeight, targetMode, targetWidth, targetScaleTenths, priority,
             expectedMode, generation, sourceFingerprint, requestKey = requestKey,
             model = model, anime4kOverlay = false, aiDetailStrength = aiDetailStrength,
+            readerSessionEpoch = readerSessionEpoch,
         )
         requests[token] = req
         tokensByRequestKey[requestKey] = token
@@ -871,13 +882,41 @@ object ManyueAiUpscaler {
         )
 
     /** Runtime-call boundaries include resident startup/waits, not just GPU execution. */
-    private inline fun <T> recordNativeCall(req: Request, block: () -> T): T {
-        ManyuePerformanceDiagnostics.event(Stage.NATIVE_CALL_STARTED, req.pageIndex, req.token)
+    private inline fun <T> recordNativeCall(req: Request, block: () -> T): T? {
+        val entry = awaitNativeEntry(req) ?: return null
         return try {
             block()
         } finally {
             ManyuePerformanceDiagnostics.event(Stage.NATIVE_CALL_FINISHED, req.pageIndex, req.token)
+            entry.close()
         }
+    }
+
+    /**
+     * Pause is a wait condition, not request cancellation. The final claim is repeated here after
+     * awaitReaderIdle so pause racing with the runtime boundary cannot admit a later Native call.
+     */
+    private fun awaitNativeEntry(req: Request): ManyueReaderForegroundGate.NativeEntryLease? {
+        val previousState = req.progressState
+        var waiting = false
+        while (requestIsCurrent(req)) {
+            when (val attempt = ManyueReaderForegroundGate.tryBeginNativeEntry(req.readerSessionEpoch) {
+                // Emitting this under the gate lock orders it before a racing READER_PAUSED marker.
+                ManyuePerformanceDiagnostics.event(Stage.NATIVE_CALL_STARTED, req.pageIndex, req.token)
+            }) {
+                is ManyueReaderForegroundGate.NativeEntryAttempt.Entered -> {
+                    if (waiting && requestIsCurrent(req)) notifyProgress(req, previousState)
+                    return attempt.lease
+                }
+                ManyueReaderForegroundGate.NativeEntryAttempt.Paused -> {
+                    if (!waiting) notifyProgress(req, STATE_WAITING_RESOURCES)
+                    waiting = true
+                    Thread.sleep(ManyueReaderForegroundGate.POLL_DELAY_MS)
+                }
+                ManyueReaderForegroundGate.NativeEntryAttempt.StaleSession -> return null
+            }
+        }
+        return null
     }
 
     private fun process(req: Request) {
@@ -925,6 +964,12 @@ object ManyueAiUpscaler {
             }
 
             val modelDir = ensureModel(context, req.workModel)
+            // A cache hit above may finish while paused. A cache miss waits before probing or
+            // entering the model runtime, both of which can trigger Native startup work.
+            if (!awaitReaderIdle(req)) {
+                state = STATE_CANCELLED
+                return
+            }
             if (ManyueAiRuntime.probe(context, req.workModel) != ManyueAiRuntime.Capability.READY) {
                 req.failedAt = System.currentTimeMillis()
                 return
@@ -987,6 +1032,9 @@ object ManyueAiUpscaler {
                             notifyProgress(req, STATE_PROCESSING)
                         },
                     )
+                } ?: run {
+                    state = STATE_CANCELLED
+                    return
                 }
                 logFile.writeText(telemetry)
                 ManyuePerformanceDiagnostics.nativeDetail(req.pageIndex, req.token, telemetry)
@@ -1011,6 +1059,9 @@ object ManyueAiUpscaler {
                             notifyProgress(req, STATE_PROCESSING)
                         },
                     )
+                } ?: run {
+                    state = STATE_CANCELLED
+                    return
                 }
                 logFile.writeText(telemetry)
                 ManyuePerformanceDiagnostics.nativeDetail(req.pageIndex, req.token, telemetry)
@@ -1067,13 +1118,18 @@ object ManyueAiUpscaler {
                     // file untouched and select the verified overlay file only on full success.
                     val overlayFile = File(outDir, "anime4k.png")
                     val applied = try {
-                        ManyueAiRuntime.applyAnime4kOverlay(
-                            context = context,
-                            inputFile = outFile,
-                            outputFile = overlayFile,
-                            logFile = logFile,
-                            isCancelled = { req.cancelled || !requestIsCurrent(req) },
-                        )
+                        recordNativeCall(req) {
+                            ManyueAiRuntime.applyAnime4kOverlay(
+                                context = context,
+                                inputFile = outFile,
+                                outputFile = overlayFile,
+                                logFile = logFile,
+                                isCancelled = { req.cancelled || !requestIsCurrent(req) },
+                            )
+                        } ?: run {
+                            state = STATE_CANCELLED
+                            return
+                        }
                     } catch (cancelled: ManyueAiRuntime.CancelledException) {
                         throw cancelled
                     } catch (error: Throwable) {
@@ -1180,7 +1236,9 @@ object ManyueAiUpscaler {
             req.runningProcess = null
             req.nativeCancellation = null
             req.queued = false
-            if (req.cancelled) state = STATE_CANCELLED
+            if (req.cancelled || !requestConfigurationCurrent(req) ||
+                !ManyueReaderForegroundGate.isSessionCurrent(req.readerSessionEpoch)
+            ) state = STATE_CANCELLED
             req.completionState = state
             req.completed = true
             if (state == STATE_READY && ManyuePerformanceDiagnostics.enabled) {
@@ -1201,13 +1259,16 @@ object ManyueAiUpscaler {
     private fun awaitReaderIdle(req: Request): Boolean {
         val previousState = req.progressState
         var waited = false
-        while (ManyueReaderWorkGate.isAiWorkBlocked(effectiveWorkPriority(req))) {
+        while (ManyueReaderWorkGate.isAiWorkBlocked(effectiveWorkPriority(req)) ||
+            !ManyueReaderForegroundGate.isForeground(req.readerSessionEpoch)
+        ) {
             if (!requestIsCurrent(req)) return false
             if (!waited) notifyProgress(req, STATE_WAITING_RESOURCES)
             waited = true
-            Thread.sleep(80L)
+            Thread.sleep(ManyueReaderForegroundGate.POLL_DELAY_MS)
         }
         if (waited && requestIsCurrent(req)) notifyProgress(req, previousState)
+        // The final atomic Native-entry claim handles a pause that races with this return.
         return requestIsCurrent(req)
     }
 
@@ -1234,7 +1295,8 @@ object ManyueAiUpscaler {
     }
 
     private fun requestIsCurrent(req: Request): Boolean {
-        return !req.cancelled && requestConfigurationCurrent(req)
+        return !req.cancelled && requestConfigurationCurrent(req) &&
+            ManyueReaderForegroundGate.isSessionCurrent(req.readerSessionEpoch)
     }
 
     private fun bindHybridModel(context: Context, req: Request) {
@@ -1259,7 +1321,7 @@ object ManyueAiUpscaler {
 
     internal fun nativeRequestCancelled(req: Request): Boolean {
         val configurationCurrent = requestConfigurationCurrent(req)
-        return !configurationCurrent || req.cancelled
+        return !configurationCurrent || !ManyueReaderForegroundGate.isSessionCurrent(req.readerSessionEpoch) || req.cancelled
     }
 
     private fun requestConfigurationCurrent(req: Request): Boolean {

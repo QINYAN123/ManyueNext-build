@@ -5,6 +5,7 @@ import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.ui.reader.model.ReaderPage
 import eu.kanade.tachiyomi.ui.reader.metadata.SourceImageBoundsDecoder
 import java.io.InputStream
+import java.lang.ref.WeakReference
 import java.util.concurrent.CancellationException
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CoroutineScope
@@ -37,8 +38,9 @@ import tachiyomi.core.common.util.system.logcat
 class ManyueReaderPrefetcher(context: Context) {
 
     private val appContext = context.applicationContext
+    private val readerOwner = ManyueReaderForegroundGate.ownerReference(context)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-    private val coordinator = ManyuePrefetchJobCoordinator(scope)
+    private val coordinator = ManyuePrefetchJobCoordinator(scope, readerOwner)
     @Volatile private var lastMangaId: Long? = null
     @Volatile private var lastChapterId: Long? = null
 
@@ -298,7 +300,12 @@ private class PrefetchWindowMovedCancellationException : CancellationException(
 )
 
 /** One serialized cursor over a bounded directional window. */
-internal class ManyuePrefetchJobCoordinator(private val scope: CoroutineScope) {
+internal class ManyuePrefetchJobCoordinator(
+    private val scope: CoroutineScope,
+    private val readerOwner: WeakReference<Any>? = null,
+) {
+
+    private val readerSessionEpoch = ManyueReaderForegroundGate.currentSessionEpoch
 
     private data class CursorKey(val chapterId: Long, val generation: Long, val mode: Int)
 
@@ -333,6 +340,33 @@ internal class ManyuePrefetchJobCoordinator(private val scope: CoroutineScope) {
 
     internal val activeWorkerReservationCount: Int
         get() = synchronized(this) { workerReservations.size }
+
+    internal data class CursorCheckpoint(
+        val chapterId: Long?,
+        val generation: Long?,
+        val mode: Int?,
+        val selectedPage: Int,
+        val pageCount: Int,
+        val nextPageIndex: Int,
+        val direction: ManyueAiSafetyPolicy.PrefetchDirection,
+        val failedPages: Set<Int>,
+        val workerTokens: Set<String>,
+    )
+
+    internal fun cursorCheckpoint(): CursorCheckpoint = synchronized(this) {
+        val key = activeKey
+        CursorCheckpoint(
+            chapterId = key?.chapterId,
+            generation = key?.generation,
+            mode = key?.mode,
+            selectedPage = selectedPage,
+            pageCount = pageCount,
+            nextPageIndex = nextPageIndex,
+            direction = direction,
+            failedPages = failedPages.toSet(),
+            workerTokens = workerReservations.keys.toSet(),
+        )
+    }
 
     internal suspend fun awaitCursorIdle() {
         while (true) {
@@ -408,6 +442,7 @@ internal class ManyuePrefetchJobCoordinator(private val scope: CoroutineScope) {
 
         while (true) {
             ensureCurrent(key.chapterId, key.generation, key.mode)
+            awaitReaderForeground(key.chapterId, key.generation, key.mode)
             val pageIndex = claimNextPage(key) ?: return
             prefetchBoundary(ManyuePrefetchPhase.CANDIDATE, pageIndex, key.generation)
             val work = synchronized(this) {
@@ -446,6 +481,14 @@ internal class ManyuePrefetchJobCoordinator(private val scope: CoroutineScope) {
             withTimeoutOrNull(STATE_POLL_MS) { waiter.join() }
         }
         waiter.await()
+    }
+
+    private suspend fun awaitReaderForeground(chapterId: Long, generation: Long, mode: Int) {
+        ensureCurrent(chapterId, generation, mode)
+        if (!ManyueReaderForegroundGate.awaitForeground(readerOwner)) {
+            throw CancellationException("Stale Manyue reader owner")
+        }
+        ensureCurrent(chapterId, generation, mode)
     }
 
     private fun claimNextPage(key: CursorKey): Int? = synchronized(this) {
@@ -540,6 +583,7 @@ internal class ManyuePrefetchJobCoordinator(private val scope: CoroutineScope) {
 
     fun isCurrent(chapterId: Long, generation: Long, mode: Int): Boolean {
         return activeKey == CursorKey(chapterId, generation, mode) &&
+            ManyueReaderForegroundGate.isSessionCurrent(readerSessionEpoch) &&
             ManyueRuntimeState.generation == generation &&
             ManyueRuntimeState.modeInt == mode &&
             ManyueEnhancementMode.fromInt(mode).usesAi()
@@ -570,12 +614,15 @@ internal class ManyuePrefetchJobCoordinator(private val scope: CoroutineScope) {
             }
             return if (inputPreparation) maxOf(INPUT_PREPARATION_PRIORITY, basePriority) else basePriority
         }
-        while (ManyueReaderWorkGate.isAiWorkBlocked(priority()) ||
-            (mode == ManyueEnhancementMode.AUTO.value && ManyueRuntimeState.displayWidthPx <= 0)
-        ) {
+        while (true) {
+            awaitReaderForeground(chapterId, generation, mode)
+            if (!ManyueReaderWorkGate.isAiWorkBlocked(priority()) &&
+                (mode != ManyueEnhancementMode.AUTO.value || ManyueRuntimeState.displayWidthPx > 0)
+            ) break
             ensureCurrent(chapterId, generation, mode)
             delay(READER_WORK_GATE_POLL_MS)
         }
+        awaitReaderForeground(chapterId, generation, mode)
         ensureCurrent(chapterId, generation, mode)
     }
 
@@ -588,16 +635,41 @@ internal class ManyuePrefetchJobCoordinator(private val scope: CoroutineScope) {
     ): WorkerReservationSlot {
         while (true) {
             ensureCurrent(chapterId, generation, mode)
+            awaitReaderForeground(chapterId, generation, mode)
             if (!isPreparationCurrent(chapterId, generation, mode, pageIndex)) {
                 throw PrefetchWindowMovedCancellationException()
             }
             if (workerReservationSlots.tryAcquire()) {
                 val slot = WorkerReservationSlot { workerReservationSlots.release() }
-                if (isPreparationCurrent(chapterId, generation, mode, pageIndex)) return slot
-                slot.close()
-                throw PrefetchWindowMovedCancellationException()
+                return awaitWorkerReservationSlotStillCurrent(
+                    chapterId,
+                    generation,
+                    mode,
+                    pageIndex,
+                    slot,
+                )
             }
             delay(STATE_POLL_MS)
+        }
+    }
+
+    /** Closes an acquired permit if pause, staleness, or cancellation interrupts validation. */
+    internal suspend fun awaitWorkerReservationSlotStillCurrent(
+        chapterId: Long,
+        generation: Long,
+        mode: Int,
+        pageIndex: Int,
+        slot: WorkerReservationSlot,
+    ): WorkerReservationSlot {
+        try {
+            awaitReaderForeground(chapterId, generation, mode)
+            if (!isPreparationCurrent(chapterId, generation, mode, pageIndex)) {
+                throw PrefetchWindowMovedCancellationException()
+            }
+            return slot
+        } catch (error: Throwable) {
+            slot.close()
+            throw error
         }
     }
 
@@ -662,7 +734,7 @@ internal class ManyuePrefetchJobCoordinator(private val scope: CoroutineScope) {
 
     /** Polling races only the waiter; cancelling it never cancels a shared worker request. */
     suspend fun awaitWorkerCompletion(chapterId: Long, generation: Long, mode: Int, token: String): Int =
-        awaitWhileCurrent(chapterId, generation, mode) {
+        awaitWhileCurrent(chapterId, generation, mode, pauseSensitive = false) {
             ManyueAiUpscaler.awaitCompletion(token)
         }
 
@@ -672,11 +744,14 @@ internal class ManyuePrefetchJobCoordinator(private val scope: CoroutineScope) {
         mode: Int,
         keepStageCurrent: () -> Boolean = { true },
         cancelStageIfStale: () -> Boolean = { false },
+        pauseSensitive: Boolean = true,
         stage: suspend () -> T,
     ): T = coroutineScope {
+        if (pauseSensitive) awaitReaderForeground(chapterId, generation, mode)
         val waiter = async { stage() }
         while (!waiter.isCompleted) {
             ensureCurrent(chapterId, generation, mode)
+            if (pauseSensitive) awaitReaderForeground(chapterId, generation, mode)
             if (!keepStageCurrent() && cancelStageIfStale()) {
                 val moved = PrefetchWindowMovedCancellationException()
                 waiter.cancel(moved)
@@ -688,7 +763,9 @@ internal class ManyuePrefetchJobCoordinator(private val scope: CoroutineScope) {
             // deadline. Nested unconditional sleeps had added hundreds of ms per input.
             withTimeoutOrNull(STATE_POLL_MS) { waiter.join() }
         }
-        waiter.await()
+        val result = waiter.await()
+        if (pauseSensitive) awaitReaderForeground(chapterId, generation, mode)
+        result
     }
 
     fun cancelAll() {

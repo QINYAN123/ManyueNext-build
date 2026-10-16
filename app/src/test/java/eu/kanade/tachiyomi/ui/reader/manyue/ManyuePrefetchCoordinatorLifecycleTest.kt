@@ -1,6 +1,7 @@
 package eu.kanade.tachiyomi.ui.reader.manyue
 
 import java.io.ByteArrayInputStream
+import java.lang.ref.WeakReference
 import java.nio.file.Files
 import java.util.Collections
 import java.util.concurrent.CancellationException
@@ -9,6 +10,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
@@ -911,6 +913,157 @@ class ManyuePrefetchCoordinatorLifecycleTest {
             ManyueReaderWorkGate.release(gateOwner)
             ManyueRuntimeState.updateMode(oldMode)
             scope.cancel()
+        }
+    }
+
+    @Test
+    @OptIn(ExperimentalCoroutinesApi::class)
+    fun `foreground pause preserves queued token and cursor checkpoint for one-time resume`() = runBlocking {
+        val owner = Any()
+        ManyueReaderForegroundGate.onResume(owner)
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default.limitedParallelism(1))
+        val coordinator = ManyuePrefetchJobCoordinator(scope, WeakReference(owner))
+        val pageOneStarted = CompletableDeferred<Unit>()
+        val releasePageOne = CompletableDeferred<Unit>()
+        val tokenTerminal = CompletableDeferred<Unit>()
+        val enqueuedPages = Collections.synchronizedList(mutableListOf<Int>())
+        val pageTwoAttempts = AtomicInteger()
+        val oldMode = ManyueRuntimeState.modeInt
+        val mode = ManyueEnhancementMode.AI_2X.value
+
+        try {
+            ManyueRuntimeState.updateMode(mode)
+            val generation = ManyueRuntimeState.generation
+            coordinator.reconcileAfterDecision(108, 0, generation, 4, mode) { pageIndex, taskGeneration ->
+                if (pageIndex == 1) {
+                    val slot = coordinator.awaitWorkerReservationSlot(108, taskGeneration, mode, pageIndex)
+                    coordinator.retainWorkerReservationUntilTerminal(
+                        chapterId = 108,
+                        generation = taskGeneration,
+                        mode = mode,
+                        pageIndex = pageIndex,
+                        token = "issued-token-1",
+                        reservation = AutoCloseable { },
+                        slot = slot,
+                        awaitTerminal = {
+                            tokenTerminal.await()
+                            ManyueAiUpscaler.STATE_READY
+                        },
+                    )
+                    enqueuedPages += pageIndex
+                    pageOneStarted.complete(Unit)
+                    releasePageOne.await()
+                    ManyuePrefetchWorkOutcome.ENQUEUED
+                } else {
+                    if (pageIndex == 2) pageTwoAttempts.incrementAndGet()
+                    enqueuedPages += pageIndex
+                    ManyuePrefetchWorkOutcome.COMPLETED
+                }
+            }
+
+            withTimeout(5_000) { pageOneStarted.await() }
+            val beforePause = coordinator.cursorCheckpoint()
+            assertEquals(1, coordinator.activeWorkerReservationCount)
+            assertEquals(setOf("issued-token-1"), beforePause.workerTokens)
+            assertEquals(1, beforePause.nextPageIndex)
+
+            ManyueReaderForegroundGate.onPause(owner)
+            releasePageOne.complete(Unit)
+            withTimeout(5_000) {
+                while (coordinator.cursorCheckpoint().nextPageIndex != 2) delay(10)
+            }
+
+            val paused = coordinator.cursorCheckpoint()
+            assertEquals(beforePause.chapterId, paused.chapterId)
+            assertEquals(beforePause.generation, paused.generation)
+            assertEquals(beforePause.mode, paused.mode)
+            assertEquals(beforePause.selectedPage, paused.selectedPage)
+            assertEquals(beforePause.pageCount, paused.pageCount)
+            assertEquals(beforePause.direction, paused.direction)
+            assertEquals(beforePause.failedPages, paused.failedPages)
+            assertEquals(2, paused.nextPageIndex, "the issued page resolves to its exact successor")
+            assertEquals(setOf("issued-token-1"), paused.workerTokens)
+            assertEquals(1, coordinator.activeWorkerReservationCount)
+            assertEquals(listOf(1), enqueuedPages.toList(), "the cursor must park before page 2")
+            assertEquals(0, pageTwoAttempts.get())
+            assertEquals(1, coordinator.activeCursorCount)
+
+            ManyueReaderForegroundGate.onResume(owner)
+            coordinator.awaitCursorIdle()
+
+            assertEquals(listOf(1, 2, 3), enqueuedPages.toList())
+            assertEquals(1, pageTwoAttempts.get(), "resume continues once at the preserved successor")
+            assertEquals(setOf("issued-token-1"), coordinator.cursorCheckpoint().workerTokens)
+
+            tokenTerminal.complete(Unit)
+            withTimeout(5_000) {
+                while (coordinator.activeWorkerReservationCount != 0) delay(10)
+            }
+        } finally {
+            coordinator.cancelAll()
+            scope.cancel()
+            ManyueReaderForegroundGate.onDestroy(owner)
+            ManyueReaderForegroundGate.resetForTest()
+            ManyueRuntimeState.updateMode(oldMode)
+        }
+    }
+
+    @Test
+    @OptIn(ExperimentalCoroutinesApi::class)
+    fun `cancellation while paused after reservation acquire returns the permit`() = runBlocking {
+        val owner = Any()
+        ManyueReaderForegroundGate.onResume(owner)
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default.limitedParallelism(1))
+        val coordinator = ManyuePrefetchJobCoordinator(scope, WeakReference(owner))
+        val workStarted = CompletableDeferred<Unit>()
+        val holdCursor = CompletableDeferred<Unit>()
+        val oldMode = ManyueRuntimeState.modeInt
+        val mode = ManyueEnhancementMode.AI_2X.value
+        ManyueRuntimeState.updateMode(mode)
+        val generation = ManyueRuntimeState.generation
+        val heldSlots = mutableListOf<ManyuePrefetchJobCoordinator.WorkerReservationSlot>()
+
+        try {
+            coordinator.reconcileAfterDecision(109, 0, generation, 8, mode) { _, _ ->
+                workStarted.complete(Unit)
+                holdCursor.await()
+                ManyuePrefetchWorkOutcome.COMPLETED
+            }
+            withTimeout(5_000) { workStarted.await() }
+            repeat(5) { offset ->
+                heldSlots += coordinator.awaitWorkerReservationSlot(109, generation, mode, offset + 1)
+            }
+
+            ManyueReaderForegroundGate.onPause(owner)
+            val cancelledValidation = scope.async(start = CoroutineStart.UNDISPATCHED) {
+                coordinator.awaitWorkerReservationSlotStillCurrent(
+                    109,
+                    generation,
+                    mode,
+                    1,
+                    heldSlots.first(),
+                )
+            }
+            assertTrue(!cancelledValidation.isCompleted, "the acquired slot waits at the paused gate")
+            cancelledValidation.cancel()
+            cancelledValidation.join()
+
+            ManyueReaderForegroundGate.onResume(owner)
+            val replacement = withTimeout(5_000) {
+                coordinator.awaitWorkerReservationSlot(109, generation, mode, 6)
+            }
+            replacement.close()
+            heldSlots.drop(1).forEach { it.close() }
+            heldSlots.first().close()
+            heldSlots.clear()
+        } finally {
+            heldSlots.forEach { it.close() }
+            coordinator.cancelAll()
+            holdCursor.complete(Unit)
+            scope.cancel()
+            ManyueReaderForegroundGate.onDestroy(owner)
+            ManyueReaderForegroundGate.resetForTest()
+            ManyueRuntimeState.updateMode(oldMode)
         }
     }
 

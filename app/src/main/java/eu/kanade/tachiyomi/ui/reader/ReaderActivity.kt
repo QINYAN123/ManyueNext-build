@@ -192,6 +192,7 @@ class ReaderActivity : BaseActivity() {
         windowInsetsController.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
 
         super.onCreate(savedInstanceState)
+        eu.kanade.tachiyomi.ui.reader.manyue.ManyueReaderForegroundGate.onCreate(this)
 
         binding = ReaderActivityBinding.inflate(layoutInflater)
         setContentView(binding.root)
@@ -370,6 +371,7 @@ class ReaderActivity : BaseActivity() {
      * Called when the activity is destroyed. Cleans up the viewer, configuration and any view.
      */
     override fun onDestroy() {
+        eu.kanade.tachiyomi.ui.reader.manyue.ManyueReaderForegroundGate.onDestroy(this)
         saveComfortScale()
         if (eu.kanade.tachiyomi.BuildConfig.BUILD_TYPE == "benchmark") {
             val benchmarkControl = eu.kanade.tachiyomi.ui.reader.manyue.ManyueBenchmarkControl
@@ -396,6 +398,7 @@ class ReaderActivity : BaseActivity() {
         eu.kanade.tachiyomi.ui.reader.manyue.ManyueReadingCoverage.endReader()
         manyueFrameMonitor?.close()
         manyueFrameMonitor = null
+        eu.kanade.tachiyomi.ui.reader.manyue.ManyueReaderForegroundGate.onPause(this)
         ManyuePerformanceDiagnostics.event(Stage.READER_PAUSED)
         lifecycleScope.launchNonCancellable {
             viewModel.updateHistory()
@@ -415,6 +418,7 @@ class ReaderActivity : BaseActivity() {
         manyueReaderResumed = true
         updateManyueFrameMonitor()
         ManyuePerformanceDiagnostics.event(Stage.READER_RESUMED)
+        eu.kanade.tachiyomi.ui.reader.manyue.ManyueReaderForegroundGate.onResume(this)
         recordManyueConfiguration()
         viewModel.restartReadTimer()
         setMenuVisibility(viewModel.state.value.menuVisible)

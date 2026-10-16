@@ -1,0 +1,11 @@
+# v89 阅读器前台生命周期候选
+
+基线：v88 / 131bbcad7a09e7aa8ad00690e462ab25aaba445d。APK SHA-256 d2bfeb8c1bdec9d7cc8bcd9235a6f25c65ce641e07100765a8314449a822c126。
+
+此前源码只有热状态/帧压力/配置代次门控。Reader暂停不会停止预读游标，热监听退出还会释放压力owner，因此后台可能继续启动原生推理。空闲HOME对照零新推理没有因果证明；随后切入18话、跳至20页后立即HOME，已观察到READER_PAUSED后5秒有2次新NATIVE_CALL_STARTED。完整原始证据位于工作区私有日志，最终结果另行记录。
+
+本候选增加独立于滚动压力的前台门控。onCreate先绑定弱引用owner及session，onResume打开同一session，onPause关闭新原生入口，onDestroy使旧session失效。入口认领与开始日志同锁排序，重型原生调用不持有该锁。暂停前已认领的调用可完成并缓存；暂停不等于取消。预读保留游标、在途阶段、token及预算名额，恢复从原处继续；取消和旧owner必须释放等待及名额。正常前台滑动不关闭AI，已完成缓存仍可使用。
+
+关键审查：新Activity在onResume前注册的请求不能被首次resume过期；旧Activity回调不能关闭新owner；取得预读名额后暂停/取消不得泄漏permit。单元及主机检查由制品verification.json记录，真机另报。
+
+不改变模型、Native、shader、采样、输出分辨率或温控阈值，不宣称减少单图神经计算。后台新调用消除不等于证明阅读时更凉；持续热机覆盖、呈现及能效仍需匹配对照。保留v88，候选未经当前设备验证前不作正式Quality2 PASS。
