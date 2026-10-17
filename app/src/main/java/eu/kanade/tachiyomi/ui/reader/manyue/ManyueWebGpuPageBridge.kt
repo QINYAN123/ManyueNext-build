@@ -29,6 +29,7 @@ internal class ManyueWebGpuPageBridge(
 
     private val context = context.applicationContext
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val cancellationRetry = ManyueWebGpuCancellationRetry(scope)
     private val identity = ManyuePageBridge.Identity(
         page.chapter.chapter.manga_id ?: 0L, page.chapter.chapter.id ?: 0L, page.index,
     )
@@ -70,17 +71,32 @@ internal class ManyueWebGpuPageBridge(
     fun updateVisibility(isVisible: Boolean, prepareNext: Boolean = false) {
         visible = isVisible
         prepareAhead = prepareNext
+        cancellationRetry.updateVisibility(isVisible)
         if (!wantedForDisplay()) {
             prepareJob?.cancel()
             prepareJob = null
         }
-        if (!ManyueEnhancementMode.fromInt(ManyueRuntimeState.modeInt).usesAi()) return
+        if (!ManyueEnhancementMode.fromInt(ManyueRuntimeState.modeInt).usesAi()) {
+            cancellationRetry.reset()
+            return
+        }
         if (generation != ManyueRuntimeState.generation || mode != ManyueRuntimeState.modeInt) reset()
+        cancellationRetry.updateVisibility(isVisible)
         if (!wantedForDisplay() || !alive() || page.status != eu.kanade.tachiyomi.source.model.Page.State.Ready) return
         if (readyResult != null) {
             prepareReady()
-        } else if (token == null && startJob?.isActive != true && !terminalFailure) {
-            start()
+        } else if (token == null && !terminalFailure && cancellationRetry.allowsVisibilityStart()) {
+            val activeStart = startJob?.takeIf { it.isActive }
+            if (isVisible && activeStart != null) {
+                cancellationRetry.afterVisibleUpdate(
+                    startJob = activeStart,
+                    currentStartJob = { startJob },
+                    canStart = { canStartVisibleRequest() },
+                    start = ::start,
+                )
+            } else if (activeStart == null) {
+                start()
+            }
         }
     }
 
@@ -99,7 +115,8 @@ internal class ManyueWebGpuPageBridge(
                     stream?.let(::readBoundedPrefetchBytes)
                 } ?: error("original source unavailable or exceeds input budget")
                 if (!current() || generation != requestGeneration || mode != requestMode || !wantedForDisplay()) return@launch
-                inputFingerprint = withContext(Dispatchers.IO) { ManyueAiUpscaler.fingerprint(bytes) }
+                val requestFingerprint = withContext(Dispatchers.IO) { ManyueAiUpscaler.fingerprint(bytes) }
+                inputFingerprint = requestFingerprint
                 var rejection: ManyueAiRequestFactory.Rejection? = null
                 val request = withContext(Dispatchers.IO) {
                     try {
@@ -124,34 +141,56 @@ internal class ManyueWebGpuPageBridge(
                 }
                 token = request
                 cacheKey = ManyueAiUpscaler.cacheKeyForToken(request)
-                val callback = ManyueAiUpscaler.OnAiCompleteListener { received, state, detail ->
-                    if (received != token || generation != requestGeneration || mode != requestMode || !current()) return@OnAiCompleteListener
-                    when (state) {
-                        ManyueAiUpscaler.STATE_READY -> {
-                            cacheKey = ManyueAiUpscaler.cacheKeyForToken(received)
-                            readyResult = ManyueAiUpscaler.coverageResultForToken(received)
-                            if (readyResult == null) {
-                                terminalFailure = true
-                                page.updateEnhancementState(ManyueEnhancementState.FAILED, "AI 结果身份已失效")
-                            } else {
-                                page.updateEnhancementState(ManyueEnhancementState.AI_WAITING_DISPLAY)
-                                prepareReady()
+                val callback = object : ManyueAiUpscaler.OnAiCompleteListener {
+                    override fun onAiComplete(received: String, state: Int, detail: String?) {
+                        if (!ManyueWebGpuCallbackPolicy.isCurrent(
+                                receivedToken = received,
+                                currentToken = token,
+                                requestGeneration = requestGeneration,
+                                bridgeGeneration = generation,
+                                requestMode = requestMode,
+                                bridgeMode = mode,
+                                sourceCurrent = requestFingerprint == inputFingerprint,
+                                listenerCurrent = listener === this,
+                                runtimeCurrent = current(),
+                            )
+                        ) return
+                        when (state) {
+                            ManyueAiUpscaler.STATE_READY -> {
+                                cacheKey = ManyueAiUpscaler.cacheKeyForToken(received)
+                                readyResult = ManyueAiUpscaler.coverageResultForToken(received)
+                                if (readyResult == null) {
+                                    terminalFailure = true
+                                    page.updateEnhancementState(ManyueEnhancementState.FAILED, "AI 结果身份已失效")
+                                } else {
+                                    page.updateEnhancementState(ManyueEnhancementState.AI_WAITING_DISPLAY)
+                                    prepareReady()
+                                }
                             }
-                        }
-                        ManyueAiUpscaler.STATE_PROCESSING -> page.updateEnhancementState(ManyueEnhancementState.AI_PROCESSING)
-                        ManyueAiUpscaler.STATE_PREPARING -> page.updateEnhancementState(ManyueEnhancementState.AI_PREPARING)
-                        ManyueAiUpscaler.STATE_WAITING_RESOURCES -> page.updateEnhancementState(ManyueEnhancementState.AI_WAITING_RESOURCES)
-                        ManyueAiUpscaler.STATE_CANCELLED -> {
-                            prepareJob?.cancel()
-                            prepareJob = null
-                            token = null
-                            listener = null
-                            // Re-entering a cancelled page may enqueue again; it is not a permanent skip.
-                            page.updateEnhancementState(ManyueEnhancementState.AI_QUEUED, detail)
-                        }
-                        else -> {
-                            terminalFailure = true
-                            page.updateEnhancementState(ManyueEnhancementState.FAILED, detail ?: "AI 处理失败，已保留原图")
+                            ManyueAiUpscaler.STATE_PROCESSING -> page.updateEnhancementState(ManyueEnhancementState.AI_PROCESSING)
+                            ManyueAiUpscaler.STATE_PREPARING -> page.updateEnhancementState(ManyueEnhancementState.AI_PREPARING)
+                            ManyueAiUpscaler.STATE_WAITING_RESOURCES -> page.updateEnhancementState(ManyueEnhancementState.AI_WAITING_RESOURCES)
+                            ManyueAiUpscaler.STATE_CANCELLED -> {
+                                prepareJob?.cancel()
+                                prepareJob = null
+                                ManyueAiUpscaler.removeListener(received, this)
+                                token = null
+                                cacheKey = null
+                                listener = null
+                                page.updateEnhancementState(ManyueEnhancementState.AI_QUEUED, detail)
+                                cancellationRetry.afterCancellation(
+                                    startJob = startJob,
+                                    currentStartJob = { startJob },
+                                    canStart = {
+                                        canRetryCancelledRequest(requestGeneration, requestMode, requestFingerprint)
+                                    },
+                                    start = ::start,
+                                )
+                            }
+                            else -> {
+                                terminalFailure = true
+                                page.updateEnhancementState(ManyueEnhancementState.FAILED, detail ?: "AI 处理失败，已保留原图")
+                            }
                         }
                     }
                 }
@@ -205,7 +244,32 @@ internal class ManyueWebGpuPageBridge(
         }
     }
 
+    private fun canStartVisibleRequest(): Boolean =
+        current() && visible && wantedForDisplay() &&
+            page.status == eu.kanade.tachiyomi.source.model.Page.State.Ready &&
+            token == null && readyResult == null && !terminalFailure
+
+    private fun canRetryCancelledRequest(
+        requestGeneration: Long,
+        requestMode: Int,
+        requestFingerprint: String,
+    ): Boolean =
+        ManyueWebGpuCancellationRetryPolicy.canRetry(
+            ownerAlive = alive(),
+            generationCurrent = requestGeneration == generation && requestGeneration == ManyueRuntimeState.generation,
+            modeCurrent = requestMode == mode && requestMode == ManyueRuntimeState.modeInt &&
+                ManyueRuntimeState.aiModel.usesQualityRuntime,
+            sourceCurrent = requestFingerprint == inputFingerprint,
+            sourceReady = page.status == eu.kanade.tachiyomi.source.model.Page.State.Ready,
+            wantedForDisplay = wantedForDisplay(),
+            actuallyVisible = visible,
+            terminalFailure = terminalFailure,
+            hasCurrentToken = token != null,
+            hasReadyResult = readyResult != null,
+        )
+
     fun reset() {
+        cancellationRetry.reset()
         startJob?.cancel()
         prepareJob?.cancel()
         token?.let { t -> listener?.let { ManyueAiUpscaler.removeListener(t, it) } }

@@ -405,6 +405,28 @@ object ManyueAiUpscaler {
     private fun effectiveWorkPriority(req: Request): Int =
         if (req.predictiveStart) maxOf(50, req.priority) else req.priority
 
+    private fun buildRequestKey(
+        mangaId: Long,
+        chapterId: Long,
+        pageIndex: Int,
+        targetMode: Int,
+        targetWidth: Int,
+        targetScaleTenths: Int,
+        expectedMode: Int,
+        generation: Long,
+        sourceFingerprint: String,
+        model: ManyueAiModel,
+        aiDetailStrength: Int,
+        readerSessionEpoch: Long,
+    ): String {
+        // The retired legacy Anime overlay is deliberately normalized out of request identity.
+        return listOf(
+            mangaId, chapterId, pageIndex, targetMode, targetWidth, targetScaleTenths,
+            expectedMode, generation, sourceFingerprint, model.cacheIdentity, false, aiDetailStrength,
+            readerSessionEpoch,
+        ).joinToString("|")
+    }
+
     @Synchronized
     fun register(
         mangaId: Long,
@@ -425,11 +447,10 @@ object ManyueAiUpscaler {
         aiDetailStrength: Int = if (model.continuousScale) ManyueRuntimeState.aiDetailStrength else 0,
     ): String {
         val readerSessionEpoch = ManyueReaderForegroundGate.currentSessionEpoch
-        val requestKey = listOf(
+        val requestKey = buildRequestKey(
             mangaId, chapterId, pageIndex, targetMode, targetWidth, targetScaleTenths,
-            expectedMode, generation, sourceFingerprint, model.cacheIdentity, false, aiDetailStrength,
-            readerSessionEpoch,
-        ).joinToString("|")
+            expectedMode, generation, sourceFingerprint, model, aiDetailStrength, readerSessionEpoch,
+        )
         tokensByRequestKey[requestKey]?.let { existingToken ->
             val existing = requests[existingToken]
             if (existing != null && !existing.cancelled && !existing.completed && existing.failedAt == 0L) {
@@ -617,13 +638,16 @@ object ManyueAiUpscaler {
         @Suppress("UNUSED_PARAMETER") anime4kOverlay: Boolean = false,
         aiDetailStrength: Int = if (model.continuousScale) ManyueRuntimeState.aiDetailStrength else 0,
     ): String? {
-        val key = listOf(
+        val readerSessionEpoch = ManyueReaderForegroundGate.currentSessionEpoch
+        val key = buildRequestKey(
             mangaId, chapterId, pageIndex, targetMode, targetWidth, targetScaleTenths,
-            expectedMode, generation, sourceFingerprint, model.cacheIdentity, false, aiDetailStrength,
-        ).joinToString("|")
+            expectedMode, generation, sourceFingerprint, model, aiDetailStrength, readerSessionEpoch,
+        )
         val token = tokensByRequestKey[key] ?: return null
         val req = requests[token]
-        if (req == null || req.cancelled || req.failedAt > 0L) {
+        if (req == null || req.requestKey != key || req.readerSessionEpoch != readerSessionEpoch ||
+            req.cancelled || req.failedAt > 0L
+        ) {
             tokensByRequestKey.remove(key, token)
             return null
         }
@@ -631,6 +655,7 @@ object ManyueAiUpscaler {
             tokensByRequestKey.remove(key, token)
             return null
         }
+        if (ManyueReaderForegroundGate.currentSessionEpoch != readerSessionEpoch) return null
         return token
     }
 
