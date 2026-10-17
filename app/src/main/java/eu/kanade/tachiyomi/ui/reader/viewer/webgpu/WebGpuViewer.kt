@@ -1557,7 +1557,9 @@ open class WebGpuViewer(
                 var page = current
                 val step = if (delta > 0) 1 else -1
                 repeat(abs(delta)) {
+                    val previous = page
                     page = nextPage(page, step) ?: return@onPageChange
+                    onPageCrossed(previous, page, step)
                 }
 
                 // Synchronous, since the viewer walks getPage() from here - stale, and the next
@@ -1590,6 +1592,9 @@ open class WebGpuViewer(
             invalidate()
         }
     }
+
+    /** Called once for each actual viewer-page step in a scroll callback, including intermediate pages. */
+    protected open fun onPageCrossed(from: ViewerPage, to: ViewerPage, direction: Int) = Unit
 
     /**
      * Tells this viewer to move to the given [page].

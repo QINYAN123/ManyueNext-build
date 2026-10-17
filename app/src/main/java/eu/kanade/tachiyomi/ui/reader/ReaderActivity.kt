@@ -609,6 +609,13 @@ class ReaderActivity : BaseActivity() {
                     ?: return false
                 viewer.benchmarkPrewarm(intent.getBooleanExtra("enabled", true))
             }
+            "severehead" -> {
+                // In-memory, default-OFF experiment; never a user preference or model change.
+                eu.kanade.tachiyomi.ui.reader.manyue.ManyueReaderWorkGate.setSevereHeadTrialEnabled(
+                    intent.getBooleanExtra("enabled", false),
+                )
+                recordManyueConfiguration()
+            }
             "presentation" -> {
                 val viewer = viewModel.state.value.viewer as? eu.kanade.tachiyomi.ui.reader.viewer.webgpu.WebGpuViewerContinuous
                     ?: return false
@@ -725,6 +732,8 @@ class ReaderActivity : BaseActivity() {
             }
             put("viewer", if (webtoon != null) "webtoon" else if (webgpu != null) "webgpu_continuous" else "other")
             put("nextAiPreparation", webgpu?.nextPreparationEnabled ?: false)
+            put("severeHeadTrial", eu.kanade.tachiyomi.ui.reader.manyue.ManyueReaderWorkGate.severeHeadTrialEnabled)
+            put("aiCacheNamespace", eu.kanade.tachiyomi.ui.reader.manyue.ManyueBenchmarkControl.cacheNamespace)
             put("latestFramePresentationRequested", ca.mpreg.webgpuviewer.renderer.WebGpuRenderer.benchmarkLatestFramePresentation)
             put("actualPresentMode", ca.mpreg.webgpuviewer.renderer.WebGpuRenderer.benchmarkActualPresentMode)
             put("mailboxSupported", ca.mpreg.webgpuviewer.renderer.WebGpuRenderer.benchmarkMailboxSupported)

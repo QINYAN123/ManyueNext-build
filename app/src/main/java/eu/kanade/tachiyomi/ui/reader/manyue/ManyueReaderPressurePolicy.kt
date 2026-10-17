@@ -7,6 +7,7 @@ import kotlin.math.hypot
 internal class ManyueReaderPressurePolicy(
     private val nanoTime: () -> Long = System::nanoTime,
 ) {
+    private val severeHeadPolicy = ManyueSevereHeadPolicy(nanoTime)
     private var owner: Any? = null
     private var thermalPressure = false
     private var thermalStatus = -1
@@ -162,6 +163,16 @@ internal class ManyueReaderPressurePolicy(
         if (status < THERMAL_STATUS_MODERATE) speculativeThermalReadyAtNanos = null
     }
 
+    @Synchronized
+    fun setSevereHeadTrialEnabled(enabled: Boolean) = severeHeadPolicy.setEnabled(enabled)
+
+    val severeHeadTrialEnabled: Boolean
+        get() = severeHeadPolicy.isEnabled
+
+    fun onNativeStarted(): ManyueSevereHeadPolicy.Ticket? = severeHeadPolicy.onNativeStarted()
+
+    fun onNativeFinished(ticket: ManyueSevereHeadPolicy.Ticket) = severeHeadPolicy.onNativeFinished(ticket)
+
     /** Pace distant AI at MODERATE instead of waiting indefinitely for the device to cool.
      * Visible/nearest requests bypass this interval; SEVERE still blocks new inference.
      * Call only after native work, never for cache hits or cheap request preparation.
@@ -217,7 +228,7 @@ internal class ManyueReaderPressurePolicy(
         thermalPressure || (thermalStatus >= THERMAL_STATUS_MODERATE && isBefore(now, speculativeThermalReadyAtNanos))
 
     private fun isThermalBlocked(priority: Int, now: Long): Boolean {
-        if (thermalPressure) return true
+        if (thermalPressure) return !severeHeadPolicy.permitsSevereHead(priority, thermalStatus)
         if (priority >= 50) return false
         val continuousFarPrefetchHeld =
             priority == ManyueAiSafetyPolicy.CONTINUOUS_PREFETCH_PRIORITY && thermalStatus >= THERMAL_STATUS_MODERATE
@@ -233,6 +244,7 @@ internal class ManyueReaderPressurePolicy(
     }
 
     private fun clearSignals() {
+        severeHeadPolicy.resetOwner()
         thermalPressure = false
         thermalStatus = -1
         speculativeThermalReadyAtNanos = null

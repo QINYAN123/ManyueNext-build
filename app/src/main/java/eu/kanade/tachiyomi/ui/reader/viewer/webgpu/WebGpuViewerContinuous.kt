@@ -3,6 +3,7 @@ package eu.kanade.tachiyomi.ui.reader.viewer.webgpu
 import ca.mpreg.webgpuviewer.ImageViewContinuous
 import ca.mpreg.webgpuviewer.viewer.ImagePage
 import eu.kanade.tachiyomi.ui.reader.ReaderActivity
+import eu.kanade.tachiyomi.ui.reader.model.ViewerChapters
 import eu.kanade.tachiyomi.ui.reader.manyue.ManyueReaderPrefetcher
 import eu.kanade.tachiyomi.ui.reader.manyue.ManyuePrefetchManager
 import eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState
@@ -31,6 +32,7 @@ class WebGpuViewerContinuous(activity: ReaderActivity, val useGap: Boolean = fal
 
     private val state get() = (pager as ImageViewContinuous).state
     private val manyuePrefetcher = ManyueReaderPrefetcher(activity)
+    private val selectionPolicy = WebGpuProgressSelectionPolicy()
     private var manyueHead: Pair<Long, Int>? = null
     private var manyueGeneration = -1L
     @Volatile private var visibleManyueOwners = emptySet<ViewerReaderPage>()
@@ -264,21 +266,75 @@ class WebGpuViewerContinuous(activity: ReaderActivity, val useGap: Boolean = fal
      * reveal the page above would otherwise walk progress back past pages still on screen.
      */
     private fun select(imagePage: ImagePage) {
-        val page = readerPageFor(imagePage) ?: return
-        scope.launch { activity.onPageSelected(page) }
+        val eventEpoch = selectionPolicy.epoch()
+        val owner = viewerPageFor(imagePage) ?: return
+        val anchorChapterId = (state.getPage(0)?.let(::viewerPageFor) as? ViewerReaderPage)
+            ?.page?.chapter?.chapter?.id
+        val page = readerPageFor(imagePage, owner, eventEpoch, anchorChapterId) ?: return
+        scope.launch {
+            val liveOwner = viewerPageFor(imagePage)
+            if (
+                liveOwner !== owner ||
+                !selectionPolicy.isCurrentDelivery(eventEpoch, imagePage, liveOwner?.imagePage)
+            ) {
+                return@launch
+            }
+            activity.onPageSelected(page)
+        }
     }
 
-    private fun readerPageFor(imagePage: ImagePage): ReaderPage? {
-        // Off the page itself: a transition page is never currentPage (the scroll walk stops
-        // before it), so it is the first thing a preload evicts.
-        if (imagePage is TransitionPage) return imagePage.prevChapter?.pages?.lastOrNull()
+    private fun readerPageFor(
+        imagePage: ImagePage,
+        owner: ViewerPage,
+        eventEpoch: Long,
+        anchorChapterId: Long?,
+    ): ReaderPage? {
+        // Transition pages are not reader pages. Report the previous chapter's last page only
+        // after a forward crossing, or when page zero is a real image in that previous chapter.
+        if (imagePage is TransitionPage) {
+            val transition = owner as? ViewerTransitionPage ?: return null
+            val previous = transition.prevChapter ?: return null
+            val previousId = previous.chapter.id ?: return null
+            val nextId = transition.nextChapter?.chapter?.id
+            val key = WebGpuTransitionKey(previousId, nextId)
+            if (!selectionPolicy.claimTransitionProgress(key, eventEpoch, anchorChapterId)) return null
+            return previous.pages?.lastOrNull()
+        }
 
         // Only an image page needs the lookup - nothing on it names its ReaderPage. Evicted
         // means scrolled well clear of, so there is no progress left to report.
-        return (viewerPageFor(imagePage) as? ViewerReaderPage)?.page
+        if (!selectionPolicy.canSelectImagePage(eventEpoch)) return null
+        return (owner as? ViewerReaderPage)?.page
+    }
+
+    private fun recordTransitionCrossing(transition: ViewerTransitionPage, direction: Int) {
+        val previousId = transition.prevChapter?.chapter?.id ?: return
+        val nextId = transition.nextChapter?.chapter?.id
+        selectionPolicy.recordPageStep(
+            WebGpuTransitionKey(previousId, nextId), direction, selectionPolicy.epoch(),
+        )
+    }
+
+    override fun onPageCrossed(from: ViewerPage, to: ViewerPage, direction: Int) {
+        (from as? ViewerTransitionPage)?.let { recordTransitionCrossing(it, direction) }
+        if (to !== from) (to as? ViewerTransitionPage)?.let { recordTransitionCrossing(it, direction) }
+    }
+
+    override fun setChapters(chapters: ViewerChapters) {
+        val retainedAnchorChapterId = when (val anchor = currentPage) {
+            is ViewerReaderPage -> anchor.page.chapter.chapter.id
+            is ViewerTransitionPage -> anchor.prevChapter?.chapter?.id ?: anchor.nextChapter?.chapter?.id
+            else -> null
+        }
+        if (selectionPolicy.shouldResetForChapterTable(retainedAnchorChapterId, chapters.currChapter.chapter.id)) {
+            selectionPolicy.reset()
+            lastReadThrough = null
+        }
+        super.setChapters(chapters)
     }
 
     override fun destroy() {
+        selectionPolicy.reset()
         detailFilter.onFailure = null
         nextPreparation.reset(visibleManyueOwners)
         visibleManyueOwners.forEach { ManyueReadingCoverage.hidden(it) }
@@ -320,9 +376,10 @@ class WebGpuViewerContinuous(activity: ReaderActivity, val useGap: Boolean = fal
     override fun moveLeft() = scrollByHalfPage(-1)
 
     override fun moveToPage(page: ReaderPage) {
+        selectionPolicy.reset()
+        lastReadThrough = null
         super.moveToPage(page)
         wasAtEdge = null
-        lastReadThrough = null
         // Also for a jump to the page already showing, which turns nothing to slide in.
         state.resetScroll()
     }

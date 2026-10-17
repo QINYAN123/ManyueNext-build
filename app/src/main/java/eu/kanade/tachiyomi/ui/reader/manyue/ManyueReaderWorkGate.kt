@@ -59,6 +59,16 @@ object ManyueReaderWorkGate {
 
     fun afterAiWork(elapsedNanos: Long) = policy.afterAiWork(elapsedNanos)
 
+    /** Shell-only benchmark trial; the reader's owner reset returns it to OFF. */
+    internal fun setSevereHeadTrialEnabled(enabled: Boolean) = policy.setSevereHeadTrialEnabled(enabled)
+
+    internal val severeHeadTrialEnabled: Boolean
+        get() = policy.severeHeadTrialEnabled
+
+    internal fun onNativeStarted(): ManyueSevereHeadPolicy.Ticket? = policy.onNativeStarted()
+
+    internal fun onNativeFinished(ticket: ManyueSevereHeadPolicy.Ticket) = policy.onNativeFinished(ticket)
+
     /** Diagnostic-only snapshot; callers must keep [isAiWorkBlocked] as the scheduling decision. */
     fun aiWorkBlockReasonMask(priority: Int): Int = policy.aiWorkBlockReasonMask(priority)
 

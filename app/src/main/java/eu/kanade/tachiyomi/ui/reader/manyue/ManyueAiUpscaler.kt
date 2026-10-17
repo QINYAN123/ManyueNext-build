@@ -884,11 +884,21 @@ object ManyueAiUpscaler {
     /** Runtime-call boundaries include resident startup/waits, not just GPU execution. */
     private inline fun <T> recordNativeCall(req: Request, block: () -> T): T? {
         val entry = awaitNativeEntry(req) ?: return null
+        var thermalTicket: ManyueSevereHeadPolicy.Ticket? = null
         return try {
+            thermalTicket = ManyueReaderWorkGate.onNativeStarted()
             block()
         } finally {
-            ManyuePerformanceDiagnostics.event(Stage.NATIVE_CALL_FINISHED, req.pageIndex, req.token)
-            entry.close()
+            try {
+                ManyuePerformanceDiagnostics.event(Stage.NATIVE_CALL_FINISHED, req.pageIndex, req.token)
+            } finally {
+                try {
+                    // Charge real runtime even when the request was cancelled or its owner changed.
+                    thermalTicket?.let(ManyueReaderWorkGate::onNativeFinished)
+                } finally {
+                    entry.close()
+                }
+            }
         }
     }
 
@@ -900,6 +910,14 @@ object ManyueAiUpscaler {
         val previousState = req.progressState
         var waiting = false
         while (requestIsCurrent(req)) {
+            // A pause/resume can change both thermal ownership and pressure after the prior
+            // awaitReaderIdle check. Recheck before claiming the final Native entry.
+            if (ManyueReaderWorkGate.isAiWorkBlocked(effectiveWorkPriority(req))) {
+                if (!waiting) notifyProgress(req, STATE_WAITING_RESOURCES)
+                waiting = true
+                Thread.sleep(ManyueReaderForegroundGate.POLL_DELAY_MS)
+                continue
+            }
             when (val attempt = ManyueReaderForegroundGate.tryBeginNativeEntry(req.readerSessionEpoch) {
                 // Emitting this under the gate lock orders it before a racing READER_PAUSED marker.
                 ManyuePerformanceDiagnostics.event(Stage.NATIVE_CALL_STARTED, req.pageIndex, req.token)
