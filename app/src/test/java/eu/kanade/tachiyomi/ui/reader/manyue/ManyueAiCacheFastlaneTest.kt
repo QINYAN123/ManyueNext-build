@@ -125,7 +125,7 @@ class ManyueAiCacheFastlaneTest {
             assertFalse(req.completed)
             assertSame(ManyueAiCacheProbe.Miss, req.cachePreflight.outcome)
             val queue = field("queue").get(ManyueAiUpscaler) as java.util.concurrent.BlockingQueue<*>
-            assertTrue(queue.count { it == req } <= 1)
+            assertEquals(1, queue.count { it == req })
         } finally {
             ManyueAiUpscaler.cancel(req.token)
             ManyueReaderWorkGate.release(gateOwner)
@@ -195,9 +195,13 @@ class ManyueAiCacheFastlaneTest {
         val previousModel = ManyueRuntimeState.aiModel
         val previousMode = ManyueRuntimeState.modeInt
         val previousActive = field("activeRequest").get(ManyueAiUpscaler)
+        val previousStarted = field("started").getBoolean(ManyueAiUpscaler)
         val dir = Files.createTempDirectory("manyue-fastlane").toFile()
         val fixture = Fixture(dir)
         try {
+            // Exercise real queue()/claim logic without leaking an infinite daemon into the
+            // next Robolectric scheduler harness, which substitutes its own queue by reflection.
+            field("started").setBoolean(ManyueAiUpscaler, true)
             ManyueRuntimeState.updateAiModel(ManyueAiModel.QUALITY_NATIVE2)
             ManyueRuntimeState.updateMode(ManyueEnhancementMode.AI_2X.value)
             ManyueAiUpscaler.appContext = object : ContextWrapper(RuntimeEnvironment.getApplication()) {
@@ -207,8 +211,13 @@ class ManyueAiCacheFastlaneTest {
         } finally {
             fixture.tokens.forEach {
                 ManyueAiUpscaler.removeListener(it)
-                requests().remove(it)
+                val request = requests().remove(it)
+                (field("queue").get(ManyueAiUpscaler) as java.util.concurrent.BlockingQueue<*>).remove(request)
+                @Suppress("UNCHECKED_CAST")
+                val keys = field("tokensByRequestKey").get(ManyueAiUpscaler) as ConcurrentHashMap<String, String>
+                request?.let { req -> keys.remove(req.requestKey, req.token) }
             }
+            field("started").setBoolean(ManyueAiUpscaler, previousStarted)
             field("activeRequest").set(ManyueAiUpscaler, previousActive)
             ManyueAiUpscaler.appContext = previousContext
             ManyueRuntimeState.updateAiModel(previousModel)
