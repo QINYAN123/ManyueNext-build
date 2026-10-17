@@ -41,7 +41,9 @@ class WebGpuProgressSelectionPolicyTest {
         policy.recordPageStep(key = null, direction = 1, eventEpoch = epoch)
 
         assertTrue(policy.claimTransitionProgress(transition, epoch, anchorChapterId = 32L))
-        assertFalse(policy.claimTransitionProgress(neverVisited, epoch, anchorChapterId = 32L))
+        // A real chapter-32 image anchor would independently authorize its own end geometry.
+        // Use chapter 33 here to isolate missing crossing evidence from that valid fallback.
+        assertFalse(policy.claimTransitionProgress(neverVisited, epoch, anchorChapterId = 33L))
     }
 
     @Test
