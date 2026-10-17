@@ -18,7 +18,7 @@ class ManyueWebGpuCancellationRetryTest {
         val started = CompletableDeferred<Unit>()
         val retry = ManyueWebGpuCancellationRetry(this)
         val canStart = { visible }
-        val start = {
+        val start: () -> Unit = {
             starts++
             started.complete(Unit)
         }
@@ -49,7 +49,7 @@ class ManyueWebGpuCancellationRetryTest {
         retry.updateVisibility(false)
         retry.updateVisibility(true) // Re-enter while the old start is still unwinding.
         val canStart = { visible }
-        val start = {
+        val start: () -> Unit = {
             starts++
             started.complete(Unit)
         }
@@ -73,7 +73,7 @@ class ManyueWebGpuCancellationRetryTest {
         retry.updateVisibility(true)
         val currentStart = launch { startFinished.await() }
         val canStart = { visible }
-        val start = {
+        val start: () -> Unit = {
             starts++
             started.complete(Unit)
         }
@@ -119,7 +119,7 @@ class ManyueWebGpuCancellationRetryTest {
         val started = CompletableDeferred<Unit>()
         val retry = ManyueWebGpuCancellationRetry(this)
         val canStart = { visible }
-        val start = {
+        val start: () -> Unit = {
             starts++
             started.complete(Unit)
         }
