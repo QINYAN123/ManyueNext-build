@@ -165,6 +165,7 @@ object ManyueAiUpscaler {
         internal var lastWorkPacerBlocked = false
         internal val cachePreflight = ManyueAiCachePreflight<ManyueEnhancementCache.CachedImage>()
         internal var cachedImageLease: ManyueEnhancementCache.CacheLease? = null
+        @Volatile internal var cacheOnlyClaim = false
 
         override fun compareTo(other: Request): Int =
             other.priority.compareTo(this.priority).takeIf { it != 0 }
@@ -483,22 +484,87 @@ object ManyueAiUpscaler {
         }
         if (req.cancelled || req.completed) return
         if (req.queued || req.processing) {
-            yieldPrefetchToVisible(req)
+            if (!req.cacheOnlyClaim) yieldPrefetchToVisible(req)
             return
         }
         ensureStarted()
         req.enqueuedAt = System.nanoTime() / 1_000_000L
         req.queued = true
+        recordQueued(req)
+        queue.offer(req)
+        yieldPrefetchToVisible(req)
+    }
+
+    /** Called on the existing request-factory IO path, never from Main. */
+    fun queueWithCacheProbe(token: String) {
+        if (!tryCompleteUnqueuedFromCache(token) { req ->
+                appContext?.let { ManyueEnhancementCache.pinCachedImage(it, cacheKeyFor(req)) }
+            }
+        ) queue(token)
+    }
+
+    /**
+     * Own only an unqueued token: the Native worker can never poll this request while we read
+     * disk. Existing queued/processing requests keep their owner; hybrid stays worker-bound.
+     * A miss returns to queue() and its normal pressure/foreground gates. No filesystem work
+     * runs under the scheduler monitor, and this path never changes activeRequest.
+     */
+    internal fun tryCompleteUnqueuedFromCache(
+        token: String,
+        lookup: (Request) -> ManyueEnhancementCache.PinnedCachedImage?,
+    ): Boolean {
+        val req = synchronized(this) {
+            requests[token]?.takeIf {
+                !it.queued && !it.processing && !it.completed && !it.cancelled &&
+                    it.failedAt == 0L && it.physicalModel != null && requestIsCurrent(it) &&
+                    it.cachePreflight.outcome === ManyueAiCacheProbe.NotAttempted
+            }?.also {
+                it.cacheOnlyClaim = true
+                it.processing = true
+            }
+        } ?: return false
+        val startedAt = System.nanoTime() / 1_000_000L
+        try {
+            req.cachePreflight.probeOnce {
+                val pinned = lookup(req)
+                req.cachedImageLease = pinned?.lease
+                pinned?.image
+            }
+            ManyuePerformanceDiagnostics.event(
+                Stage.CACHE_LOOKUP_FINISHED, req.pageIndex, token,
+                Metric.CACHE_LOOKUP_MS to ((System.nanoTime() / 1_000_000L) - startedAt).coerceAtLeast(0L),
+                Metric.STATUS to when (req.cachePreflight.outcome) {
+                    is ManyueAiCacheProbe.Hit<*> -> 1L
+                    is ManyueAiCacheProbe.Failed -> 2L
+                    else -> 0L
+                },
+            )
+            if (!req.cachePreflight.bypassesPreInferenceGates && requestIsCurrent(req)) return false
+            // Only a pinned hit or an invalidated request reaches process(). The latter takes
+            // the existing cancellation cleanup; neither may enter the Native miss branch.
+            req.enqueuedAt = System.nanoTime() / 1_000_000L
+            req.processingStartedAt = req.enqueuedAt
+            if (ManyuePerformanceDiagnostics.enabled) ManyueReadingCoverage.requested(coverageStamp(req))
+            process(req)
+            return true
+        } finally {
+            closeCachedImageLease(req)
+            synchronized(this) {
+                req.processing = false
+                req.cacheOnlyClaim = false
+            }
+        }
+    }
+
+    private fun recordQueued(req: Request) {
         if (ManyuePerformanceDiagnostics.enabled) ManyueReadingCoverage.requested(coverageStamp(req))
         ManyuePerformanceDiagnostics.event(
-            Stage.QUEUED, req.pageIndex, token,
+            Stage.QUEUED, req.pageIndex, req.token,
             Metric.PRIORITY to req.priority.toLong(), Metric.QUEUE_DEPTH to (queue.size + 1).toLong(),
             Metric.SOURCE_WIDTH to req.sourceWidth.toLong(), Metric.SOURCE_HEIGHT to req.sourceHeight.toLong(),
             Metric.WIDTH to req.targetWidth.toLong(), Metric.MODEL to req.model.ordinal.toLong(),
             Metric.STRENGTH to req.aiDetailStrength.toLong(),
         )
-        queue.offer(req)
-        yieldPrefetchToVisible(req)
     }
 
     private fun yieldPrefetchToVisible(visible: Request) {
@@ -542,7 +608,7 @@ object ManyueAiUpscaler {
         if (req.completed) return
         val cooperative = synchronized(req) {
             if (req.cancelled) return
-            val cooperate = req.model.usesQualityRuntime && req.processing &&
+            val cooperate = !req.cacheOnlyClaim && req.model.usesQualityRuntime && req.processing &&
                 requestConfigurationCurrent(req)
             req.cancelled = true
             cooperate
@@ -674,7 +740,7 @@ object ManyueAiUpscaler {
         }
         if (req.processing) {
             req.priority = newPriority
-            queue.peek()?.let(::yieldPrefetchToVisible)
+            if (!req.cacheOnlyClaim) queue.peek()?.let(::yieldPrefetchToVisible)
             return
         }
         val wasQueued = queue.remove(req)
@@ -1101,6 +1167,16 @@ object ManyueAiUpscaler {
                             req.runningProcess = it
                             notifyProgress(req, STATE_PROCESSING)
                         },
+                        onPhase = if (ManyuePerformanceDiagnostics.enabled) {
+                            { phase, elapsedNs, outcome ->
+                                ManyuePerformanceDiagnostics.event(
+                                    Stage.NATIVE_SESSION_PHASE, req.pageIndex, req.token,
+                                    Metric.SESSION_PHASE to phase.ordinal.toLong(),
+                                    Metric.PHASE_ELAPSED_NS to elapsedNs,
+                                    Metric.PHASE_OUTCOME to outcome.ordinal.toLong(),
+                                )
+                            }
+                        } else null,
                     )
                 } ?: run {
                     state = STATE_CANCELLED

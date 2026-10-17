@@ -46,6 +46,8 @@ internal class ManyuePerformanceRecorder(
         AI_VIEWPORT_HEAD_CHANGED,
         NATIVE_CALL_STARTED,
         NATIVE_CALL_FINISHED,
+        NATIVE_SESSION_PHASE,
+        CACHE_LOOKUP_FINISHED,
     }
 
     enum class Metric {
@@ -105,6 +107,10 @@ internal class ManyuePerformanceRecorder(
         WORK_PACER_BLOCKED,
         BLOCKED_ELAPSED_MS,
         VISIBLE_PAGE_COUNT,
+        SESSION_PHASE,
+        PHASE_ELAPSED_NS,
+        PHASE_OUTCOME,
+        CACHE_LOOKUP_MS,
     }
 
     data class Event(val timeNs: Long, val stage: Stage, val page: Int, val job: Int, val metrics: Map<Metric, Long>)

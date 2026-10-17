@@ -30,6 +30,7 @@ class ManyueLegacySessionTest {
         var retired = false
         var first = true
         var starts = 0
+        val phases = mutableListOf<Triple<ManyueLegacySession.Phase, Long, ManyueLegacySession.PhaseOutcome>>()
         val process = FakeProcess(ByteArrayInputStream(concat(
             responseFrame(kind = ManyueLegacyProtocol.READY, requestId = 0),
             responseFrame(kind = ManyueLegacyProtocol.RESULT, requestId = 1, status = ManyueLegacyProtocol.CANCELLED,
@@ -45,17 +46,39 @@ class ManyueLegacySessionTest {
         File(root, "retired.out.cancel").writeText("stale")
         val error = assertThrows(ManyueAiRuntime.CancelledException::class.java) {
             upscale(session, root, "same-key", { starts++; process }, "retired.webp",
-                isCancelled = { retired }, cooperativeCancellation = true)
+                isCancelled = { retired }, cooperativeCancellation = true,
+                onPhase = { phase, durationNanos, outcome -> phases += Triple(phase, durationNanos, outcome) })
         }
         assertTrue(error.residentRetained)
         assertTrue(process.isAlive)
         assertFalse(File(root, "retired.out").exists())
         assertFalse(File(root, "retired.out.cancel").exists())
         retired = false
-        val next = upscale(session, root, "same-key", { starts++; process }, "current.webp", cooperativeCancellation = true)
+        val next = upscale(
+            session,
+            root,
+            "same-key",
+            { starts++; process },
+            "current.webp",
+            cooperativeCancellation = true,
+            onPhase = { phase, durationNanos, outcome -> phases += Triple(phase, durationNanos, outcome) },
+        )
         assertEquals(1, starts)
         assertEquals(2, process.requestsSeen)
         assertEquals(0, JSONObject(next).getInt("modelLoads"))
+        assertEquals(
+            listOf(
+                ManyueLegacySession.Phase.PROCESS_START to ManyueLegacySession.PhaseOutcome.SUCCEEDED,
+                ManyueLegacySession.Phase.READY_WAIT to ManyueLegacySession.PhaseOutcome.SUCCEEDED,
+                ManyueLegacySession.Phase.REQUEST_WRITE to ManyueLegacySession.PhaseOutcome.SUCCEEDED,
+                ManyueLegacySession.Phase.RESULT_WAIT to ManyueLegacySession.PhaseOutcome.CANCELLED,
+                ManyueLegacySession.Phase.REQUEST_WRITE to ManyueLegacySession.PhaseOutcome.SUCCEEDED,
+                ManyueLegacySession.Phase.RESULT_WAIT to ManyueLegacySession.PhaseOutcome.SUCCEEDED,
+            ),
+            phases.map { it.first to it.third },
+        )
+        assertEquals(6, phases.size)
+        assertTrue(phases.all { it.second >= 0L })
     }
 
     @Test
@@ -158,6 +181,74 @@ class ManyueLegacySessionTest {
     }
 
     @Test
+    fun `phase timing measures cold boundaries and omits startup on warm reuse`() {
+        var nowNanos = 0L
+        var clockCalls = 0
+        val phases = mutableListOf<Triple<ManyueLegacySession.Phase, Long, ManyueLegacySession.PhaseOutcome>>()
+        val session = ManyueLegacySession(phaseClockNanos = {
+            clockCalls++
+            nowNanos += 17L
+            nowNanos
+        })
+
+        withSession(session = session) { root, currentSession ->
+            val process = fakeProcess(
+                responseFrame(kind = ManyueLegacyProtocol.READY, requestId = 0),
+                responseFrame(kind = ManyueLegacyProtocol.RESULT, requestId = 1, outputBytes = 4),
+                responseFrame(kind = ManyueLegacyProtocol.RESULT, requestId = 2, outputBytes = 4),
+            )
+            val onPhase = { phase: ManyueLegacySession.Phase, durationNanos: Long,
+                outcome: ManyueLegacySession.PhaseOutcome ->
+                phases += Triple(phase, durationNanos, outcome)
+            }
+
+            upscale(currentSession, root, "model-A", { process }, "cold.webp", onPhase = onPhase)
+            assertEquals(
+                listOf(
+                    ManyueLegacySession.Phase.PROCESS_START,
+                    ManyueLegacySession.Phase.READY_WAIT,
+                    ManyueLegacySession.Phase.REQUEST_WRITE,
+                    ManyueLegacySession.Phase.RESULT_WAIT,
+                ),
+                phases.map { it.first },
+            )
+            assertTrue(phases.all {
+                it.second == 17L && it.third == ManyueLegacySession.PhaseOutcome.SUCCEEDED
+            })
+
+            phases.clear()
+            upscale(currentSession, root, "model-A", { error("warm session must be reused") }, "warm.webp", onPhase = onPhase)
+            assertEquals(
+                listOf(
+                    ManyueLegacySession.Phase.REQUEST_WRITE,
+                    ManyueLegacySession.Phase.RESULT_WAIT,
+                ),
+                phases.map { it.first },
+            )
+            assertTrue(phases.all {
+                it.second == 17L && it.third == ManyueLegacySession.PhaseOutcome.SUCCEEDED
+            })
+            assertEquals(12, clockCalls)
+        }
+    }
+
+    @Test
+    fun `phase timing does not read its clock when no listener is supplied`() {
+        var clockCalls = 0
+        val session = ManyueLegacySession(phaseClockNanos = { clockCalls++; 0L })
+
+        withSession(session = session) { root, currentSession ->
+            val process = fakeProcess(
+                responseFrame(kind = ManyueLegacyProtocol.READY, requestId = 0),
+                responseFrame(kind = ManyueLegacyProtocol.RESULT, requestId = 1, outputBytes = 4),
+            )
+            upscale(currentSession, root, "model-A", { process }, "no-listener.webp")
+        }
+
+        assertEquals(0, clockCalls)
+    }
+
+    @Test
     fun `changing model key stops old worker before starting replacement`() = withSession { root, session ->
         val first = fakeProcess(
             responseFrame(kind = ManyueLegacyProtocol.READY, requestId = 0),
@@ -217,17 +308,79 @@ class ManyueLegacySessionTest {
     fun `invalid startup response closes worker and removes partial output`() = withSession { root, session ->
         val output = File(root, "startup-partial.out")
         val process = fakeProcess(responseFrame(kind = ManyueLegacyProtocol.RESULT, requestId = 0))
+        val phases = mutableListOf<Pair<ManyueLegacySession.Phase, ManyueLegacySession.PhaseOutcome>>()
 
         val error = assertThrows(IllegalStateException::class.java) {
             upscale(session, root, "model-A", {
                 output.writeBytes(byteArrayOf(1, 2, 3))
                 process
-            }, "startup-partial.webp")
+            }, "startup-partial.webp", onPhase = { phase, _, outcome -> phases += (phase to outcome) })
         }
 
         assertTrue(error.message.orEmpty().contains("failed to initialize"))
         assertFalse(process.isAlive)
         assertFalse(output.exists())
+        assertEquals(
+            listOf(
+                ManyueLegacySession.Phase.PROCESS_START to ManyueLegacySession.PhaseOutcome.SUCCEEDED,
+                ManyueLegacySession.Phase.READY_WAIT to ManyueLegacySession.PhaseOutcome.FAILED,
+            ),
+            phases,
+        )
+    }
+
+    @Test
+    fun `process start failure reports one failed phase and skips later phases`() = withSession { root, session ->
+        val phases = mutableListOf<Pair<ManyueLegacySession.Phase, ManyueLegacySession.PhaseOutcome>>()
+
+        val error = assertThrows(IllegalStateException::class.java) {
+            upscale(
+                session,
+                root,
+                "model-A",
+                { throw IllegalStateException("process start failed") },
+                "process-start-failure.webp",
+                onPhase = { phase, _, outcome -> phases += (phase to outcome) },
+            )
+        }
+
+        assertEquals("process start failed", error.message)
+        assertEquals(
+            listOf(ManyueLegacySession.Phase.PROCESS_START to ManyueLegacySession.PhaseOutcome.FAILED),
+            phases,
+        )
+    }
+
+    @Test
+    fun `request write failure reports one failed phase and skips result wait`() = withSession { root, session ->
+        val process = FakeProcess(
+            ByteArrayInputStream(responseFrame(kind = ManyueLegacyProtocol.READY, requestId = 0)),
+        ) {
+            throw IllegalStateException("request pipe failed")
+        }
+        val phases = mutableListOf<Pair<ManyueLegacySession.Phase, ManyueLegacySession.PhaseOutcome>>()
+
+        val error = assertThrows(IllegalStateException::class.java) {
+            upscale(
+                session,
+                root,
+                "model-A",
+                { process },
+                "write-failure.webp",
+                onPhase = { phase, _, outcome -> phases += (phase to outcome) },
+            )
+        }
+
+        assertEquals("request pipe failed", error.message)
+        assertFalse(process.isAlive)
+        assertEquals(
+            listOf(
+                ManyueLegacySession.Phase.PROCESS_START to ManyueLegacySession.PhaseOutcome.SUCCEEDED,
+                ManyueLegacySession.Phase.READY_WAIT to ManyueLegacySession.PhaseOutcome.SUCCEEDED,
+                ManyueLegacySession.Phase.REQUEST_WRITE to ManyueLegacySession.PhaseOutcome.FAILED,
+            ),
+            phases,
+        )
     }
 
     @Test
@@ -292,14 +445,31 @@ class ManyueLegacySessionTest {
             responseFrame(kind = ManyueLegacyProtocol.READY, requestId = 0),
             responseFrame(kind = ManyueLegacyProtocol.RESULT, requestId = 17, outputBytes = 4),
         )
+        val phases = mutableListOf<Pair<ManyueLegacySession.Phase, ManyueLegacySession.PhaseOutcome>>()
 
         assertThrows(IllegalStateException::class.java) {
-            upscale(session, root, "model-A", { process }, "wrong-id.webp")
+            upscale(
+                session,
+                root,
+                "model-A",
+                { process },
+                "wrong-id.webp",
+                onPhase = { phase, _, outcome -> phases += (phase to outcome) },
+            )
         }
 
         assertEquals(1, process.requestsSeen)
         assertFalse(process.isAlive)
         assertFalse(output.exists())
+        assertEquals(
+            listOf(
+                ManyueLegacySession.Phase.PROCESS_START to ManyueLegacySession.PhaseOutcome.SUCCEEDED,
+                ManyueLegacySession.Phase.READY_WAIT to ManyueLegacySession.PhaseOutcome.SUCCEEDED,
+                ManyueLegacySession.Phase.REQUEST_WRITE to ManyueLegacySession.PhaseOutcome.SUCCEEDED,
+                ManyueLegacySession.Phase.RESULT_WAIT to ManyueLegacySession.PhaseOutcome.SUCCEEDED,
+            ),
+            phases,
+        )
     }
 
     @Test
@@ -332,6 +502,7 @@ class ManyueLegacySessionTest {
         )
         val process = FakeProcess(input, ::writeOutputForRequest)
         val output = File(root, "cancel-during-read.out")
+        val phases = mutableListOf<Pair<ManyueLegacySession.Phase, ManyueLegacySession.PhaseOutcome>>()
 
         assertThrows(ManyueAiRuntime.CancelledException::class.java) {
             upscale(
@@ -343,6 +514,7 @@ class ManyueLegacySessionTest {
                 // Poll count depends on host scheduling and can cancel during startup.
                 // Exercise cancellation only once the actual result read has blocked.
                 isCancelled = { blocked.entered.count == 0L },
+                onPhase = { phase, _, outcome -> phases += (phase to outcome) },
             )
         }
 
@@ -350,6 +522,15 @@ class ManyueLegacySessionTest {
         assertFalse(process.isAlive)
         assertFalse(output.exists())
         assertTrue("blocked response stream should be closed", blocked.closed.await(1, TimeUnit.SECONDS))
+        assertEquals(
+            listOf(
+                ManyueLegacySession.Phase.PROCESS_START to ManyueLegacySession.PhaseOutcome.SUCCEEDED,
+                ManyueLegacySession.Phase.READY_WAIT to ManyueLegacySession.PhaseOutcome.SUCCEEDED,
+                ManyueLegacySession.Phase.REQUEST_WRITE to ManyueLegacySession.PhaseOutcome.SUCCEEDED,
+                ManyueLegacySession.Phase.RESULT_WAIT to ManyueLegacySession.PhaseOutcome.CANCELLED,
+            ),
+            phases,
+        )
     }
 
     @Test
@@ -428,6 +609,7 @@ class ManyueLegacySessionTest {
         logFile: File = File(root, "native.log"),
         cooperativeCancellation: Boolean = false,
         isConfigurationCurrent: () -> Boolean = { true },
+        onPhase: ((ManyueLegacySession.Phase, Long, ManyueLegacySession.PhaseOutcome) -> Unit)? = null,
     ): String {
         val input = File(root, "$name.input").apply { writeBytes(byteArrayOf(9)) }
         return session.upscale(
@@ -441,6 +623,7 @@ class ManyueLegacySessionTest {
             onProcessStarted = onProcessStarted,
             cooperativeCancellation = cooperativeCancellation,
             isConfigurationCurrent = isConfigurationCurrent,
+            onPhase = onPhase,
         )
     }
 
@@ -500,9 +683,11 @@ class ManyueLegacySessionTest {
         frames.forEach { write(it) }
     }.toByteArray()
 
-    private inline fun withSession(block: (File, ManyueLegacySession) -> Unit) {
+    private inline fun withSession(
+        session: ManyueLegacySession = ManyueLegacySession(),
+        block: (File, ManyueLegacySession) -> Unit,
+    ) {
         val root = Files.createTempDirectory("manyue-legacy-session-test").toFile()
-        val session = ManyueLegacySession()
         try {
             block(root, session)
         } finally {

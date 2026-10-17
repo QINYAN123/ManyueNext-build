@@ -8,7 +8,23 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 
 /** Single-worker owner. The existing reader scheduler still owns priority and request cancellation. */
-internal class ManyueLegacySession {
+internal class ManyueLegacySession(
+    private val phaseClockNanos: (() -> Long)? = null,
+) {
+    enum class Phase {
+        PROCESS_START,
+        READY_WAIT,
+        REQUEST_WRITE,
+        RESULT_WAIT,
+    }
+
+    enum class PhaseOutcome {
+        /** This phase returned; RESULT_WAIT does not imply later response/output validation passed. */
+        SUCCEEDED,
+        CANCELLED,
+        FAILED,
+    }
+
     private var connection: Connection? = null
     private var nextRequestId = 1L
     private var lastUsedAt = 0L
@@ -50,6 +66,7 @@ internal class ManyueLegacySession {
         }
     }
 
+    /** A null listener skips phase clock reads; callback failures never affect the Native request. */
     @Synchronized
     fun upscale(
         key: String,
@@ -62,6 +79,7 @@ internal class ManyueLegacySession {
         onProcessStarted: (Process) -> Unit,
         cooperativeCancellation: Boolean = false,
         isConfigurationCurrent: () -> Boolean = { true },
+        onPhase: ((Phase, Long, PhaseOutcome) -> Unit)? = null,
     ): String {
         val deadline = SystemClock.elapsedRealtime() + 240_000L
         var current = connection
@@ -89,23 +107,44 @@ internal class ManyueLegacySession {
             check(!output.exists() || output.delete()) { "Unable to remove a stale native output" }
             if (current == null || current.key != key || !current.process.isAlive) {
                 close()
-                current = Connection(key, startProcess()).also { connection = it }
-                onProcessStarted(current.process)
-                startup = read(current, isCancelled, deadline)
-                check(
-                    startup.kind == ManyueLegacyProtocol.READY && startup.status == 0 &&
-                        startup.requestId == 0L && startup.modelLoads == 1,
-                ) {
-                    "Native session failed to initialize"
+                val process = measurePhase(onPhase, Phase.PROCESS_START, { false }, startProcess)
+                val newConnection = Connection(key, process).also { connection = it }
+                current = newConnection
+                onProcessStarted(newConnection.process)
+                startup = measurePhase(onPhase, Phase.READY_WAIT, { false }) {
+                    read(newConnection, isCancelled, deadline).also { response ->
+                        check(
+                            response.kind == ManyueLegacyProtocol.READY && response.status == 0 &&
+                                response.requestId == 0L && response.modelLoads == 1,
+                        ) {
+                            "Native session failed to initialize"
+                        }
+                    }
                 }
             } else {
                 onProcessStarted(current.process)
             }
+            val activeConnection = checkNotNull(current)
             val id = nextRequestId++
             check(id > 0) { "Native request sequence exhausted" }
-            ManyueLegacyProtocol.writeRequest(current.process.outputStream, id, targetWidth, input.path, output.path)
-            val response = read(current, isCancelled, deadline, cancellationMarker, isConfigurationCurrent) {
-                cancellationRequestedAt = SystemClock.elapsedRealtime()
+            measurePhase(onPhase, Phase.REQUEST_WRITE, { false }) {
+                ManyueLegacyProtocol.writeRequest(
+                    activeConnection.process.outputStream,
+                    id,
+                    targetWidth,
+                    input.path,
+                    output.path,
+                )
+            }
+            val response = measurePhase(
+                onPhase,
+                Phase.RESULT_WAIT,
+                { response -> response.kind == ManyueLegacyProtocol.RESULT &&
+                    response.status == ManyueLegacyProtocol.CANCELLED },
+            ) {
+                read(activeConnection, isCancelled, deadline, cancellationMarker, isConfigurationCurrent) {
+                    cancellationRequestedAt = SystemClock.elapsedRealtime()
+                }
             }
             check(
                 response.kind == ManyueLegacyProtocol.RESULT && response.requestId == id &&
@@ -201,6 +240,45 @@ internal class ManyueLegacySession {
                 return response.get(100, TimeUnit.MILLISECONDS)
             } catch (_: TimeoutException) {
                 // Bounded waits keep cancellation responsive while native stdout remains blocking.
+            }
+        }
+    }
+
+    private inline fun <T> measurePhase(
+        noinline onPhase: ((Phase, Long, PhaseOutcome) -> Unit)?,
+        phase: Phase,
+        isCancelledResult: (T) -> Boolean,
+        block: () -> T,
+    ): T {
+        if (onPhase == null) return block()
+        val startedAtNanos = try {
+            phaseClockNanos?.invoke() ?: SystemClock.elapsedRealtimeNanos()
+        } catch (_: Throwable) {
+            null
+        }
+        var outcome = PhaseOutcome.FAILED
+        try {
+            val result = block()
+            outcome = if (isCancelledResult(result)) PhaseOutcome.CANCELLED else PhaseOutcome.SUCCEEDED
+            return result
+        } catch (error: Throwable) {
+            outcome = if (error is ManyueAiRuntime.CancelledException || error is InterruptedException) {
+                PhaseOutcome.CANCELLED
+            } else {
+                PhaseOutcome.FAILED
+            }
+            throw error
+        } finally {
+            val elapsedNanos = try {
+                val finishedAtNanos = phaseClockNanos?.invoke() ?: SystemClock.elapsedRealtimeNanos()
+                if (startedAtNanos == null) 0L else (finishedAtNanos - startedAtNanos).coerceAtLeast(0L)
+            } catch (_: Throwable) {
+                0L
+            }
+            // Diagnostics must not change request, cancellation, or process behavior.
+            try {
+                onPhase(phase, elapsedNanos, outcome)
+            } catch (_: Throwable) {
             }
         }
     }

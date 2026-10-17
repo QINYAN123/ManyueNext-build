@@ -110,6 +110,8 @@ object ManyuePerformanceDiagnostics {
                         "Callback drops are missing observations, not measured janky frames. " +
                             "Samples are bounded recent history.",
                         "VISIBILITY_WAIT_FINISHED.WAIT_OUTCOME: 1 visible, 2 stale, 3 cancelled.",
+                        "CACHE_LOOKUP_FINISHED.STATUS: 0 miss, 1 pinned hit, 2 failed; CACHE_LOOKUP_MS is factory IO cache lookup, not queue wait. A fastlane hit has no QUEUED/STARTED event because it never enters the Native queue; later cancellation still vetoes READY.",
+                        "NATIVE_SESSION_PHASE.SESSION_PHASE: 0 process start, 1 READY wait, 2 request write, 3 result wait; PHASE_OUTCOME: 0 succeeded, 1 cancelled, 2 failed. PHASE_ELAPSED_NS is monotonic elapsed time; result wait includes Native decode/infer/encode and protocol delivery, not pure GPU time. Disabled diagnostics installs no phase callback.",
                         "BLOCK_REASON_MASK bits: 1 thermal, 2 bad-frame, 4 fast-scroll; fast-scroll does not block priority >= 100.",
                         "WORK_BLOCKED status records the actual reader-gate and work-pacer decisions; reason mask is a diagnostic snapshot.",
                         "PREFETCH_ENTER/EXIT.STATUS: 1 reconcile, 2 disabled, 3 missing pages, 4 cursor, 5 current decision, 6 reader gate, 7 worker slot, 8 cache reservation, 9 source, 10 enqueue, 11 candidate. WAIT_OUTCOME: 0 entry, 1 returned, 2 cancelled, 3 failed.",

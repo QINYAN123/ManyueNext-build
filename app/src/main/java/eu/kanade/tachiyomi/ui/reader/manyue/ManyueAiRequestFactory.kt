@@ -212,7 +212,7 @@ object ManyueAiRequestFactory {
                 decisionReady = false,
                 generation = generation,
             )
-            ManyueAiUpscaler.queue(reusable)
+            ManyueAiUpscaler.queueWithCacheProbe(reusable)
             ManyuePrefetchManager.releaseCurrent(identity.chapterId, identity.pageIndex, generation)
             return reusable
         }
@@ -248,7 +248,7 @@ object ManyueAiRequestFactory {
                 decisionReady = false,
                 generation = generation,
             )
-            ManyueAiUpscaler.queue(token)
+            ManyueAiUpscaler.queueWithCacheProbe(token)
             ManyuePrefetchManager.releaseCurrent(identity.chapterId, identity.pageIndex, generation)
             logcat {
                 "Manyue AI queued chapter=${identity.chapterId} page=${identity.pageIndex} priority=$priority token=$token"

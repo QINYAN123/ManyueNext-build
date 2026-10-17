@@ -243,6 +243,7 @@ object ManyueAiRuntime {
         isCancelled: () -> Boolean,
         onProcessStarted: (Process) -> Unit,
         isConfigurationCurrent: () -> Boolean = { true },
+        onPhase: ((ManyueLegacySession.Phase, Long, ManyueLegacySession.PhaseOutcome) -> Unit)? = null,
     ): String {
         require(!model.continuousScale && probe(context, model) == Capability.READY)
         require(inputFile.isFile && inputFile.length() in 1..MAX_INPUT_BYTES.toLong())
@@ -271,6 +272,7 @@ object ManyueAiRuntime {
             onProcessStarted = onProcessStarted,
             cooperativeCancellation = model.usesQualityRuntime,
             isConfigurationCurrent = isConfigurationCurrent,
+            onPhase = onPhase,
         )
     }
 
