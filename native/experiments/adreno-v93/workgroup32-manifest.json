@@ -1,0 +1,8 @@
+{
+  "sourceArchiveSha256": "b2145f7b01422f5ee66777d1c2c29de935191ed39865193951e1a7228202a6c1",
+  "file": "src/layer/vulkan/convolution_vulkan.cpp",
+  "originalSha256": "078e30ad7ecc202678777746ad8b9f3d69d8f0e85369e19f52b8b8617af7f8f5",
+  "candidateSha256": "8280ac490afa42a1279b82a3bff39b925944b5649842557921c0391f70fcfc41",
+  "patchSha256": "5c924e276c7b2f1d218311b227a7f28198bfe3f1c2e313caba63781a40530e2e",
+  "defaultEnabled": false
+}

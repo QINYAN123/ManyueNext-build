@@ -1,0 +1,674 @@
+{
+  "clientDate": "2026-10-19",
+  "applicationBaseline": "1dfa768bf6ae7aab08637c5e1d0b81f1c2c4964d",
+  "applicationChanged": false,
+  "modelWeightsChanged": false,
+  "newApkProduced": false,
+  "trainingPerformed": false,
+  "installedVersionCode": 92,
+  "installedApkSha256": "f5d0ed204a932da7ada29e0df2b6d34366588ccabda0122cd104afbab3925ad4",
+  "runtimeAssetSha256": {
+    "app/src/main/jniLibs/arm64-v8a/libncnn.so": "87d150e735157b09aa20f26f5e57f72468c548e7ce98ce407ec50ee7e14a52dd",
+    "app/src/main/jniLibs/arm64-v8a/libmanyue_realesr.so": "a4c5581ef5b0d6e0f96e3b7c6d607d7a6f97565f80cc1f6760b1f3953c3f2698",
+    "app/src/main/jniLibs/arm64-v8a/libomp.so": "da75dcbe6026a3e08d01bfe86860159432051b329a84deb5ee042ce9b8e1a302",
+    "app/src/main/assets/ai/models-Real-ESRGANv3-anime-native2/x2.bin": "a3a99b7bcc6a8dd094821af2cf8df8d0c1b5ae262571eb465bb9359ce28f8015",
+    "app/src/main/assets/ai/models-Real-ESRGANv3-anime-native2/x2.param": "44f0e77ab0c793d42a2b2858b20969959d8ab985c575a8578b15e857bb518ac1"
+  },
+  "actualAgentConfiguration": "One gpt-6-luna/max read-only audit agent; root serialized builds/device work",
+  "scope": "Connected Magic V2 / Adreno standalone Vulkan tensor probes; no reader opened this round",
+  "capabilities": {
+    "type": 1,
+    "subgroupSize": 64,
+    "maxWorkgroupInvocations": 1024,
+    "maxWorkgroupX": 1024,
+    "maxWorkgroupY": 1024,
+    "maxWorkgroupZ": 1024,
+    "maxImage3D": 2048,
+    "maxImage2D": 16384,
+    "storageBufferNoL1": true,
+    "imageLoadZeroBug": false,
+    "cooperativeMatrix": false
+  },
+  "readback": {
+    "evidence": "work\\quality2\\native-profile-v93-20261018\\device-readback-20261019T115015.private\\report.json",
+    "sha256": "b43b2f6d494146231f1de10bac9e82287e2c1d4ff3e78702c36e1e7653d61029",
+    "upstreamPredicatePresent": false,
+    "accepted": false,
+    "identities": {
+      "readback_probe-arm64": "65d4388f96b42c880d49f2e61581d2a4f9d7201066d70d4aed3bbc9b2d8329f2",
+      "libncnn.so": "87d150e735157b09aa20f26f5e57f72468c548e7ce98ce407ec50ee7e14a52dd",
+      "libomp.so": "da75dcbe6026a3e08d01bfe86860159432051b329a84deb5ee042ce9b8e1a302"
+    },
+    "runs": [
+      {
+        "staged": false,
+        "bytes": 3312000,
+        "width": 1380,
+        "height": 800,
+        "blobMemoryType": 6,
+        "blobFlags": 15,
+        "stagingFlags": 15,
+        "wallMedianMs": 1.683203,
+        "samples": [
+          {
+            "wallMs": 1.76,
+            "recordMs": 0.109479,
+            "submitWaitMs": 1.552396
+          },
+          {
+            "wallMs": 1.735312,
+            "recordMs": 0.088073,
+            "submitWaitMs": 1.55625
+          },
+          {
+            "wallMs": 1.858282,
+            "recordMs": 0.089323,
+            "submitWaitMs": 1.662761
+          },
+          {
+            "wallMs": 1.703594,
+            "recordMs": 0.106615,
+            "submitWaitMs": 1.47974
+          },
+          {
+            "wallMs": 1.725625,
+            "recordMs": 0.09125,
+            "submitWaitMs": 1.538906
+          },
+          {
+            "wallMs": 1.653333,
+            "recordMs": 0.090885,
+            "submitWaitMs": 1.451354
+          },
+          {
+            "wallMs": 1.674896,
+            "recordMs": 0.098281,
+            "submitWaitMs": 1.472917
+          },
+          {
+            "wallMs": 1.600572,
+            "recordMs": 0.10052,
+            "submitWaitMs": 1.412032
+          },
+          {
+            "wallMs": 1.69151,
+            "recordMs": 0.091875,
+            "submitWaitMs": 1.493802
+          },
+          {
+            "wallMs": 1.659375,
+            "recordMs": 0.101563,
+            "submitWaitMs": 1.472291
+          },
+          {
+            "wallMs": 1.662709,
+            "recordMs": 0.083073,
+            "submitWaitMs": 1.486927
+          },
+          {
+            "wallMs": 1.631041,
+            "recordMs": 0.088854,
+            "submitWaitMs": 1.450208
+          }
+        ],
+        "byteIdentical": true
+      },
+      {
+        "staged": true,
+        "bytes": 3312000,
+        "width": 1380,
+        "height": 800,
+        "blobMemoryType": 6,
+        "blobFlags": 15,
+        "stagingFlags": 15,
+        "wallMedianMs": 2.267786,
+        "samples": [
+          {
+            "wallMs": 1.497136,
+            "recordMs": 0.076928,
+            "submitWaitMs": 1.327708
+          },
+          {
+            "wallMs": 1.434739,
+            "recordMs": 0.073854,
+            "submitWaitMs": 1.266823
+          },
+          {
+            "wallMs": 1.5125,
+            "recordMs": 0.083385,
+            "submitWaitMs": 1.332604
+          },
+          {
+            "wallMs": 1.495625,
+            "recordMs": 0.090313,
+            "submitWaitMs": 1.306302
+          },
+          {
+            "wallMs": 1.51125,
+            "recordMs": 0.08974,
+            "submitWaitMs": 1.283698
+          },
+          {
+            "wallMs": 2.274114,
+            "recordMs": 0.100417,
+            "submitWaitMs": 2.02651
+          },
+          {
+            "wallMs": 2.540886,
+            "recordMs": 0.138438,
+            "submitWaitMs": 2.234062
+          },
+          {
+            "wallMs": 2.350052,
+            "recordMs": 0.150938,
+            "submitWaitMs": 2.057656
+          },
+          {
+            "wallMs": 2.673385,
+            "recordMs": 0.13526,
+            "submitWaitMs": 2.351667
+          },
+          {
+            "wallMs": 2.261458,
+            "recordMs": 0.162708,
+            "submitWaitMs": 1.962604
+          },
+          {
+            "wallMs": 2.340052,
+            "recordMs": 0.126875,
+            "submitWaitMs": 2.068021
+          },
+          {
+            "wallMs": 2.442604,
+            "recordMs": 0.1575,
+            "submitWaitMs": 2.112396
+          }
+        ],
+        "byteIdentical": true
+      }
+    ]
+  },
+  "workgroupScreens": [
+    {
+      "name": "8x4x1 group32",
+      "evidence": "work\\quality2\\native-profile-v93-20261018\\gemm32-pilot-20261019T115826.private\\report.json",
+      "sha256": "93800bfe165b19273c2ddb53f3f781a34fcc3e2fd6f449846e637d2dbda31ba7",
+      "pairs": [
+        {
+          "case": "color-ccby",
+          "round": 0,
+          "baselineWallMs": 254.9490885,
+          "candidateWallMs": 251.12510450000002,
+          "improvementPercent": 1.4999010282792078,
+          "baselineThreadCpuMs": 28.6617675,
+          "candidateThreadCpuMs": 25.2277875,
+          "rgbDifferentValues": 0,
+          "rgbMaxDifference": 0,
+          "floatDifferentValues": 0,
+          "floatMaxDifference": 0.0,
+          "kind": "rebuild control"
+        },
+        {
+          "case": "color-ccby",
+          "round": 1,
+          "baselineWallMs": 251.5598435,
+          "candidateWallMs": 298.00018250000005,
+          "improvementPercent": -18.46095082341711,
+          "baselineThreadCpuMs": 25.9944275,
+          "candidateThreadCpuMs": 25.367264499999997,
+          "rgbDifferentValues": 0,
+          "rgbMaxDifference": 0,
+          "floatDifferentValues": 0,
+          "floatMaxDifference": 0.0,
+          "kind": "GEMM32 geometry"
+        }
+      ],
+      "identities": {
+        "stockNcnn": "87d150e735157b09aa20f26f5e57f72468c548e7ce98ce407ec50ee7e14a52dd",
+        "rebuiltNcnn": "5cd58abdecfa94b1a7428e493707a2a490da5bd5ddcc63b56030dc60b202f473",
+        "tool": "7f56834916c577063a0fdbeb25e816e25f7d8f536fbb072fcb37a840a203f4f1",
+        "patch": "5c924e276c7b2f1d218311b227a7f28198bfe3f1c2e313caba63781a40530e2e"
+      },
+      "accepted": false,
+      "measuredCases": [
+        "color-ccby 400x400"
+      ],
+      "preparedButNotMeasuredCases": [
+        "line-text-synthetic",
+        "gray-grid-synthetic"
+      ]
+    },
+    {
+      "name": "8x4x2 group64",
+      "evidence": "work\\quality2\\native-profile-v93-20261018\\gemm64x8-pilot-20261019T120107.private\\report.json",
+      "sha256": "edcca77df1eced1b24f317e387f52ebb81492d33281cb586aab97f3fb8267876",
+      "pairs": [
+        {
+          "case": "color-ccby",
+          "round": 0,
+          "baselineWallMs": 243.857344,
+          "candidateWallMs": 248.1855735,
+          "improvementPercent": -1.7749022559681418,
+          "baselineThreadCpuMs": 23.0939345,
+          "candidateThreadCpuMs": 26.5862505,
+          "rgbDifferentValues": 0,
+          "rgbMaxDifference": 0,
+          "floatDifferentValues": 0,
+          "floatMaxDifference": 0.0,
+          "kind": "rebuild control"
+        },
+        {
+          "case": "color-ccby",
+          "round": 1,
+          "baselineWallMs": 262.1606515,
+          "candidateWallMs": 254.9986195,
+          "improvementPercent": 2.731924855626163,
+          "baselineThreadCpuMs": 29.998747,
+          "candidateThreadCpuMs": 26.239507,
+          "rgbDifferentValues": 0,
+          "rgbMaxDifference": 0,
+          "floatDifferentValues": 0,
+          "floatMaxDifference": 0.0,
+          "kind": "GEMM geometry"
+        }
+      ],
+      "identities": {
+        "stockNcnn": "87d150e735157b09aa20f26f5e57f72468c548e7ce98ce407ec50ee7e14a52dd",
+        "rebuiltNcnn": "802070ceb6b0a831ec54ec6492c65d263a57a3d9417733a6df989b716d477a0a",
+        "tool": "7f56834916c577063a0fdbeb25e816e25f7d8f536fbb072fcb37a840a203f4f1",
+        "patch": "6e658c57c00e498e8ab8f3d3aea196cd7f2402347e50efcb855568be088722b1"
+      },
+      "accepted": false,
+      "measuredCases": [
+        "color-ccby 400x400"
+      ],
+      "preparedButNotMeasuredCases": [
+        "line-text-synthetic",
+        "gray-grid-synthetic"
+      ]
+    },
+    {
+      "name": "static channels",
+      "evidence": "work\\quality2\\native-profile-v93-20261018\\gemmstatic-pilot-20261019T120918.private\\report.json",
+      "sha256": "4894a3864a7d827cedc2032bf76979d48768c464bd8a066d14bb43df5fc66f0d",
+      "pairs": [
+        {
+          "case": "color-ccby",
+          "round": 0,
+          "baselineWallMs": 236.20273400000002,
+          "candidateWallMs": 277.34283800000003,
+          "improvementPercent": -17.417285271558292,
+          "baselineThreadCpuMs": 16.951018,
+          "candidateThreadCpuMs": 27.946192500000002,
+          "rgbDifferentValues": 0,
+          "rgbMaxDifference": 0,
+          "floatDifferentValues": 0,
+          "floatMaxDifference": 0.0,
+          "kind": "rebuild control"
+        },
+        {
+          "case": "color-ccby",
+          "round": 1,
+          "baselineWallMs": 254.9884115,
+          "candidateWallMs": 248.232786,
+          "improvementPercent": 2.64938530353565,
+          "baselineThreadCpuMs": 26.724142,
+          "candidateThreadCpuMs": 26.193748499999998,
+          "rgbDifferentValues": 0,
+          "rgbMaxDifference": 0,
+          "floatDifferentValues": 0,
+          "floatMaxDifference": 0.0,
+          "kind": "GEMM geometry"
+        }
+      ],
+      "identities": {
+        "stockNcnn": "87d150e735157b09aa20f26f5e57f72468c548e7ce98ce407ec50ee7e14a52dd",
+        "rebuiltNcnn": "e9ba17c70082e93b23690ae3d63b84b7854dbd7bcf82a5cb81875a24b4932325",
+        "tool": "7f56834916c577063a0fdbeb25e816e25f7d8f536fbb072fcb37a840a203f4f1",
+        "patch": "b0cbb08d911c80e717417b6aefb37039164a77e6a03e0ca624752625ba43b245"
+      },
+      "accepted": false,
+      "measuredCases": [
+        "color-ccby 400x400"
+      ],
+      "preparedButNotMeasuredCases": [
+        "line-text-synthetic",
+        "gray-grid-synthetic"
+      ]
+    },
+    {
+      "name": "targeted shared GEMM",
+      "evidence": "work\\quality2\\native-profile-v93-20261018\\gemmshared-pilot-20261019T121742.private\\report.json",
+      "sha256": "1e2c3278433d6257d630c289369625a69624439de7f92fcd19153270907adf5c",
+      "pairs": [
+        {
+          "case": "color-ccby",
+          "round": 0,
+          "baselineWallMs": 246.377682,
+          "candidateWallMs": 253.10460899999998,
+          "improvementPercent": -2.7303313130448195,
+          "baselineThreadCpuMs": 23.452027,
+          "candidateThreadCpuMs": 29.764924,
+          "rgbDifferentValues": 0,
+          "rgbMaxDifference": 0,
+          "floatDifferentValues": 0,
+          "floatMaxDifference": 0.0,
+          "kind": "rebuild control"
+        },
+        {
+          "case": "color-ccby",
+          "round": 1,
+          "baselineWallMs": 252.1805465,
+          "candidateWallMs": 351.34385399999996,
+          "improvementPercent": -39.322346182638626,
+          "baselineThreadCpuMs": 26.355003500000002,
+          "candidateThreadCpuMs": 26.437967,
+          "rgbDifferentValues": 0,
+          "rgbMaxDifference": 0,
+          "floatDifferentValues": 0,
+          "floatMaxDifference": 0.0,
+          "kind": "GEMM geometry"
+        }
+      ],
+      "identities": {
+        "stockNcnn": "87d150e735157b09aa20f26f5e57f72468c548e7ce98ce407ec50ee7e14a52dd",
+        "rebuiltNcnn": "73de115e2d4ba49dbf05471fc1b3eaecefebcf0fc3fc7efcb6225975308170d2",
+        "tool": "7f56834916c577063a0fdbeb25e816e25f7d8f536fbb072fcb37a840a203f4f1",
+        "patch": "7326f1a55fb670aad7b2393610e6385b2d97c3c49e041688457e2f3d243f1a67"
+      },
+      "accepted": false,
+      "measuredCases": [
+        "color-ccby 400x400"
+      ],
+      "preparedButNotMeasuredCases": [
+        "line-text-synthetic",
+        "gray-grid-synthetic"
+      ]
+    }
+  ],
+  "gpuTimestamp": {
+    "evidence": "work\\quality2\\native-profile-v93-20261018\\timestamp-20261019T120707.private\\report.json",
+    "sha256": "5312f4d69da21ea31aa9464e449d37a6341d120106a448e024e6adb671af398a",
+    "comparisons": [
+      {
+        "case": "color-ccby",
+        "plainWallMs": 256.4012765,
+        "profileWallMs": 255.316953,
+        "observationOverheadPercent": -0.4229009756899438,
+        "profileMedians": {
+          "wallMs": 255.316953,
+          "threadCpuMs": 31.04974,
+          "recordMs": 3.338518,
+          "submitWaitMs": 206.17591149999998,
+          "resetMs": 1.3835685,
+          "tailMs": 41.7832295,
+          "gpuChunksMs": 189.563615,
+          "gpuTailNetworkMs": 18.507863999999998,
+          "convGpuChunksMs": 174.5848655,
+          "preluGpuChunksMs": 14.954453
+        },
+        "rgbDifferentValues": 0,
+        "floatDifferentValues": 0,
+        "plainBracketBeforeMs": 265.293229,
+        "plainBracketAfterMs": 249.05315050000002
+      }
+    ],
+    "identities": {
+      "plain": {
+        "tool": "7f56834916c577063a0fdbeb25e816e25f7d8f536fbb072fcb37a840a203f4f1",
+        "lib": "802070ceb6b0a831ec54ec6492c65d263a57a3d9417733a6df989b716d477a0a"
+      },
+      "profile": {
+        "tool": "c1cafce7bbfa08f5d173fe012b068e34f66acc260c8f9452bd14f5546e3231c3",
+        "lib": "af131ad975fa4f2e3570a9fd7820380f95ecd9dd9d9eba9685739dcf189f644f"
+      }
+    },
+    "runs": [
+      {
+        "kind": "plain",
+        "order": 0,
+        "metrics": {
+          "schema": 1,
+          "localMemory": true,
+          "imageStorage": false,
+          "fp16Arithmetic": false,
+          "width": 400,
+          "height": 400,
+          "loadMs": 518.674271,
+          "effectiveLocalMemory": false,
+          "effectivePack8": false,
+          "samples": [
+            {
+              "wallMs": 285.569323,
+              "threadCpuMs": 29.4363,
+              "recordMs": 3.238803,
+              "submitWaitMs": 239.032709,
+              "resetMs": 1.72656,
+              "tailMs": 40.610938
+            },
+            {
+              "wallMs": 272.440416,
+              "threadCpuMs": 33.363231,
+              "recordMs": 4.309217,
+              "submitWaitMs": 218.769636,
+              "resetMs": 2.345469,
+              "tailMs": 44.716927
+            },
+            {
+              "wallMs": 254.656511,
+              "threadCpuMs": 27.587444,
+              "recordMs": 3.33057,
+              "submitWaitMs": 208.844686,
+              "resetMs": 1.03156,
+              "tailMs": 40.25875
+            },
+            {
+              "wallMs": 258.146042,
+              "threadCpuMs": 30.186666,
+              "recordMs": 3.583491,
+              "submitWaitMs": 207.874272,
+              "resetMs": 1.246098,
+              "tailMs": 43.242395
+            }
+          ]
+        },
+        "before": {
+          "thermal": [
+            "Thermal Status: 0"
+          ],
+          "battery": [
+            "level: 60",
+            "temperature: 330",
+            "Capacity level: 3"
+          ]
+        },
+        "after": {
+          "thermal": [
+            "Thermal Status: 0"
+          ],
+          "battery": [
+            "level: 60",
+            "temperature: 330",
+            "Capacity level: 3"
+          ]
+        }
+      },
+      {
+        "kind": "profile",
+        "order": 1,
+        "metrics": {
+          "schema": 1,
+          "localMemory": true,
+          "imageStorage": false,
+          "fp16Arithmetic": false,
+          "width": 400,
+          "height": 400,
+          "loadMs": 501.415156,
+          "effectiveLocalMemory": false,
+          "effectivePack8": false,
+          "samples": [
+            {
+              "wallMs": 292.578437,
+              "threadCpuMs": 31.985677,
+              "recordMs": 3.733908,
+              "submitWaitMs": 242.631094,
+              "resetMs": 1.617657,
+              "tailMs": 42.121511,
+              "gpuChunksMs": 225.964369,
+              "gpuTailNetworkMs": 18.490156,
+              "convGpuChunksMs": 208.950464,
+              "preluGpuChunksMs": 16.987135
+            },
+            {
+              "wallMs": 253.576302,
+              "threadCpuMs": 31.337764,
+              "recordMs": 2.943128,
+              "submitWaitMs": 205.154322,
+              "resetMs": 2.072346,
+              "tailMs": 41.444948,
+              "gpuChunksMs": 188.065464,
+              "gpuTailNetworkMs": 18.540156,
+              "convGpuChunksMs": 172.789319,
+              "preluGpuChunksMs": 15.251875
+            },
+            {
+              "wallMs": 257.057604,
+              "threadCpuMs": 30.761716,
+              "recordMs": 3.820053,
+              "submitWaitMs": 207.197501,
+              "resetMs": 1.106927,
+              "tailMs": 42.891927,
+              "gpuChunksMs": 191.061766,
+              "gpuTailNetworkMs": 18.509843,
+              "convGpuChunksMs": 176.380412,
+              "preluGpuChunksMs": 14.657031
+            },
+            {
+              "wallMs": 244.233281,
+              "threadCpuMs": 28.80527,
+              "recordMs": 2.504946,
+              "submitWaitMs": 197.798335,
+              "resetMs": 1.14948,
+              "tailMs": 40.845313,
+              "gpuChunksMs": 183.660725,
+              "gpuTailNetworkMs": 18.505885,
+              "convGpuChunksMs": 169.077131,
+              "preluGpuChunksMs": 14.559114
+            }
+          ],
+          "gpuTimestampPeriodNs": 52.083332,
+          "gpuTimestampValidBits": 48,
+          "profileOnly": true
+        },
+        "before": {
+          "thermal": [
+            "Thermal Status: 0"
+          ],
+          "battery": [
+            "level: 60",
+            "temperature: 330",
+            "Capacity level: 3"
+          ]
+        },
+        "after": {
+          "thermal": [
+            "Thermal Status: 0"
+          ],
+          "battery": [
+            "level: 60",
+            "temperature: 330",
+            "Capacity level: 3"
+          ]
+        }
+      },
+      {
+        "kind": "plain",
+        "order": 2,
+        "metrics": {
+          "schema": 1,
+          "localMemory": true,
+          "imageStorage": false,
+          "fp16Arithmetic": false,
+          "width": 400,
+          "height": 400,
+          "loadMs": 502.715937,
+          "effectiveLocalMemory": false,
+          "effectivePack8": false,
+          "samples": [
+            {
+              "wallMs": 285.414635,
+              "threadCpuMs": 30.162031,
+              "recordMs": 2.991045,
+              "submitWaitMs": 238.084373,
+              "resetMs": 1.5113,
+              "tailMs": 41.301823
+            },
+            {
+              "wallMs": 249.235364,
+              "threadCpuMs": 22.62453,
+              "recordMs": 2.943332,
+              "submitWaitMs": 207.984013,
+              "resetMs": 1.400782,
+              "tailMs": 35.008854
+            },
+            {
+              "wallMs": 248.870937,
+              "threadCpuMs": 30.239063,
+              "recordMs": 2.92271,
+              "submitWaitMs": 199.779585,
+              "resetMs": 1.298229,
+              "tailMs": 43.144323
+            },
+            {
+              "wallMs": 246.16849,
+              "threadCpuMs": 30.869482,
+              "recordMs": 3.574166,
+              "submitWaitMs": 198.840833,
+              "resetMs": 1.73552,
+              "tailMs": 40.64099
+            }
+          ]
+        },
+        "before": {
+          "thermal": [
+            "Thermal Status: 0"
+          ],
+          "battery": [
+            "level: 60",
+            "temperature: 330",
+            "Capacity level: 3"
+          ]
+        },
+        "after": {
+          "thermal": [
+            "Thermal Status: 0"
+          ],
+          "battery": [
+            "level: 60",
+            "temperature: 330",
+            "Capacity level: 3"
+          ]
+        }
+      }
+    ],
+    "interpretation": "GPU queue intervals include execution/stalls; no utilization or energy measurement"
+  },
+  "acceptance": "No performance change accepted. Sustained thermal/energy objective remains OPEN.",
+  "notExecuted": [
+    "Three matched full-Native comparisons",
+    "Text/gray numerical expansion",
+    "Reader Surface/input latency/AI coverage",
+    "20+ page sustained reader validation",
+    "Hot/throttled matched candidate validation",
+    "Reliable rail/wall energy measurement",
+    "New APK/full feature regression"
+  ],
+  "deviceEnd": {
+    "installedApkIdentityVerified": true,
+    "noStandaloneOrAppNativeWorker": true,
+    "launcherRestored": true,
+    "readerOpenedThisRound": false,
+    "settingsAndProgressNotIntentionallyModified": true
+  },
+  "next": "Review measured Winograd input/GEMM/output costs before designing a new minimal experiment. Do not repeat failed geometry/static/shared/fusion toggles or equate buffer flags with a measured bottleneck."
+}

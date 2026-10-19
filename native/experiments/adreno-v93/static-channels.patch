@@ -1,0 +1,110 @@
+--- a/src/layer/vulkan/convolution_vulkan.cpp
++++ b/src/layer/vulkan/convolution_vulkan.cpp
+@@ -16,6 +16,9 @@
+ 
+ #include "layer_shader_type.h"
+ #include "layer_type.h"
++
++#include <cstdlib>
++#include <string>
+ 
+ namespace ncnn {
+ 
+@@ -398,6 +401,20 @@
+                 specializations[1 + 3].i = shape_winograd_gemm_packed.h;
+                 specializations[1 + 4].i = shape_winograd_gemm_packed.cstep;
+ 
++                // Channel counts are model constants even when spatial shapes are dynamic.
++                // Experimental opt-in only; preserve group size and all shader math.
++                const char* static_channels = std::getenv("MANYUE_GEMM_STATIC_CHANNELS");
++                if (static_channels && static_channels[0] == '1' && static_channels[1] == 0
++                        && vkdev->info.type() == 1 && num_input == 64 && num_output == 64
++                        && elempack == 4 && out_elempack == 4 && !opt.use_image_storage
++                        && opt.use_fp16_storage && !opt.use_fp16_arithmetic
++                        && !opt.use_shader_local_memory && !use_cooperative_matrix_16_8_8 && !use_cooperative_matrix_16_16_16)
++                {
++                    specializations[1 + 0].i = num_input / elempack;
++                    specializations[1 + 3].i = num_output / out_elempack;
++                    NCNN_LOGE("MANYUE_STATIC_CHANNELS active 64->64 pack4");
++                }
++
+                 int shader_type_index = -1;
+                 if (elempack == 1 && out_elempack == 1) shader_type_index = LayerShaderType::convolution_3x3s1d1_winograd_gemm;
+                 if (elempack == 4 && out_elempack == 4) shader_type_index = LayerShaderType::convolution_pack4_3x3s1d1_winograd_gemm;
+@@ -439,7 +456,26 @@
+                 }
+                 else
+                 {
+-                    pipeline_convolution_3x3s1d1_winograd43_gemm->set_local_size_xyz(4, std::min(4, num_output / out_elempack), 4);
++                    // Experimental independent-invocation mobile GEMM geometry; default OFF.
++                    const char* mobile_gemm = std::getenv("MANYUE_GEMM32");
++                    const char* mobile_layout = std::getenv("MANYUE_GEMM_LAYOUT");
++                    const bool target = vkdev->info.type() == 1 && num_input == 64 && num_output == 64
++                            && elempack == 4 && out_elempack == 4 && !opt.use_image_storage
++                            && opt.use_fp16_storage && !opt.use_fp16_arithmetic;
++                    if (target && mobile_layout && std::string(mobile_layout) == "8x4x2")
++                    {
++                        pipeline_convolution_3x3s1d1_winograd43_gemm->set_local_size_xyz(8, 4, 2);
++                        NCNN_LOGE("MANYUE_GEMM64X8 active winograd43 64->64 pack4");
++                    }
++                    else if (target && mobile_gemm && mobile_gemm[0] == '1' && mobile_gemm[1] == 0)
++                    {
++                        pipeline_convolution_3x3s1d1_winograd43_gemm->set_local_size_xyz(8, 4, 1);
++                        NCNN_LOGE("MANYUE_GEMM32 active winograd43 64->64 pack4");
++                    }
++                    else
++                    {
++                        pipeline_convolution_3x3s1d1_winograd43_gemm->set_local_size_xyz(4, std::min(4, num_output / out_elempack), 4);
++                    }
+                 }
+                 pipeline_convolution_3x3s1d1_winograd43_gemm->create(shader_type_index, opt, specializations);
+             }
+@@ -676,6 +712,20 @@
+                 specializations[1 + 3].i = shape_winograd_gemm_packed.h;
+                 specializations[1 + 4].i = shape_winograd_gemm_packed.cstep;
+ 
++                // Channel counts are model constants even when spatial shapes are dynamic.
++                // Experimental opt-in only; preserve group size and all shader math.
++                const char* static_channels = std::getenv("MANYUE_GEMM_STATIC_CHANNELS");
++                if (static_channels && static_channels[0] == '1' && static_channels[1] == 0
++                        && vkdev->info.type() == 1 && num_input == 64 && num_output == 64
++                        && elempack == 4 && out_elempack == 4 && !opt.use_image_storage
++                        && opt.use_fp16_storage && !opt.use_fp16_arithmetic
++                        && !opt.use_shader_local_memory && !use_cooperative_matrix_16_8_8 && !use_cooperative_matrix_16_16_16)
++                {
++                    specializations[1 + 0].i = num_input / elempack;
++                    specializations[1 + 3].i = num_output / out_elempack;
++                    NCNN_LOGE("MANYUE_STATIC_CHANNELS active 64->64 pack4");
++                }
++
+                 int shader_type_index = -1;
+                 if (elempack == 1 && out_elempack == 1) shader_type_index = LayerShaderType::convolution_3x3s1d1_winograd_gemm;
+                 if (elempack == 4 && out_elempack == 4) shader_type_index = LayerShaderType::convolution_pack4_3x3s1d1_winograd_gemm;
+@@ -717,7 +767,26 @@
+                 }
+                 else
+                 {
+-                    pipeline_convolution_3x3s1d1_winograd23_gemm->set_local_size_xyz(4, std::min(4, num_output / out_elempack), 4);
++                    // Experimental independent-invocation mobile GEMM geometry; default OFF.
++                    const char* mobile_gemm = std::getenv("MANYUE_GEMM32");
++                    const char* mobile_layout = std::getenv("MANYUE_GEMM_LAYOUT");
++                    const bool target = vkdev->info.type() == 1 && num_input == 64 && num_output == 64
++                            && elempack == 4 && out_elempack == 4 && !opt.use_image_storage
++                            && opt.use_fp16_storage && !opt.use_fp16_arithmetic;
++                    if (target && mobile_layout && std::string(mobile_layout) == "8x4x2")
++                    {
++                        pipeline_convolution_3x3s1d1_winograd23_gemm->set_local_size_xyz(8, 4, 2);
++                        NCNN_LOGE("MANYUE_GEMM64X8 active winograd23 64->64 pack4");
++                    }
++                    else if (target && mobile_gemm && mobile_gemm[0] == '1' && mobile_gemm[1] == 0)
++                    {
++                        pipeline_convolution_3x3s1d1_winograd23_gemm->set_local_size_xyz(8, 4, 1);
++                        NCNN_LOGE("MANYUE_GEMM32 active winograd23 64->64 pack4");
++                    }
++                    else
++                    {
++                        pipeline_convolution_3x3s1d1_winograd23_gemm->set_local_size_xyz(4, std::min(4, num_output / out_elempack), 4);
++                    }
+                 }
+                 pipeline_convolution_3x3s1d1_winograd23_gemm->create(shader_type_index, opt, specializations);
+             }

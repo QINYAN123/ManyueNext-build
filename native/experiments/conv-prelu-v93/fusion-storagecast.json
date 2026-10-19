@@ -1,0 +1,33 @@
+{
+  "label": "storagecast",
+  "archiveSha256": "b2145f7b01422f5ee66777d1c2c29de935191ed39865193951e1a7228202a6c1",
+  "files": [
+    {
+      "path": "src/layer/convolution.h",
+      "originalSha256": "53f2470e77a0b9f974dde26e850d69df28882d037cdb1e4e919214d1e4cde642",
+      "candidateSha256": "524f4636f12164f6a1a49b672ad5ddec77a1966b286171149000d1f21692a832"
+    },
+    {
+      "path": "src/layer/convolution.cpp",
+      "originalSha256": "47caf6f3eac2f834ce468a41f58f6e30bde637cf145ab106023cf8db5978404e",
+      "candidateSha256": "29d997c910099494a725c2d4d86bbf6193cc30b9ca6a79566803449959606067"
+    },
+    {
+      "path": "src/layer/vulkan/convolution_vulkan.cpp",
+      "originalSha256": "078e30ad7ecc202678777746ad8b9f3d69d8f0e85369e19f52b8b8617af7f8f5",
+      "candidateSha256": "1768239bfd60b69c4f8aac4dd603bcb1f33e19ed11cc9935ee9a61fcfdf02f35"
+    },
+    {
+      "path": "src/layer/vulkan/shader/convolution_pack4_3x3s1d1_winograd23_transform_output.comp",
+      "originalSha256": "57dc8709888c8e1d37e63e6f6a4c55e40b7756fd16bc44e5bbb6682a59c4a948",
+      "candidateSha256": "a0f431d541695315107d6e313535dafc881ac38f3565f233cb558ab99643e710"
+    },
+    {
+      "path": "src/layer/vulkan/shader/convolution_pack4_3x3s1d1_winograd43_transform_output.comp",
+      "originalSha256": "3819dbdb878302f9d73882f1e72fc9ece063b59efc510ac34216face10c3e0cd",
+      "candidateSha256": "37df9ddddaa8449d30904515f8458e008cd0eb75489e7a2c9fea73e577a3c452"
+    }
+  ],
+  "patchSha256": "8389b70fceb5f90bf7027f830549b267207bc5c14081e9c6445e1af7ef3401f2",
+  "license": "ncnn BSD-3-Clause; see pinned-source/LICENSE.txt"
+}

@@ -1,0 +1,16 @@
+{
+  "defaultEnabled": false,
+  "env": "MANYUE_SHARED_GEMM=1",
+  "files": [
+    {
+      "file": "src/layer/vulkan/convolution_vulkan.cpp",
+      "originalSha256": "078e30ad7ecc202678777746ad8b9f3d69d8f0e85369e19f52b8b8617af7f8f5",
+      "candidateSha256": "d08eaa7f865a78fe6465a2ae02f873f7a6ff60fac9a72c69a963422f71980f63"
+    },
+    {
+      "file": "src/layer/vulkan/shader/convolution_pack4_3x3s1d1_winograd_gemm.comp",
+      "originalSha256": "04da435e9be84322f6693057d0c9c16bea0d5f6c27702967f27e490cc794443a",
+      "candidateSha256": "c6e5a6e69cfa51d4af360b0d16a6324d66749183ed765144c76185e60f53f05b"
+    }
+  ]
+}

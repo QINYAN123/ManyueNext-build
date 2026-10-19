@@ -1,0 +1,13 @@
+{
+  "type": 1,
+  "subgroupSize": 64,
+  "maxWorkgroupInvocations": 1024,
+  "maxWorkgroupX": 1024,
+  "maxWorkgroupY": 1024,
+  "maxWorkgroupZ": 1024,
+  "maxImage3D": 2048,
+  "maxImage2D": 16384,
+  "storageBufferNoL1": true,
+  "imageLoadZeroBug": false,
+  "cooperativeMatrix": false
+}

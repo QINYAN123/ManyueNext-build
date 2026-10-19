@@ -1,0 +1,7 @@
+{
+  "defaultEnabled": false,
+  "requiresEnv": "MANYUE_GEMM_LAYOUT=8x4x2",
+  "prior32LibrarySha256": "5cd58abdecfa94b1a7428e493707a2a490da5bd5ddcc63b56030dc60b202f473",
+  "sourceSha256": "211f86fc7fac182e3d8bc9270fde7c59d5f8fb270878ed644cc9e72921d2f4c5",
+  "patchSha256": "6e658c57c00e498e8ab8f3d3aea196cd7f2402347e50efcb855568be088722b1"
+}

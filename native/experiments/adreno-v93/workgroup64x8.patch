@@ -1,0 +1,68 @@
+--- a/src/layer/vulkan/convolution_vulkan.cpp
++++ b/src/layer/vulkan/convolution_vulkan.cpp
+@@ -16,6 +16,9 @@
+ 
+ #include "layer_shader_type.h"
+ #include "layer_type.h"
++
++#include <cstdlib>
++#include <string>
+ 
+ namespace ncnn {
+ 
+@@ -439,7 +442,26 @@
+                 }
+                 else
+                 {
+-                    pipeline_convolution_3x3s1d1_winograd43_gemm->set_local_size_xyz(4, std::min(4, num_output / out_elempack), 4);
++                    // Experimental independent-invocation mobile GEMM geometry; default OFF.
++                    const char* mobile_gemm = std::getenv("MANYUE_GEMM32");
++                    const char* mobile_layout = std::getenv("MANYUE_GEMM_LAYOUT");
++                    const bool target = vkdev->info.type() == 1 && num_input == 64 && num_output == 64
++                            && elempack == 4 && out_elempack == 4 && !opt.use_image_storage
++                            && opt.use_fp16_storage && !opt.use_fp16_arithmetic;
++                    if (target && mobile_layout && std::string(mobile_layout) == "8x4x2")
++                    {
++                        pipeline_convolution_3x3s1d1_winograd43_gemm->set_local_size_xyz(8, 4, 2);
++                        NCNN_LOGE("MANYUE_GEMM64X8 active winograd43 64->64 pack4");
++                    }
++                    else if (target && mobile_gemm && mobile_gemm[0] == '1' && mobile_gemm[1] == 0)
++                    {
++                        pipeline_convolution_3x3s1d1_winograd43_gemm->set_local_size_xyz(8, 4, 1);
++                        NCNN_LOGE("MANYUE_GEMM32 active winograd43 64->64 pack4");
++                    }
++                    else
++                    {
++                        pipeline_convolution_3x3s1d1_winograd43_gemm->set_local_size_xyz(4, std::min(4, num_output / out_elempack), 4);
++                    }
+                 }
+                 pipeline_convolution_3x3s1d1_winograd43_gemm->create(shader_type_index, opt, specializations);
+             }
+@@ -717,7 +739,26 @@
+                 }
+                 else
+                 {
+-                    pipeline_convolution_3x3s1d1_winograd23_gemm->set_local_size_xyz(4, std::min(4, num_output / out_elempack), 4);
++                    // Experimental independent-invocation mobile GEMM geometry; default OFF.
++                    const char* mobile_gemm = std::getenv("MANYUE_GEMM32");
++                    const char* mobile_layout = std::getenv("MANYUE_GEMM_LAYOUT");
++                    const bool target = vkdev->info.type() == 1 && num_input == 64 && num_output == 64
++                            && elempack == 4 && out_elempack == 4 && !opt.use_image_storage
++                            && opt.use_fp16_storage && !opt.use_fp16_arithmetic;
++                    if (target && mobile_layout && std::string(mobile_layout) == "8x4x2")
++                    {
++                        pipeline_convolution_3x3s1d1_winograd23_gemm->set_local_size_xyz(8, 4, 2);
++                        NCNN_LOGE("MANYUE_GEMM64X8 active winograd23 64->64 pack4");
++                    }
++                    else if (target && mobile_gemm && mobile_gemm[0] == '1' && mobile_gemm[1] == 0)
++                    {
++                        pipeline_convolution_3x3s1d1_winograd23_gemm->set_local_size_xyz(8, 4, 1);
++                        NCNN_LOGE("MANYUE_GEMM32 active winograd23 64->64 pack4");
++                    }
++                    else
++                    {
++                        pipeline_convolution_3x3s1d1_winograd23_gemm->set_local_size_xyz(4, std::min(4, num_output / out_elempack), 4);
++                    }
+                 }
+                 pipeline_convolution_3x3s1d1_winograd23_gemm->create(shader_type_index, opt, specializations);
+             }

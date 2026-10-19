@@ -1,0 +1,418 @@
+--- a/src/layer/convolution.h
++++ b/src/layer/convolution.h
+@@ -22,6 +22,11 @@
+ class Convolution : public Layer
+ {
+ public:
++    enum
++    {
++        activation_type_manyue_prelu_fused = 100
++    };
++
+     Convolution();
+ 
+     virtual int load_param(const ParamDict& pd);
+@@ -31,6 +36,8 @@
+     virtual int forward(const Mat& bottom_blob, Mat& top_blob, const Option& opt) const;
+ 
+     virtual int forward(const std::vector<Mat>& bottom_blobs, std::vector<Mat>& top_blobs, const Option& opt) const;
++
++    bool manyue_prelu_fusion_config_valid() const;
+ 
+ protected:
+     void make_padding(const Mat& bottom_blob, Mat& bottom_blob_bordered, const Option& opt) const;
+@@ -69,6 +76,7 @@
+     // model
+     Mat weight_data;
+     Mat bias_data;
++    Mat manyue_prelu_slope;
+ 
+ #if NCNN_INT8
+     Mat weight_data_int8_scales;
+--- a/src/layer/convolution.cpp
++++ b/src/layer/convolution.cpp
+@@ -24,6 +24,21 @@
+ {
+     one_blob_only = true;
+     support_inplace = false;
++}
++
++bool Convolution::manyue_prelu_fusion_config_valid() const
++{
++    return activation_type == activation_type_manyue_prelu_fused
++           && support_vulkan
++           && !dynamic_weight
++           && num_output == 64
++           && kernel_w == 3 && kernel_h == 3
++           && dilation_w == 1 && dilation_h == 1
++           && stride_w == 1 && stride_h == 1
++           && bias_term
++           && weight_data_size == 64 * 64 * 3 * 3
++           && int8_scale_term == 0
++           && activation_params.empty();
+ }
+ 
+ int Convolution::load_param(const ParamDict& pd)
+@@ -63,11 +78,23 @@
+ #endif
+     }
+ 
++    if (activation_type == activation_type_manyue_prelu_fused && !manyue_prelu_fusion_config_valid())
++    {
++        NCNN_LOGE("Manyue fused PReLU requires a Vulkan 64->64 3x3 stride-1 convolution with bias and float weights");
++        return -1;
++    }
++
+     return 0;
+ }
+ 
+ int Convolution::load_model(const ModelBin& mb)
+ {
++    if (activation_type == activation_type_manyue_prelu_fused && !manyue_prelu_fusion_config_valid())
++    {
++        NCNN_LOGE("Manyue fused PReLU is not supported on this layer implementation");
++        return -1;
++    }
++
+     if (dynamic_weight)
+         return 0;
+ 
+@@ -80,6 +107,24 @@
+         bias_data = mb.load(num_output, 1);
+         if (bias_data.empty())
+             return -100;
++    }
++
++    if (activation_type == activation_type_manyue_prelu_fused)
++    {
++        if (weight_data.elemsize != 4u || bias_data.dims != 1 || bias_data.w != num_output || bias_data.elemsize != 4u)
++        {
++            NCNN_LOGE("Manyue fused PReLU expects float32 convolution weights and 64-element bias");
++            return -100;
++        }
++
++        // The source .bin is unchanged: this consumes the PReLU layer's following
++        // per-channel slope block, using the same ModelBin type as PReLU::load_model.
++        manyue_prelu_slope = mb.load(num_output, 1);
++        if (manyue_prelu_slope.empty() || manyue_prelu_slope.dims != 1 || manyue_prelu_slope.w != num_output || manyue_prelu_slope.elemsize != 4u)
++        {
++            NCNN_LOGE("Manyue fused PReLU expects 64 float32 channel slopes after the convolution bias");
++            return -100;
++        }
+     }
+ 
+ #if NCNN_INT8
+@@ -196,6 +241,12 @@
+ 
+ int Convolution::forward(const Mat& bottom_blob, Mat& top_blob, const Option& opt) const
+ {
++    if (activation_type == activation_type_manyue_prelu_fused)
++    {
++        NCNN_LOGE("Manyue fused PReLU has no CPU implementation");
++        return -1;
++    }
++
+ #if NCNN_INT8
+     if (opt.use_int8_inference && weight_data.elemsize == (size_t)1u)
+     {
+@@ -279,6 +330,12 @@
+ 
+ int Convolution::forward(const std::vector<Mat>& bottom_blobs, std::vector<Mat>& top_blobs, const Option& opt) const
+ {
++    if (activation_type == activation_type_manyue_prelu_fused)
++    {
++        NCNN_LOGE("Manyue fused PReLU has no CPU implementation");
++        return -1;
++    }
++
+     const Mat& bottom_blob = bottom_blobs[0];
+     const Mat& _weight_data = bottom_blobs[1];
+     Mat& top_blob = top_blobs[0];
+--- a/src/layer/vulkan/convolution_vulkan.cpp
++++ b/src/layer/vulkan/convolution_vulkan.cpp
+@@ -17,7 +17,23 @@
+ #include "layer_shader_type.h"
+ #include "layer_type.h"
+ 
++#include <string.h>
++
+ namespace ncnn {
++
++static bool manyue_prelu_fusion_vulkan_options_valid(const Convolution_vulkan& convolution, const Option& opt)
++{
++    return convolution.manyue_prelu_fusion_config_valid()
++           && convolution.vkdev
++           && opt.use_vulkan_compute
++           && opt.use_fp16_storage
++           && !opt.use_fp16_arithmetic
++           && !opt.use_shader_pack8
++           && !opt.use_image_storage
++           && !opt.use_cooperative_matrix
++           && opt.use_winograd_convolution
++           && (opt.use_winograd23_convolution || opt.use_winograd43_convolution);
++}
+ 
+ Convolution_vulkan::Convolution_vulkan()
+ {
+@@ -61,6 +77,20 @@
+     Option opt = _opt;
+     const Mat& shape = bottom_shapes.empty() ? Mat() : bottom_shapes[0];
+     const Mat& out_shape = top_shapes.empty() ? Mat() : top_shapes[0];
++
++    if (activation_type == activation_type_manyue_prelu_fused)
++    {
++        if (!manyue_prelu_fusion_vulkan_options_valid(*this, _opt)
++                || weight_data.empty() || weight_data.elemsize != 4u
++                || bias_data.dims != 1 || bias_data.w != 64 || bias_data.elemsize != 4u
++                || manyue_prelu_slope.dims != 1 || manyue_prelu_slope.w != 64 || manyue_prelu_slope.elemsize != 4u
++                || (shape.dims != 0 && (shape.dims != 3 || shape.c != 64))
++                || (out_shape.dims != 0 && (out_shape.dims != 3 || out_shape.c != 64)))
++        {
++            NCNN_LOGE("Manyue fused PReLU requires buffer Vulkan, FP16 storage/FP32 arithmetic, pack4, no cooperative matrix, and 64-channel Winograd23/43");
++            return -1;
++        }
++    }
+ 
+     const int maxk = kernel_w * kernel_h;
+     int num_input = weight_data_size / maxk / num_output;
+@@ -937,7 +967,26 @@
+ 
+     if (bias_term)
+     {
+-        convert_packing(bias_data, bias_data_packed, out_elempack, opt);
++        if (activation_type == activation_type_manyue_prelu_fused)
++        {
++            // Keep the model's original bias_data untouched. Append the PReLU slope
++            // block before the existing pack4 conversion so the shader can read it
++            // from the same buffer binding after the 16 packed bias vectors.
++            Mat bias_data_with_prelu_slope;
++            bias_data_with_prelu_slope.create(num_output * 2, (size_t)4u, opt.blob_allocator);
++            if (bias_data_with_prelu_slope.empty())
++                return -100;
++
++            memcpy(bias_data_with_prelu_slope.data, bias_data.data, num_output * sizeof(float));
++            memcpy((float*)bias_data_with_prelu_slope.data + num_output, manyue_prelu_slope.data, num_output * sizeof(float));
++            convert_packing(bias_data_with_prelu_slope, bias_data_packed, out_elempack, opt);
++            if (bias_data_packed.empty())
++                return -100;
++        }
++        else
++        {
++            convert_packing(bias_data, bias_data_packed, out_elempack, opt);
++        }
+     }
+ 
+     if (opt.use_winograd_convolution && (opt.use_winograd23_convolution || opt.use_winograd43_convolution) && is_conv3x3s1d1 && num_input >= 16 && num_output >= 16)
+@@ -1152,6 +1201,8 @@
+     {
+         weight_data.release();
+         bias_data.release();
++        if (activation_type == activation_type_manyue_prelu_fused)
++            manyue_prelu_slope.release();
+     }
+ 
+     return 0;
+@@ -1209,6 +1260,19 @@
+ 
+ int Convolution_vulkan::upload_model(VkTransfer& cmd, const Option& opt)
+ {
++    if (activation_type == activation_type_manyue_prelu_fused && !manyue_prelu_fusion_vulkan_options_valid(*this, opt))
++    {
++        NCNN_LOGE("Manyue fused PReLU upload options do not match its Vulkan pipeline");
++        return -1;
++    }
++
++    if (activation_type == activation_type_manyue_prelu_fused
++            && (bias_data_packed.dims != 1 || bias_data_packed.w != 32 || bias_data_packed.elempack != 4))
++    {
++        NCNN_LOGE("Manyue fused PReLU bias/slope pack4 data is missing before upload");
++        return -100;
++    }
++
+     if (padding)
+     {
+         padding->upload_model(cmd, opt);
+@@ -1284,6 +1348,14 @@
+ 
+ int Convolution_vulkan::forward(const VkMat& bottom_blob, VkMat& top_blob, VkCompute& cmd, const Option& opt) const
+ {
++    if (activation_type == activation_type_manyue_prelu_fused
++            && (!manyue_prelu_fusion_vulkan_options_valid(*this, opt)
++                || bottom_blob.dims != 3 || bottom_blob.elempack != 4 || bottom_blob.c * bottom_blob.elempack != 64))
++    {
++        NCNN_LOGE("Manyue fused PReLU runtime input is outside the supported pack4 64-channel Vulkan path");
++        return -1;
++    }
++
+     int w = bottom_blob.w;
+     int h = bottom_blob.h;
+     int channels = bottom_blob.c;
+@@ -1756,6 +1828,12 @@
+ 
+ int Convolution_vulkan::forward(const VkImageMat& bottom_blob, VkImageMat& top_blob, VkCompute& cmd, const Option& opt) const
+ {
++    if (activation_type == activation_type_manyue_prelu_fused)
++    {
++        NCNN_LOGE("Manyue fused PReLU does not support Vulkan image storage");
++        return -1;
++    }
++
+     int w = bottom_blob.w;
+     int h = bottom_blob.h;
+     int channels = bottom_blob.c;
+--- a/src/layer/vulkan/shader/convolution_pack4_3x3s1d1_winograd23_transform_output.comp
++++ b/src/layer/vulkan/shader/convolution_pack4_3x3s1d1_winograd23_transform_output.comp
+@@ -49,6 +49,39 @@
+ layout (binding = 1) writeonly buffer top_blob { sfpvec4 top_blob_data[]; };
+ layout (binding = 2) readonly buffer bias_blob { sfpvec4 bias_data[]; };
+ #endif
++
++// The host selects activation_type 100 only for middle Conv2..32 in the
++// supported buffer-mode FP16-storage / FP32-arithmetic pack4 path; Conv0/PReLU1
++// remains standalone. Recreate Conv's FP16 store and PReLU's FP16 load before
++// doing the multiply.
++// Signed zero and subnormal handling can vary with GPU conversion behavior;
++// this round-trip is not a numerical-equivalence proof until tested on device.
++afpvec4 manyue_round_conv_fp16_storage(afpvec4 v)
++{
++#if NCNN_fp16_storage && !NCNN_fp16_arithmetic
++    return afpvec4(unpackHalf2x16(packHalf2x16(v.xy)),
++                   unpackHalf2x16(packHalf2x16(v.zw)));
++#else
++    return v;
++#endif
++}
++
++afpvec4 manyue_apply_activation(afpvec4 v, afpvec4 prelu_slope)
++{
++    if (activation_type == 100)
++    {
++#if NCNN_image_shader
++        // The host does not enable fused PReLU for image shaders.
++        return v;
++#else
++        const afpvec4 rounded_conv = manyue_round_conv_fp16_storage(v);
++        return mix(rounded_conv, rounded_conv * prelu_slope,
++                   lessThan(rounded_conv, afpvec4(0.f)));
++#endif
++    }
++
++    return activation_afpvec4(v, activation_type, activation_param_0, activation_param_1);
++}
+ 
+ layout (push_constant) uniform parameter
+ {
+@@ -152,10 +185,19 @@
+         v11 = m11 - m12 + m13;
+     }
+ 
+-    v00 = activation_afpvec4(v00, activation_type, activation_param_0, activation_param_1);
+-    v01 = activation_afpvec4(v01, activation_type, activation_param_0, activation_param_1);
+-    v10 = activation_afpvec4(v10, activation_type, activation_param_0, activation_param_1);
+-    v11 = activation_afpvec4(v11, activation_type, activation_param_0, activation_param_1);
++    afpvec4 fused_prelu_slope = afpvec4(0.f);
++#if !NCNN_image_shader
++    if (activation_type == 100)
++    {
++        // c is the packed output-channel count; append slopes after its bias vectors.
++        fused_prelu_slope = buffer_ld4(bias_data, psc(c) + gz);
++    }
++#endif
++
++    v00 = manyue_apply_activation(v00, fused_prelu_slope);
++    v01 = manyue_apply_activation(v01, fused_prelu_slope);
++    v10 = manyue_apply_activation(v10, fused_prelu_slope);
++    v11 = manyue_apply_activation(v11, fused_prelu_slope);
+ 
+     // store 2x2
+     int x = gx * 2;
+--- a/src/layer/vulkan/shader/convolution_pack4_3x3s1d1_winograd43_transform_output.comp
++++ b/src/layer/vulkan/shader/convolution_pack4_3x3s1d1_winograd43_transform_output.comp
+@@ -49,6 +49,39 @@
+ layout (binding = 1) writeonly buffer top_blob { sfpvec4 top_blob_data[]; };
+ layout (binding = 2) readonly buffer bias_blob { sfpvec4 bias_data[]; };
+ #endif
++
++// The host selects activation_type 100 only for middle Conv2..32 in the
++// supported buffer-mode FP16-storage / FP32-arithmetic pack4 path; Conv0/PReLU1
++// remains standalone. Recreate Conv's FP16 store and PReLU's FP16 load before
++// doing the multiply.
++// Signed zero and subnormal handling can vary with GPU conversion behavior;
++// this round-trip is not a numerical-equivalence proof until tested on device.
++afpvec4 manyue_round_conv_fp16_storage(afpvec4 v)
++{
++#if NCNN_fp16_storage && !NCNN_fp16_arithmetic
++    return afpvec4(unpackHalf2x16(packHalf2x16(v.xy)),
++                   unpackHalf2x16(packHalf2x16(v.zw)));
++#else
++    return v;
++#endif
++}
++
++afpvec4 manyue_apply_activation(afpvec4 v, afpvec4 prelu_slope)
++{
++    if (activation_type == 100)
++    {
++#if NCNN_image_shader
++        // The host does not enable fused PReLU for image shaders.
++        return v;
++#else
++        const afpvec4 rounded_conv = manyue_round_conv_fp16_storage(v);
++        return mix(rounded_conv, rounded_conv * prelu_slope,
++                   lessThan(rounded_conv, afpvec4(0.f)));
++#endif
++    }
++
++    return activation_afpvec4(v, activation_type, activation_param_0, activation_param_1);
++}
+ 
+ layout (push_constant) uniform parameter
+ {
+@@ -240,22 +273,31 @@
+         v33 = bias_value + v33;
+     }
+ 
+-    v00 = activation_afpvec4(v00, activation_type, activation_param_0, activation_param_1);
+-    v01 = activation_afpvec4(v01, activation_type, activation_param_0, activation_param_1);
+-    v02 = activation_afpvec4(v02, activation_type, activation_param_0, activation_param_1);
+-    v03 = activation_afpvec4(v03, activation_type, activation_param_0, activation_param_1);
+-    v10 = activation_afpvec4(v10, activation_type, activation_param_0, activation_param_1);
+-    v11 = activation_afpvec4(v11, activation_type, activation_param_0, activation_param_1);
+-    v12 = activation_afpvec4(v12, activation_type, activation_param_0, activation_param_1);
+-    v13 = activation_afpvec4(v13, activation_type, activation_param_0, activation_param_1);
+-    v20 = activation_afpvec4(v20, activation_type, activation_param_0, activation_param_1);
+-    v21 = activation_afpvec4(v21, activation_type, activation_param_0, activation_param_1);
+-    v22 = activation_afpvec4(v22, activation_type, activation_param_0, activation_param_1);
+-    v23 = activation_afpvec4(v23, activation_type, activation_param_0, activation_param_1);
+-    v30 = activation_afpvec4(v30, activation_type, activation_param_0, activation_param_1);
+-    v31 = activation_afpvec4(v31, activation_type, activation_param_0, activation_param_1);
+-    v32 = activation_afpvec4(v32, activation_type, activation_param_0, activation_param_1);
+-    v33 = activation_afpvec4(v33, activation_type, activation_param_0, activation_param_1);
++    afpvec4 fused_prelu_slope = afpvec4(0.f);
++#if !NCNN_image_shader
++    if (activation_type == 100)
++    {
++        // c is the packed output-channel count; append slopes after its bias vectors.
++        fused_prelu_slope = buffer_ld4(bias_data, psc(c) + gz);
++    }
++#endif
++
++    v00 = manyue_apply_activation(v00, fused_prelu_slope);
++    v01 = manyue_apply_activation(v01, fused_prelu_slope);
++    v02 = manyue_apply_activation(v02, fused_prelu_slope);
++    v03 = manyue_apply_activation(v03, fused_prelu_slope);
++    v10 = manyue_apply_activation(v10, fused_prelu_slope);
++    v11 = manyue_apply_activation(v11, fused_prelu_slope);
++    v12 = manyue_apply_activation(v12, fused_prelu_slope);
++    v13 = manyue_apply_activation(v13, fused_prelu_slope);
++    v20 = manyue_apply_activation(v20, fused_prelu_slope);
++    v21 = manyue_apply_activation(v21, fused_prelu_slope);
++    v22 = manyue_apply_activation(v22, fused_prelu_slope);
++    v23 = manyue_apply_activation(v23, fused_prelu_slope);
++    v30 = manyue_apply_activation(v30, fused_prelu_slope);
++    v31 = manyue_apply_activation(v31, fused_prelu_slope);
++    v32 = manyue_apply_activation(v32, fused_prelu_slope);
++    v33 = manyue_apply_activation(v33, fused_prelu_slope);
+ 
+     // store 4x4
+     int x = gx * 4;
