@@ -8,6 +8,8 @@ import org.junit.jupiter.api.Test
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.nio.file.Files
+import java.nio.file.Path
+import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 
 class ManyueAiRuntimeTest {
@@ -200,6 +202,47 @@ class ManyueAiRuntimeTest {
         assertFalse(realesr.containsKey(ManyueAiModel.FAST_REAL_CUGAN.runnerName))
         assertThrows(IllegalArgumentException::class.java) {
             ManyueAiRuntime.requiredLegacyRuntimeHashes(ManyueAiModel.MOBILE_LITE)
+        }
+    }
+
+    @Test fun `quality model runtime hashes match packaged arm64 JNI assets`() {
+        val workingDirectory = Path.of(System.getProperty("user.dir"))
+        val relativeNativeDirectory = Path.of("src/main/jniLibs/arm64-v8a")
+        val nativeDirectory = listOf(
+            workingDirectory.resolve(relativeNativeDirectory),
+            workingDirectory.resolve("app").resolve(relativeNativeDirectory),
+        ).firstOrNull { Files.isDirectory(it) }
+        assertTrue(nativeDirectory != null, "Could not locate app/src/main/jniLibs/arm64-v8a")
+        val assetsDirectory = nativeDirectory ?: error("JNI asset directory was not found")
+
+        val models = listOf(
+            ManyueAiModel.QUALITY_REAL_ESRGAN,
+            ManyueAiModel.QUALITY_NATIVE2,
+            ManyueAiModel.QUALITY_HYBRID,
+        )
+        val actualHashes = mutableMapOf<String, String>()
+        for (model in models) {
+            for ((name, expectedHash) in ManyueAiRuntime.requiredLegacyRuntimeHashes(model)) {
+                val asset = assetsDirectory.resolve(name)
+                assertTrue(Files.isRegularFile(asset), "Packaged arm64 JNI asset is missing: $name")
+                val actualHash = actualHashes.getOrPut(name) { sha256(asset) }
+                assertEquals(expectedHash, actualHash, "${model.id} runtime hash differs for $name")
+            }
+        }
+    }
+
+    private fun sha256(path: Path): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        Files.newInputStream(path).use { input ->
+            val buffer = ByteArray(16 * 1024)
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                digest.update(buffer, 0, count)
+            }
+        }
+        return digest.digest().joinToString("") {
+            (it.toInt() and 0xFF).toString(16).padStart(2, '0')
         }
     }
 
