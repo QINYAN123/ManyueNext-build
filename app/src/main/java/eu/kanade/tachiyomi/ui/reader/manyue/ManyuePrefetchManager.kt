@@ -237,6 +237,8 @@ object ManyuePrefetchManager {
 
     private fun applyPriorities() {
         if (currentPage < 0) return
+        val priorities = linkedMapOf<String, Int>()
+        val obsolete = mutableListOf<String>()
         val iterator = tokens.entries.iterator()
         while (iterator.hasNext()) {
             val (key, pageTokens) = iterator.next()
@@ -262,13 +264,17 @@ object ManyuePrefetchManager {
                 keepActive = false,
             )
             when {
-                managedPriority != null -> pageTokens.forEach { ManyueAiUpscaler.updatePriority(it, managedPriority) }
+                managedPriority != null -> pageTokens.forEach { priorities[it] = managedPriority }
                 else -> {
-                    pageTokens.forEach(ManyueAiUpscaler::cancel)
+                    obsolete.addAll(pageTokens)
                     tokens.remove(key, pageTokens)
                 }
             }
         }
+        obsolete.forEach(ManyueAiUpscaler::cancel)
+        // Iteration order must not let another visible strip preempt an active page whose
+        // promotion from prefetch is still pending in this same viewport snapshot.
+        ManyueAiUpscaler.updatePriorities(priorities)
     }
 
     private fun updateCacheProtection() {

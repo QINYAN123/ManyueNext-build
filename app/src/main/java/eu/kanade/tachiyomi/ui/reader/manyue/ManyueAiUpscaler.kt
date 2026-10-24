@@ -728,6 +728,17 @@ object ManyueAiUpscaler {
     /** Reorder queued work; active priorities also follow visibility so prefetch can yield. */
     @Synchronized
     fun updatePriority(token: String, newPriority: Int) {
+        updatePriority(token, newPriority, allowPreemption = true)
+    }
+
+    /** Apply one viewport snapshot before deciding whether the active work is still prefetch. */
+    @Synchronized
+    internal fun updatePriorities(priorities: Map<String, Int>) {
+        priorities.forEach { (token, priority) -> updatePriority(token, priority, allowPreemption = false) }
+        queue.peek()?.let(::yieldPrefetchToVisible)
+    }
+
+    private fun updatePriority(token: String, newPriority: Int, allowPreemption: Boolean) {
         val req = requests[token] ?: return
         if (req.cancelled || req.completed) return
         if (newPriority != req.priority) {
@@ -740,16 +751,16 @@ object ManyueAiUpscaler {
         }
         if (req.processing) {
             req.priority = newPriority
-            if (!req.cacheOnlyClaim) queue.peek()?.let(::yieldPrefetchToVisible)
+            if (allowPreemption && !req.cacheOnlyClaim) queue.peek()?.let(::yieldPrefetchToVisible)
             return
         }
         val wasQueued = queue.remove(req)
         req.priority = newPriority
         if (wasQueued) queue.offer(req)
-        if (wasQueued) yieldPrefetchToVisible(req)
+        if (allowPreemption && wasQueued) yieldPrefetchToVisible(req)
         // Visibility priorities arrive in map iteration order. If a newly visible page was
         // promoted first, lowering the old active page must still release its native work.
-        if (req === activeRequest) queue.peek()?.let(::yieldPrefetchToVisible)
+        if (allowPreemption && req === activeRequest) queue.peek()?.let(::yieldPrefetchToVisible)
     }
 
     @Synchronized

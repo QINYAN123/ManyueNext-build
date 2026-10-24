@@ -19,6 +19,7 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.LooperMode
 import java.nio.file.Files
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.PriorityBlockingQueue
 
 @RunWith(RobolectricTestRunner::class)
 @Config(application = Application::class, sdk = [34], manifest = Config.NONE)
@@ -78,10 +79,62 @@ class ManyueSchedulerLifecycleTest {
         sourceFingerprint = "lifecycle-$index",
     )
 
+    private fun registerAtCurrentGeneration(index: Int, chapterId: Long = 92): String =
+        ManyueAiUpscaler.register(
+            mangaId = 91,
+            chapterId = chapterId,
+            pageIndex = index,
+            inputFile = Files.createTempFile("manyue-scheduler", ".bin").toFile(),
+            sourceWidth = 100,
+            sourceHeight = 200,
+            targetMode = 2,
+            targetWidth = 200,
+            priority = 10,
+            expectedMode = ManyueRuntimeState.modeInt,
+            generation = ManyueRuntimeState.generation,
+            sourceFingerprint = "scheduler-$chapterId-$index-${java.util.UUID.randomUUID()}",
+            model = ManyueAiModel.QUALITY_NATIVE2,
+        )
+
     @Suppress("UNCHECKED_CAST")
     private fun request(token: String): ManyueAiUpscaler.Request {
         val field = ManyueAiUpscaler.javaClass.getDeclaredField("requests").apply { isAccessible = true }
         return (field.get(ManyueAiUpscaler) as ConcurrentHashMap<String, ManyueAiUpscaler.Request>).getValue(token)
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun schedulerQueue(): PriorityBlockingQueue<ManyueAiUpscaler.Request> {
+        val field = ManyueAiUpscaler.javaClass.getDeclaredField("queue").apply { isAccessible = true }
+        return field.get(ManyueAiUpscaler) as PriorityBlockingQueue<ManyueAiUpscaler.Request>
+    }
+
+    private fun setActiveRequest(request: ManyueAiUpscaler.Request?) {
+        ManyueAiUpscaler.javaClass.getDeclaredField("activeRequest")
+            .apply { isAccessible = true }
+            .set(ManyueAiUpscaler, request)
+    }
+
+    private fun managerPageIterationOrder(): List<Int> {
+        val field = ManyuePrefetchManager.javaClass.getDeclaredField("tokens").apply { isAccessible = true }
+        @Suppress("UNCHECKED_CAST")
+        val tokens = field.get(ManyuePrefetchManager) as ConcurrentHashMap<Any, *>
+        return tokens.keys.map { key ->
+            key.javaClass.getDeclaredField("pageIndex").apply { isAccessible = true }.getInt(key)
+        }
+    }
+
+    private fun cleanSchedulerRequests(tokens: Collection<String>) {
+        val queue = schedulerQueue()
+        tokens.forEach { token ->
+            request(token).apply {
+                queue.remove(this)
+                queued = false
+                processing = false
+            }
+        }
+        setActiveRequest(null)
+        ManyuePrefetchManager.reset()
+        tokens.forEach { token -> request(token).inputFile.delete() }
     }
 
     @Test fun cancellationBeforeListenerRegistrationStillDeliversTerminalState() {
@@ -131,6 +184,77 @@ class ManyueSchedulerLifecycleTest {
             assertTrue(request(tokens.getValue(2)).cancelled)
         } finally {
             ManyuePrefetchManager.reset()
+        }
+    }
+
+    @Test fun newlyVisibleActiveRequestIsPromotedBeforeAnotherVisibleRequestCanPreemptIt() {
+        ManyuePrefetchManager.reset()
+        val generation = ManyueRuntimeState.generation
+        ManyuePrefetchManager.onPageChanged(92, 0, visible = setOf(92L to 0))
+        val tokens = (1..5).associateWith { registerAtCurrentGeneration(it) }
+        try {
+            tokens.forEach { (index, token) ->
+                ManyuePrefetchManager.register(92, index, token, generation = generation)
+            }
+
+            // PageKey iteration follows the map's hash order. Pick the first page as the queued
+            // current page and the second as active so pre-fix reconciliation visits the queued
+            // request while the active request still carries its old prefetch priority.
+            val pageOrder = managerPageIterationOrder()
+            val queuedPage = pageOrder[0]
+            val activePage = pageOrder[1]
+            val queued = request(tokens.getValue(queuedPage))
+            val active = request(tokens.getValue(activePage))
+            assertTrue(active.priority < 100)
+            assertTrue(queued.priority < 100)
+
+            queued.queued = true
+            schedulerQueue().offer(queued)
+            active.processing = true
+            active.predictiveStart = false
+            setActiveRequest(active)
+
+            ManyuePrefetchManager.onPageChanged(
+                chapterId = 92,
+                current = queuedPage,
+                visible = setOf(92L to queuedPage, 92L to activePage),
+            )
+
+            assertFalse("a request in the new visible snapshot must survive", active.cancelled)
+            assertEquals(100, active.priority)
+            assertEquals(120, queued.priority)
+        } finally {
+            cleanSchedulerRequests(tokens.values)
+        }
+    }
+
+    @Test fun genuinelyOffscreenActivePrefetchStillYieldsToTheCurrentVisibleRequest() {
+        ManyuePrefetchManager.reset()
+        val generation = ManyueRuntimeState.generation
+        ManyuePrefetchManager.onPageChanged(92, 0, visible = setOf(92L to 0))
+        val activeToken = registerAtCurrentGeneration(index = 1)
+        val visibleToken = registerAtCurrentGeneration(index = 0)
+        val tokens = listOf(activeToken, visibleToken)
+        try {
+            ManyuePrefetchManager.register(92, 1, activeToken, generation = generation)
+            ManyuePrefetchManager.register(92, 0, visibleToken, generation = generation)
+            val active = request(activeToken)
+            val visible = request(visibleToken)
+            assertEquals(50, active.priority)
+            assertEquals(120, visible.priority)
+
+            visible.queued = true
+            schedulerQueue().offer(visible)
+            active.processing = true
+            active.predictiveStart = false
+            setActiveRequest(active)
+
+            ManyuePrefetchManager.onPageChanged(92, 0, visible = setOf(92L to 0))
+
+            assertTrue("offscreen prefetch must still yield to current visible work", active.cancelled)
+            assertEquals("预读让出资源，优先处理当前可见页", active.failureDetail)
+        } finally {
+            cleanSchedulerRequests(tokens)
         }
     }
 
