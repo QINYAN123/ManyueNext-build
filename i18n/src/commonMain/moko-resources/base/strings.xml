@@ -1120,6 +1120,8 @@
     <string name="reader_source_image_original">Original</string>
     <string name="reader_source_image_loading">Reading original size</string>
     <string name="reader_source_image_unavailable">Original size unknown</string>
+    <string name="reader_metadata_visible_bottom_page">Visible bottom page %1$d</string>
+    <string name="reader_metadata_adjacent_chapter_visible_bottom_page">Adjacent chapter, visible bottom page %1$d</string>
     <string name="show_r18_content_session">Show R18 content this session (hidden again after restart)</string>
     <string name="show_adult_content_session">Show hidden content</string>
     <string name="adult_content_auto_detection">Automatically identify adult content</string>

@@ -23,6 +23,8 @@ fun ReaderPageIndicator(
     sourceImageInfo: SourceImageInfo,
     modifier: Modifier = Modifier,
     displayEnhancementLabel: String? = null,
+    visibleHeadSourceImageInfo: SourceImageInfo? = null,
+    metadataAttribution: String? = null,
 ) {
     if (currentPage <= 0 || totalPages <= 0) return
 
@@ -52,7 +54,16 @@ fun ReaderPageIndicator(
     ) {
         Text(
             text = buildString {
-                append(ReaderMetadataPresentation.text(currentPage, totalPages, sourceImageInfo, labels))
+                append(
+                    ReaderMetadataPresentation.text(
+                        currentPage,
+                        totalPages,
+                        sourceImageInfo,
+                        labels,
+                        visibleHeadSourceImageInfo = visibleHeadSourceImageInfo,
+                        metadataAttribution = metadataAttribution,
+                    ),
+                )
                 displayEnhancementLabel?.let { append(" · $it") }
             },
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),

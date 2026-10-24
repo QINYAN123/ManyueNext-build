@@ -31,6 +31,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -78,6 +79,7 @@ import eu.kanade.tachiyomi.ui.reader.manyue.ManyuePerformanceRecorder.Metric
 import eu.kanade.tachiyomi.ui.reader.manyue.ManyuePerformanceRecorder.Stage
 import eu.kanade.tachiyomi.ui.reader.manyue.ManyueReadingCoverage
 import eu.kanade.tachiyomi.ui.reader.metadata.ReaderMetadataPresentation
+import eu.kanade.tachiyomi.ui.reader.metadata.SourceImageInfo
 import eu.kanade.tachiyomi.ui.reader.model.ReaderChapter
 import eu.kanade.tachiyomi.ui.reader.model.ReaderPage
 import eu.kanade.tachiyomi.ui.reader.model.ViewerChapters
@@ -90,6 +92,7 @@ import eu.kanade.tachiyomi.ui.reader.viewer.ReaderPageImageView
 import eu.kanade.tachiyomi.ui.reader.viewer.pager.PagerViewer
 import eu.kanade.tachiyomi.ui.reader.viewer.pager.R2LPagerViewer
 import eu.kanade.tachiyomi.ui.reader.viewer.webgpu.WebGpuViewer
+import eu.kanade.tachiyomi.ui.reader.viewer.webgpu.WebGpuViewerContinuous
 import eu.kanade.tachiyomi.ui.reader.viewer.webtoon.WebtoonViewer
 import eu.kanade.tachiyomi.ui.webview.WebViewActivity
 import eu.kanade.tachiyomi.util.system.openInBrowser
@@ -160,6 +163,10 @@ class ReaderActivity : BaseActivity() {
     private val comfortScaleStore by lazy { ManyueComfortScaleStore(readerPreferences.manyueComfortScales) }
     private val mutableGpuDisplayStatus = MutableStateFlow(ManyueGpuDisplayStatus())
     val manyueGpuDisplayStatus = mutableGpuDisplayStatus.asStateFlow()
+    private val mutableWebGpuVisibleHeadPage = MutableStateFlow<ReaderPage?>(null)
+    val webGpuVisibleHeadPage = mutableWebGpuVisibleHeadPage.asStateFlow()
+    private val emptyWebGpuHeadSourceImageInfo =
+        MutableStateFlow<SourceImageInfo>(SourceImageInfo.Unavailable).asStateFlow()
 
     private val windowInsetsController by lazy { WindowInsetsControllerCompat(window, window.decorView) }
 
@@ -870,6 +877,10 @@ class ReaderActivity : BaseActivity() {
         if (viewModel.state.value.viewer === viewer) mutableGpuDisplayStatus.value = status
     }
 
+    internal fun updateWebGpuVisibleHeadPage(viewer: WebGpuViewerContinuous, page: ReaderPage?) {
+        if (viewModel.state.value.viewer === viewer) mutableWebGpuVisibleHeadPage.value = page
+    }
+
     fun onManyueClassicStrengthChanged(strength: Int) {
         val runtime = eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState
         val previous = runtime.classicStrength
@@ -1007,6 +1018,33 @@ class ReaderActivity : BaseActivity() {
     fun AppBars(state: ReaderViewModel.State) {
         val showPageNumber by readerPreferences.showPageNumber.collectAsState()
         val gpuDisplayStatus by manyueGpuDisplayStatus.collectAsState()
+        val visibleHeadPage by webGpuVisibleHeadPage.collectAsState()
+        val visibleHeadSourceImageInfoFlow = remember(visibleHeadPage?.sourceImageInfo) {
+            visibleHeadPage?.sourceImageInfo ?: emptyWebGpuHeadSourceImageInfo
+        }
+        val visibleHeadSourceImageInfo by key(visibleHeadSourceImageInfoFlow) {
+            visibleHeadSourceImageInfoFlow.collectAsState()
+        }
+        val isWebGpuContinuous = state.viewer is WebGpuViewerContinuous
+        val hasVisibleWebGpuHead = isWebGpuContinuous && visibleHeadPage != null
+        // An empty WebGPU viewport has no visible page to attribute. Keep the old progress-page
+        // fallback for other viewers, but don't label read-through progress as visible metadata.
+        val pageMetadataSourceImageInfo = if (isWebGpuContinuous && visibleHeadPage == null) {
+            SourceImageInfo.Unavailable
+        } else {
+            state.sourceImageInfo
+        }
+        val selectedProgressChapterId = state.selectedPageKey?.substringBefore(':')?.toLongOrNull()
+        val visibleHeadAttribution = visibleHeadPage?.takeIf { hasVisibleWebGpuHead }?.let { page ->
+            val isAdjacentChapter = selectedProgressChapterId != null &&
+                page.chapter.chapter.id != selectedProgressChapterId
+            val label = if (isAdjacentChapter) {
+                MR.strings.reader_metadata_adjacent_chapter_visible_bottom_page
+            } else {
+                MR.strings.reader_metadata_visible_bottom_page
+            }
+            stringResource(label, page.index + 1)
+        }
         val isHttpSource = state.source is HttpSource
 
         val cropBorderPaged by readerPreferences.cropBorders.collectAsState()
@@ -1027,8 +1065,10 @@ class ReaderActivity : BaseActivity() {
                     ReaderPageIndicator(
                         currentPage = state.currentPage,
                         totalPages = state.totalPages,
-                        sourceImageInfo = state.sourceImageInfo,
+                        sourceImageInfo = pageMetadataSourceImageInfo,
                         displayEnhancementLabel = gpuDisplayStatus.label,
+                        visibleHeadSourceImageInfo = visibleHeadSourceImageInfo.takeIf { hasVisibleWebGpuHead },
+                        metadataAttribution = visibleHeadAttribution,
                     )
                 }
             },

@@ -29,17 +29,22 @@ object ReaderMetadataPresentation {
         total: Int,
         info: SourceImageInfo,
         labels: ReaderMetadataLabels,
+        visibleHeadSourceImageInfo: SourceImageInfo? = null,
+        metadataAttribution: String? = null,
     ): String {
         val page = "$current / $total"
-        val image = when (info) {
+        val effectiveInfo = visibleHeadSourceImageInfo ?: info
+        val image = when (effectiveInfo) {
             SourceImageInfo.Loading -> labels.loading
             SourceImageInfo.Unavailable -> labels.unavailable
             is SourceImageInfo.Available -> buildString {
-                append("${labels.availablePrefix} ${info.width} × ${info.height}")
-                if (info.enhancedWidth != null && info.enhancedHeight != null) {
-                    append(" · ${labels.enhancedPrefix} ${info.enhancedWidth} × ${info.enhancedHeight}")
+                append("${labels.availablePrefix} ${effectiveInfo.width} × ${effectiveInfo.height}")
+                if (effectiveInfo.enhancedWidth != null && effectiveInfo.enhancedHeight != null) {
+                    append(
+                        " · ${labels.enhancedPrefix} ${effectiveInfo.enhancedWidth} × ${effectiveInfo.enhancedHeight}",
+                    )
                 }
-                val status = when (info.enhancementState) {
+                val status = when (effectiveInfo.enhancementState) {
                     ManyueEnhancementState.ORIGINAL -> null
                     ManyueEnhancementState.CLASSIC_PROCESSING -> labels.classicProcessing
                     ManyueEnhancementState.CLASSIC_READY -> labels.classicReady
@@ -56,10 +61,11 @@ object ReaderMetadataPresentation {
                 }
                 if (status != null) {
                     append(" · $status")
-                    info.enhancementDetail?.takeIf(String::isNotBlank)?.let { append(" ($it)") }
+                    effectiveInfo.enhancementDetail?.takeIf(String::isNotBlank)?.let { append(" ($it)") }
                 }
             }
         }
-        return "$page · $image"
+        val attribution = metadataAttribution?.takeIf(String::isNotBlank)?.let { " · $it" }.orEmpty()
+        return "$page$attribution · $image"
     }
 }

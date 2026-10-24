@@ -144,6 +144,10 @@ class WebGpuViewerContinuous(activity: ReaderActivity, val useGap: Boolean = fal
             } else emptyList()
             val owners = entries.mapTo(linkedSetOf()) { it.first }
             val pageKeys = owners.mapTo(linkedSetOf()) { (it.page.chapter.chapter.id ?: 0L) to it.page.index }
+            // Metadata follows the actual visible bottom image. Keep the progress fallback
+            // below separate because it may refer to a page that has already left the viewport.
+            val visibleHead = WebGpuViewportAiHead.head(owners, null)?.page
+            activity.updateWebGpuVisibleHeadPage(this@WebGpuViewerContinuous, visibleHead)
             val head = WebGpuViewportAiHead.head(
                 owners,
                 currentPage as? ViewerReaderPage,
@@ -334,6 +338,7 @@ class WebGpuViewerContinuous(activity: ReaderActivity, val useGap: Boolean = fal
     }
 
     override fun destroy() {
+        activity.updateWebGpuVisibleHeadPage(this, null)
         selectionPolicy.reset()
         detailFilter.onFailure = null
         nextPreparation.reset(visibleManyueOwners)

@@ -65,6 +65,88 @@ class ReaderMetadataPresentationTest {
     }
 
     @Test
+    fun `visible head metadata does not replace the read progress number`() {
+        val progressInfo = SourceImageInfo.Available(
+            690,
+            1240,
+            enhancementState = ManyueEnhancementState.SKIPPED,
+            enhancementDetail = "已移出预读范围，保留原图",
+        )
+        val visibleHeadInfo = SourceImageInfo.Available(
+            1200,
+            2000,
+            enhancementState = ManyueEnhancementState.AI_READY,
+        )
+
+        assertEquals(
+            "3 / 86 · 可见底部第18页 · 原图 1200 × 2000 · AI 超分",
+            ReaderMetadataPresentation.text(
+                current = 3,
+                total = 86,
+                info = progressInfo,
+                labels = zhLabels.copy(aiReady = "AI 超分"),
+                visibleHeadSourceImageInfo = visibleHeadInfo,
+                metadataAttribution = "可见底部第18页",
+            ),
+        )
+    }
+
+    @Test
+    fun `visible ready metadata overrides loading progress metadata`() {
+        assertEquals(
+            "3 / 86 · 可见底部第18页 · 原图 980 × 1760 · AI 超分",
+            ReaderMetadataPresentation.text(
+                current = 3,
+                total = 86,
+                info = SourceImageInfo.Loading,
+                labels = zhLabels.copy(aiReady = "AI 超分"),
+                visibleHeadSourceImageInfo = SourceImageInfo.Available(
+                    980,
+                    1760,
+                    enhancementState = ManyueEnhancementState.AI_READY,
+                ),
+                metadataAttribution = "可见底部第18页",
+            ),
+        )
+    }
+
+    @Test
+    fun `visible head metadata can identify an adjacent chapter`() {
+        assertEquals(
+            "3 / 86 · 相邻章可见底部第1页 · 原图 690 × 1240 · AI 超分排队中",
+            ReaderMetadataPresentation.text(
+                current = 3,
+                total = 86,
+                info = SourceImageInfo.Available(690, 1240),
+                labels = zhLabels.copy(aiQueued = "AI 超分排队中"),
+                visibleHeadSourceImageInfo = SourceImageInfo.Available(
+                    690,
+                    1240,
+                    enhancementState = ManyueEnhancementState.AI_QUEUED,
+                ),
+                metadataAttribution = "相邻章可见底部第1页",
+            ),
+        )
+    }
+
+    @Test
+    fun `missing optional visible head keeps the non-WebGPU progress metadata fallback`() {
+        assertEquals(
+            "3 / 86 · 原图 690 × 1240 · AI 超分处理中",
+            ReaderMetadataPresentation.text(
+                current = 3,
+                total = 86,
+                info = SourceImageInfo.Available(
+                    690,
+                    1240,
+                    enhancementState = ManyueEnhancementState.AI_PROCESSING,
+                ),
+                labels = zhLabels.copy(aiProcessing = "AI 超分处理中"),
+            ),
+        )
+    }
+
+    @Test
     fun `loading and unavailable have distinct text`() {
         assertEquals("12 / 38 · 原图读取中", ReaderMetadataPresentation.text(12, 38, SourceImageInfo.Loading, zhLabels))
         assertEquals("12 / 38 · 原图未知", ReaderMetadataPresentation.text(12, 38, SourceImageInfo.Unavailable, zhLabels))
