@@ -35,6 +35,9 @@ class WebGpuViewerContinuous(activity: ReaderActivity, val useGap: Boolean = fal
     private val selectionPolicy = WebGpuProgressSelectionPolicy()
     private var manyueHead: Pair<Long, Int>? = null
     private var manyueGeneration = -1L
+    private val displayWidthSyncLock = Any()
+    @Volatile private var displayWidthSyncPending = false
+    @Volatile private var continuousDestroyed = false
     @Volatile private var visibleManyueOwners = emptySet<ViewerReaderPage>()
     private val decodeDemand = WebGpuDecodeDemand<ViewerPage>(
         preloadWindow = ::preloadPages,
@@ -74,6 +77,36 @@ class WebGpuViewerContinuous(activity: ReaderActivity, val useGap: Boolean = fal
             revision = manyueHead to manyueGeneration,
             allowPreparation = owners.isNotEmpty() && allVisibleAiImagesSubmitted(owners),
         )
+    }
+
+    /** Width is a stable physical viewport value; state.scale changes with zoom and is excluded. */
+    private fun syncDisplayWidthBeforeVisibleWork(): Boolean {
+        if (continuousDestroyed) return true
+        val width = state.width
+        // A temporarily zero-sized Surface still needs the normal empty-viewport cleanup.
+        if (width <= 0) return false
+
+        synchronized(displayWidthSyncLock) {
+            if (displayWidthSyncPending) return true
+            if (ManyueRuntimeState.displayWidthPx == width) return false
+            displayWidthSyncPending = true
+        }
+
+        // onVisibleImages is supplied by the WebGPU viewer library; keep state mutation and
+        // cache/page refresh on the viewer's main scope regardless of the callback thread.
+        scope.launch {
+            try {
+                if (continuousDestroyed) return@launch
+                val widthChanged = ManyueRuntimeState.updateDisplayWidth(state.width)
+                if (widthChanged) refreshManyue()
+            } finally {
+                displayWidthSyncPending = false
+                // refreshManyue invalidates too; this final invalidation guarantees a fresh visible
+                // callback after any callback that arrived while the refresh was pending was skipped.
+                if (!continuousDestroyed) state.invalidate()
+            }
+        }
+        return true
     }
 
     override fun isPageVisible(page: ViewerReaderPage): Boolean = page in visibleManyueOwners || super.isPageVisible(page)
@@ -137,8 +170,9 @@ class WebGpuViewerContinuous(activity: ReaderActivity, val useGap: Boolean = fal
             }
         }
 
-        state.onVisibleImages = { visible ->
+        state.onVisibleImages = onVisibleImages@{ visible ->
             val active = activity.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) && pager.isShown
+            if (active && syncDisplayWidthBeforeVisibleWork()) return@onVisibleImages
             val entries = if (active) visible.mapNotNull { image ->
                 (viewerPageFor(image.page) as? ViewerReaderPage)?.let { it to image }
             } else emptyList()
@@ -338,6 +372,8 @@ class WebGpuViewerContinuous(activity: ReaderActivity, val useGap: Boolean = fal
     }
 
     override fun destroy() {
+        continuousDestroyed = true
+        displayWidthSyncPending = false
         activity.updateWebGpuVisibleHeadPage(this, null)
         selectionPolicy.reset()
         detailFilter.onFailure = null

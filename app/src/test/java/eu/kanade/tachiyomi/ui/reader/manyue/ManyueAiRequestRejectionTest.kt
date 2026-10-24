@@ -3,6 +3,14 @@ package eu.kanade.tachiyomi.ui.reader.manyue
 import android.app.Application
 import android.graphics.Bitmap
 import android.os.Build
+import android.os.Looper
+import eu.kanade.tachiyomi.data.database.models.Chapter
+import eu.kanade.tachiyomi.source.model.Page
+import eu.kanade.tachiyomi.ui.reader.metadata.SourceImageInfo
+import eu.kanade.tachiyomi.ui.reader.model.ReaderChapter
+import eu.kanade.tachiyomi.ui.reader.model.ReaderPage
+import io.mockk.every
+import io.mockk.mockk
 import kotlinx.coroutines.flow.MutableStateFlow
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -13,12 +21,17 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
+import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import org.robolectric.annotation.LooperMode
 import org.robolectric.util.ReflectionHelpers
 import java.io.ByteArrayOutputStream
+import java.io.ByteArrayInputStream
 import java.io.File
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 
 @RunWith(RobolectricTestRunner::class)
 @Config(application = Application::class, sdk = [34], manifest = Config.NONE)
@@ -200,6 +213,104 @@ class ManyueAiRequestRejectionTest {
         }
     }
 
+    @Test
+    fun `webgpu auto waits for display width then follows original-size and ai factory paths`() = withRuntime { context ->
+        ManyueRuntimeState.updateMode(ManyueEnhancementMode.AUTO.value)
+        ManyueRuntimeState::class.java.getDeclaredField("displayWidthPx").apply {
+            isAccessible = true
+            setInt(ManyueRuntimeState, 0)
+        }
+
+        val dbChapter = mockk<Chapter>(relaxed = true)
+        every { dbChapter.id } returns 9702L
+        every { dbChapter.manga_id } returns 9701L
+        val chapter = ReaderChapter(dbChapter)
+        val sourceEnteredAtZeroWidth = CountDownLatch(1)
+        val wideReads = AtomicInteger()
+        val narrowReads = AtomicInteger()
+        val widePage = readerPage(chapter, index = 0, width = 128, height = 64, readCount = wideReads) {
+            sourceEnteredAtZeroWidth.countDown()
+        }
+        val narrowPage = readerPage(chapter, index = 1, width = 64, height = 64, readCount = narrowReads) {
+            sourceEnteredAtZeroWidth.countDown()
+        }
+        val wideBridge = ManyueWebGpuPageBridge(context, widePage, alive = { true }) { _, _, _ -> false }
+        val narrowBridge = ManyueWebGpuPageBridge(context, narrowPage, alive = { true }) { _, _, _ -> false }
+
+        try {
+            wideBridge.updateVisibility(isVisible = true)
+            narrowBridge.updateVisibility(isVisible = true)
+            assertFalse(
+                "AUTO must wait before opening source streams when display width is zero",
+                sourceEnteredAtZeroWidth.await(300, TimeUnit.MILLISECONDS),
+            )
+            assertEquals(0, wideReads.get())
+            assertEquals(0, narrowReads.get())
+            assertEquals("等待阅读区宽度", (widePage.sourceImageInfo.value as SourceImageInfo.Available).enhancementDetail)
+            assertEquals("等待阅读区宽度", (narrowPage.sourceImageInfo.value as SourceImageInfo.Available).enhancementDetail)
+
+            val generationBeforeWidth = ManyueRuntimeState.generation
+            assertTrue(ManyueRuntimeState.updateDisplayWidth(128))
+            assertEquals(generationBeforeWidth + 1, ManyueRuntimeState.generation)
+            wideBridge.updateVisibility(isVisible = true)
+            narrowBridge.updateVisibility(isVisible = true)
+
+            assertTrue(
+                "visible page bridges should reach their existing AUTO factory decisions",
+                awaitMainCondition(5_000) {
+                    val wideInfo = widePage.sourceImageInfo.value as SourceImageInfo.Available
+                    wideInfo.enhancementState == ManyueEnhancementState.SKIPPED &&
+                        schedulerRequests().any { it.mangaId == 9701L && it.pageIndex == 1 }
+                },
+            )
+            assertEquals(1, wideReads.get())
+            assertEquals(1, narrowReads.get())
+
+            val wideInfo = widePage.sourceImageInfo.value as SourceImageInfo.Available
+            assertEquals(ManyueEnhancementState.SKIPPED, wideInfo.enhancementState)
+            assertTrue(wideInfo.enhancementDetail.orEmpty().contains("原尺寸"))
+            val pageRequests = schedulerRequests().filter { it.mangaId == 9701L }
+            assertEquals(listOf(1), pageRequests.map { it.pageIndex })
+            assertEquals(64, pageRequests.single().sourceWidth)
+            assertEquals(128, pageRequests.single().targetWidth)
+            assertEquals(ManyueEnhancementMode.AUTO.value, pageRequests.single().expectedMode)
+        } finally {
+            wideBridge.destroy()
+            narrowBridge.destroy()
+        }
+    }
+
+    private fun readerPage(
+        chapter: ReaderChapter,
+        index: Int,
+        width: Int,
+        height: Int,
+        readCount: AtomicInteger,
+        onRead: () -> Unit,
+    ): ReaderPage {
+        val bytes = png(width, height)
+        return ReaderPage(index, stream = {
+            readCount.incrementAndGet()
+            onRead()
+            ByteArrayInputStream(bytes)
+        }).apply {
+            this.chapter = chapter
+            status = Page.State.Ready
+            updateSourceImageInfo(SourceImageInfo.Available(width, height))
+        }
+    }
+
+    private fun awaitMainCondition(timeoutMillis: Long, condition: () -> Boolean): Boolean {
+        val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMillis)
+        do {
+            shadowOf(Looper.getMainLooper()).idle()
+            if (condition()) return true
+            Thread.sleep(5)
+        } while (System.nanoTime() < deadline)
+        shadowOf(Looper.getMainLooper()).idle()
+        return condition()
+    }
+
     private inline fun withRuntime(block: (Application) -> Unit) {
         val context = RuntimeEnvironment.getApplication()
         val runtime = ManyueAiRuntime
@@ -235,7 +346,7 @@ class ManyueAiRequestRejectionTest {
             @Suppress("UNCHECKED_CAST")
             val requests = requestsField.get(null) as Map<String, ManyueAiUpscaler.Request>
             // Cancellation deletes private test inputs and never starts native work.
-            requests.values.filter { it.mangaId in setOf(9201L, 9301L, 9401L, 9501L, 9601L) }
+            requests.values.filter { it.mangaId in setOf(9201L, 9301L, 9401L, 9501L, 9601L, 9701L) }
                 .map { it.token }
                 .forEach(scheduler::cancel)
             ManyuePrefetchManager.reset()
@@ -268,5 +379,11 @@ class ManyueAiRequestRejectionTest {
         @Suppress("UNCHECKED_CAST")
         val requests = field.get(null) as Map<String, ManyueAiUpscaler.Request>
         return requireNotNull(requests[token])
+    }
+
+    private fun schedulerRequests(): List<ManyueAiUpscaler.Request> {
+        val field = ManyueAiUpscaler.javaClass.getDeclaredField("requests").apply { isAccessible = true }
+        @Suppress("UNCHECKED_CAST")
+        return (field.get(null) as Map<String, ManyueAiUpscaler.Request>).values.toList()
     }
 }

@@ -43,6 +43,8 @@ internal class ManyueWebGpuPageBridge(
     private var visible = false
     private var prepareAhead = false
     private var terminalFailure = false
+    private var waitingForDisplayWidth = false
+    private var displayWidthAtWait = 0
     private var readyResult: ManyueReadingCoverage.Result? = null
     private var shownToken: String? = null
     private var inputFingerprint: String? = null
@@ -83,6 +85,13 @@ internal class ManyueWebGpuPageBridge(
         if (generation != ManyueRuntimeState.generation || mode != ManyueRuntimeState.modeInt) reset()
         cancellationRetry.updateVisibility(isVisible)
         if (!wantedForDisplay() || !alive() || page.status != eu.kanade.tachiyomi.source.model.Page.State.Ready) return
+        if (!hasUsableAutoDisplayWidth()) {
+            page.updateEnhancementState(
+                ManyueEnhancementState.AI_QUEUED,
+                "等待阅读区宽度",
+            )
+            return
+        }
         if (readyResult != null) {
             prepareReady()
         } else if (token == null && !terminalFailure && cancellationRetry.allowsVisibilityStart()) {
@@ -132,6 +141,14 @@ internal class ManyueWebGpuPageBridge(
                 }
                 if (!current()) return@launch
                 if (request == null) {
+                    if (rejection?.reason == ManyueAiRequestFactory.RejectionReason.AUTO_WAIT_FOR_WIDTH) {
+                        waitForDisplayWidth(ManyueRuntimeState.displayWidthPx)
+                        page.updateEnhancementState(
+                            ManyueEnhancementState.AI_QUEUED,
+                            rejection?.let(ManyuePageBridge::rejectionMessage),
+                        )
+                        return@launch
+                    }
                     terminalFailure = true
                     page.updateEnhancementState(
                         ManyueEnhancementState.SKIPPED,
@@ -249,6 +266,29 @@ internal class ManyueWebGpuPageBridge(
             page.status == eu.kanade.tachiyomi.source.model.Page.State.Ready &&
             token == null && readyResult == null && !terminalFailure
 
+    private fun hasUsableAutoDisplayWidth(): Boolean {
+        if (mode != ManyueEnhancementMode.AUTO.value) {
+            waitingForDisplayWidth = false
+            return true
+        }
+
+        val width = ManyueRuntimeState.displayWidthPx
+        if (waitingForDisplayWidth) {
+            if (width <= 0 || width == displayWidthAtWait) return false
+            waitingForDisplayWidth = false
+        }
+        if (width <= 0) {
+            waitForDisplayWidth(width)
+            return false
+        }
+        return true
+    }
+
+    private fun waitForDisplayWidth(width: Int) {
+        waitingForDisplayWidth = true
+        displayWidthAtWait = width
+    }
+
     private fun canRetryCancelledRequest(
         requestGeneration: Long,
         requestMode: Int,
@@ -282,6 +322,8 @@ internal class ManyueWebGpuPageBridge(
         inputFingerprint = null
         shownToken = null
         terminalFailure = false
+        waitingForDisplayWidth = false
+        displayWidthAtWait = 0
         generation = ManyueRuntimeState.generation
         mode = ManyueRuntimeState.modeInt
         page.resetEnhancementState(mode)
