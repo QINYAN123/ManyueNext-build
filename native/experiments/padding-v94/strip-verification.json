@@ -1,0 +1,43 @@
+{
+  "passed": true,
+  "sourceSha256": "f1e3b020150008b5e2701c1bf11283fa0d0bbd730626e0fb715df0a8613ae415",
+  "strippedSha256": "859fe2acd3a4bce7762c7c957d79217d1a958d379d494d372dd0534e2bee1b8e",
+  "sourceBytes": 75929728,
+  "strippedBytes": 12111472,
+  "normalizedElfHeaderBytes": [
+    "40:48 section offset",
+    "58:64 section table entry/count/name index"
+  ],
+  "loadSegments": [
+    {
+      "flags": 5,
+      "offset": 0,
+      "vaddr": 0,
+      "paddr": 0,
+      "filesz": 11842896,
+      "memsz": 11842896,
+      "align": 16384,
+      "sha256": "8976bc0f9bf6f4de40a53fdb5ebbb7f522684c086a7669d215c1621e3381491d"
+    },
+    {
+      "flags": 6,
+      "offset": 11842896,
+      "vaddr": 11859280,
+      "paddr": 11859280,
+      "filesz": 254952,
+      "memsz": 256688,
+      "align": 16384,
+      "sha256": "547e2ae474a86aa125e2f7306e7056ac9cfdb8e8346f8a111d46f73920802432"
+    },
+    {
+      "flags": 6,
+      "offset": 12098048,
+      "vaddr": 12130816,
+      "paddr": 12130816,
+      "filesz": 10784,
+      "memsz": 100192,
+      "align": 16384,
+      "sha256": "ccf4a05e17f765a1566383dc19354401075455de807557cc091c0a8ee382450c"
+    }
+  ]
+}

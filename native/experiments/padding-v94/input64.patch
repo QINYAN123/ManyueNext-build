@@ -1,0 +1,36 @@
+--- a/src/layer/vulkan/convolution_vulkan.cpp
++++ b/src/layer/vulkan/convolution_vulkan.cpp
+@@ -13,6 +13,7 @@
+ // specific language governing permissions and limitations under the License.
+ 
+ #include "convolution_vulkan.h"
++#include <cstdlib>
+ 
+ #include "layer_shader_type.h"
+ #include "layer_type.h"
+@@ -385,7 +386,24 @@
+                 if (elempack == 8) shader_type_index = LayerShaderType::convolution_pack8_3x3s1d1_winograd43_transform_input;
+ 
+                 pipeline_convolution_3x3s1d1_winograd43_transform_input = new Pipeline(vkdev);
+-                pipeline_convolution_3x3s1d1_winograd43_transform_input->set_local_size_xyz(4, 4, 1);
++                // Isolated Adreno experiment. Input transform only; shader math,
++                // GEMM, output transform and all tensor dimensions remain unchanged.
++                const char* input64_env = std::getenv("MANYUE_INPUT64");
++                const bool input64 = input64_env && input64_env[0] == '1' && input64_env[1] == 0
++                    && vkdev->info.type() == 1 && vkdev->info.vendor_id() == 0x5143
++                    && vkdev->info.subgroup_size() == 64
++                    && num_input == 64 && num_output == 64 && elempack == 4 && out_elempack == 4
++                    && !opt.use_image_storage && !opt.use_shader_local_memory
++                    && opt.use_fp16_storage && !opt.use_fp16_arithmetic;
++                if (input64)
++                {
++                    pipeline_convolution_3x3s1d1_winograd43_transform_input->set_local_size_xyz(8, 8, 1);
++                    NCNN_LOGE("MANYUE_INPUT64 active 64->64 pack4");
++                }
++                else
++                {
++                    pipeline_convolution_3x3s1d1_winograd43_transform_input->set_local_size_xyz(4, 4, 1);
++                }
+                 pipeline_convolution_3x3s1d1_winograd43_transform_input->create(shader_type_index, opt, specializations);
+             }
+ 

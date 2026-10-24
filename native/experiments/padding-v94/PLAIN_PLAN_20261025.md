@@ -1,0 +1,9 @@
+# Pad1 plain SDK validation, fixed before expanded measurements
+
+Pilot first passed 2026-10-25: forward/reverse 12.92%/11.26%, pooled12.57%, disabled bracket drift1.08%; exact float/RGB. GPU pad nearly eliminated. This is isolated native2 400x400, diagnostic build; no app or watts acceptance.
+
+Next compile pad-only NCNN_BENCHMARK=OFF, matching plain probe. Preserve original stock library as control. No stage queries and no input64 geometry. Test native2 and original4-to2 assets, same FP16storage/FP32math, pack4/buffer/chunk1/persistent net, 2 warmups and4 measured repetitions. Output remains2x in both assets.
+
+Three alternating paired rounds across color400, line-text420 (actual production halo input size), gray-grid399x401 (odd boundary). Alternate AB/BA and deterministic case order seed94; no forced cooldown, no user input, screen idle only, record system thermal/battery before/after each run. Both unmodified stock and candidate-off validate build identity/output at least once. Native2 1x1 and10x10 fallback and13x17/65x129/420x420 boundary checks: output equality mandatory, timing not acceptance on tiny images.
+
+Expanded gate: every output finite and float/RGB exactly equal; median improvement across three rounds for EACH model/content at least5%; no pair slower by more than5%; direction agrees in at least2/3 rounds. Large control drift or thermal changes invalidate a pair rather than prove improvement. Keep full samples, including failures. If successful, fullNative worker multi-tile/output comparison is still required before APK candidate integration. Reader correctness/visible replacements and sustained warm reading are subsequent gates; no claim of energy gain without suitable evidence. Do not change model weights, precision, tile/chunk geometry, app settings, or thermal policy to pass.

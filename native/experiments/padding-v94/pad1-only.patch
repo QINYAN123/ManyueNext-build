@@ -1,0 +1,566 @@
+--- a/src/layer/vulkan/convolution_vulkan.cpp
++++ b/src/layer/vulkan/convolution_vulkan.cpp
+@@ -13,6 +13,7 @@
+ // specific language governing permissions and limitations under the License.
+ 
+ #include "convolution_vulkan.h"
++#include <cstdlib>
+ 
+ #include "layer_shader_type.h"
+ #include "layer_type.h"
+@@ -370,14 +371,27 @@
+             }
+ 
+             {
+-                std::vector<vk_specialization_type> specializations(0 + 7);
+-                specializations[0 + 0].i = shape_bordered_packed.w;
+-                specializations[0 + 1].i = shape_bordered_packed.h;
+-                specializations[0 + 2].i = shape_bordered_packed.c;
+-                specializations[0 + 3].i = shape_bordered_packed.cstep;
++                const char* pad1_env = std::getenv("MANYUE_FUSE_PAD1");
++                const bool fuse_pad1 = pad1_env && pad1_env[0] == '1' && pad1_env[1] == 0
++                    && vkdev->info.type() == 1 && vkdev->info.vendor_id() == 0x5143
++                    && num_input == 64 && num_output == 64 && elempack == 4 && out_elempack == 4
++                    && pad_left == 1 && pad_right == 1 && pad_top == 1 && pad_bottom == 1 && pad_value == 0.f
++                    && !opt.use_image_storage && !opt.use_shader_local_memory
++                    && opt.use_fp16_storage && !opt.use_fp16_arithmetic
++                    && !vkdev->info.support_cooperative_matrix_16_8_8() && !vkdev->info.support_cooperative_matrix_16_16_16();
++                Mat input_unbordered_packed;
++                if (shape.dims == 3) input_unbordered_packed = Mat(shape.w, shape.h, num_input / elempack, (void*)0, elemsize, elempack);
++                const Mat& input_read_shape = fuse_pad1 ? input_unbordered_packed : shape_bordered_packed;
++                std::vector<vk_specialization_type> specializations(0 + 8);
++                specializations[0 + 0].i = input_read_shape.w;
++                specializations[0 + 1].i = input_read_shape.h;
++                specializations[0 + 2].i = input_read_shape.c;
++                specializations[0 + 3].i = input_read_shape.cstep;
+                 specializations[0 + 4].i = shape_winograd_input_transformed_packed.cstep;
+                 specializations[0 + 5].i = block_x;
+                 specializations[0 + 6].i = block_y;
++                specializations[0 + 7].i = fuse_pad1 ? 1 : 0;
++                if (fuse_pad1) NCNN_LOGE("MANYUE_FUSE_PAD1 active 64->64 pack4");
+ 
+                 int shader_type_index = -1;
+                 if (elempack == 1) shader_type_index = LayerShaderType::convolution_3x3s1d1_winograd43_transform_input;
+@@ -1290,6 +1304,20 @@
+     size_t elemsize = bottom_blob.elemsize;
+     int elempack = bottom_blob.elempack;
+ 
++    // Match the Winograd43 pipeline specialization; small inputs which select
++    // Winograd23 still materialize padding and use its unchanged input shader.
++    const char* pad1_env = std::getenv("MANYUE_FUSE_PAD1");
++    const bool fuse_pad1 = pad1_env && pad1_env[0] == '1' && pad1_env[1] == 0
++        && vkdev->info.type() == 1 && vkdev->info.vendor_id() == 0x5143
++        && channels * elempack == 64 && num_output == 64 && elempack == 4 && !opt.use_shader_pack8
++        && kernel_w == 3 && kernel_h == 3 && stride_w == 1 && stride_h == 1 && dilation_w == 1 && dilation_h == 1
++        && pad_left == 1 && pad_right == 1 && pad_top == 1 && pad_bottom == 1 && pad_value == 0.f
++        && opt.use_winograd_convolution && opt.use_winograd43_convolution
++        && (!opt.use_winograd23_convolution || w + 2 > 12 || h + 2 > 12)
++        && !opt.use_image_storage && !opt.use_shader_local_memory
++        && opt.use_fp16_storage && !opt.use_fp16_arithmetic
++        && !vkdev->info.support_cooperative_matrix_16_8_8() && !vkdev->info.support_cooperative_matrix_16_16_16();
++
+     // flattened blob, implement as InnerProduct
+     if (bottom_blob.dims == 1 && kernel_w == 1 && kernel_h == 1)
+     {
+@@ -1319,7 +1347,7 @@
+     const int kernel_extent_h = dilation_h * (kernel_h - 1) + 1;
+ 
+     VkMat bottom_blob_bordered = bottom_blob;
+-    if (pad_left > 0 || pad_right > 0 || pad_top > 0 || pad_bottom > 0)
++    if (!fuse_pad1 && (pad_left > 0 || pad_right > 0 || pad_top > 0 || pad_bottom > 0))
+     {
+         Option opt_pad = opt;
+         opt_pad.blob_vkallocator = opt.workspace_vkallocator;
+@@ -1382,8 +1410,9 @@
+         }
+     }
+ 
+-    w = bottom_blob_bordered.w;
+-    h = bottom_blob_bordered.h;
++    // Virtual bordered dimensions preserve output size and algorithm selection.
++    w = bottom_blob_bordered.w + (fuse_pad1 ? 2 : 0);
++    h = bottom_blob_bordered.h + (fuse_pad1 ? 2 : 0);
+ 
+     int outw = (w - kernel_extent_w) / stride_w + 1;
+     int outh = (h - kernel_extent_h) / stride_h + 1;
+--- a/src/layer/vulkan/shader/convolution_pack4_3x3s1d1_winograd43_transform_input.comp
++++ b/src/layer/vulkan/shader/convolution_pack4_3x3s1d1_winograd43_transform_input.comp
+@@ -31,6 +31,7 @@
+ 
+ layout (constant_id = shape_constant_id_offset + 5) const int block_x = 0;
+ layout (constant_id = shape_constant_id_offset + 6) const int block_y = 0;
++layout (constant_id = shape_constant_id_offset + 7) const int manyue_pad1 = 0;
+ 
+ #if NCNN_image_shader
+ layout (binding = 0) uniform unfp sampler3D bottom_blob;
+@@ -109,51 +110,425 @@
+     afpvec4 v54 = image3d_ld4(bottom_blob, ivec3(sx + 4, sy + 5, gz));
+     afpvec4 v55 = image3d_ld4(bottom_blob, ivec3(sx + 5, sy + 5, gz));
+ #else
+-    int v_offset_0 = gz * psc(cstep) + sy * psc(w) + sx;
+-    ivec4 v_offset = v_offset_0 + ivec4(0, 1, 2, 3) * psc(w);
+-    ivec2 v_offset45 = v_offset_0 + ivec2(4, 5) * psc(w);
+-
+-    afpvec4 v00 = buffer_ld4(bottom_blob_data, v_offset.r + 0);
+-    afpvec4 v01 = sx + 1 < psc(w) ? buffer_ld4(bottom_blob_data, v_offset.r + 1) : afpvec4(0.f);
+-    afpvec4 v02 = sx + 2 < psc(w) ? buffer_ld4(bottom_blob_data, v_offset.r + 2) : afpvec4(0.f);
+-    afpvec4 v03 = sx + 3 < psc(w) ? buffer_ld4(bottom_blob_data, v_offset.r + 3) : afpvec4(0.f);
+-    afpvec4 v04 = sx + 4 < psc(w) ? buffer_ld4(bottom_blob_data, v_offset.r + 4) : afpvec4(0.f);
+-    afpvec4 v05 = sx + 5 < psc(w) ? buffer_ld4(bottom_blob_data, v_offset.r + 5) : afpvec4(0.f);
+-
+-    afpvec4 v10 = sy + 1 < psc(h) ? buffer_ld4(bottom_blob_data, v_offset.g + 0) : afpvec4(0.f);
+-    afpvec4 v11 = sy + 1 < psc(h) && sx + 1 < psc(w) ? buffer_ld4(bottom_blob_data, v_offset.g + 1) : afpvec4(0.f);
+-    afpvec4 v12 = sy + 1 < psc(h) && sx + 2 < psc(w) ? buffer_ld4(bottom_blob_data, v_offset.g + 2) : afpvec4(0.f);
+-    afpvec4 v13 = sy + 1 < psc(h) && sx + 3 < psc(w) ? buffer_ld4(bottom_blob_data, v_offset.g + 3) : afpvec4(0.f);
+-    afpvec4 v14 = sy + 1 < psc(h) && sx + 4 < psc(w) ? buffer_ld4(bottom_blob_data, v_offset.g + 4) : afpvec4(0.f);
+-    afpvec4 v15 = sy + 1 < psc(h) && sx + 5 < psc(w) ? buffer_ld4(bottom_blob_data, v_offset.g + 5) : afpvec4(0.f);
+-
+-    afpvec4 v20 = sy + 2 < psc(h) ? buffer_ld4(bottom_blob_data, v_offset.b + 0) : afpvec4(0.f);
+-    afpvec4 v21 = sy + 2 < psc(h) && sx + 1 < psc(w) ? buffer_ld4(bottom_blob_data, v_offset.b + 1) : afpvec4(0.f);
+-    afpvec4 v22 = sy + 2 < psc(h) && sx + 2 < psc(w) ? buffer_ld4(bottom_blob_data, v_offset.b + 2) : afpvec4(0.f);
+-    afpvec4 v23 = sy + 2 < psc(h) && sx + 3 < psc(w) ? buffer_ld4(bottom_blob_data, v_offset.b + 3) : afpvec4(0.f);
+-    afpvec4 v24 = sy + 2 < psc(h) && sx + 4 < psc(w) ? buffer_ld4(bottom_blob_data, v_offset.b + 4) : afpvec4(0.f);
+-    afpvec4 v25 = sy + 2 < psc(h) && sx + 5 < psc(w) ? buffer_ld4(bottom_blob_data, v_offset.b + 5) : afpvec4(0.f);
+-
+-    afpvec4 v30 = sy + 3 < psc(h) ? buffer_ld4(bottom_blob_data, v_offset.a + 0) : afpvec4(0.f);
+-    afpvec4 v31 = sy + 3 < psc(h) && sx + 1 < psc(w) ? buffer_ld4(bottom_blob_data, v_offset.a + 1) : afpvec4(0.f);
+-    afpvec4 v32 = sy + 3 < psc(h) && sx + 2 < psc(w) ? buffer_ld4(bottom_blob_data, v_offset.a + 2) : afpvec4(0.f);
+-    afpvec4 v33 = sy + 3 < psc(h) && sx + 3 < psc(w) ? buffer_ld4(bottom_blob_data, v_offset.a + 3) : afpvec4(0.f);
+-    afpvec4 v34 = sy + 3 < psc(h) && sx + 4 < psc(w) ? buffer_ld4(bottom_blob_data, v_offset.a + 4) : afpvec4(0.f);
+-    afpvec4 v35 = sy + 3 < psc(h) && sx + 5 < psc(w) ? buffer_ld4(bottom_blob_data, v_offset.a + 5) : afpvec4(0.f);
+-
+-    afpvec4 v40 = sy + 4 < psc(h) ? buffer_ld4(bottom_blob_data, v_offset45.x + 0) : afpvec4(0.f);
+-    afpvec4 v41 = sy + 4 < psc(h) && sx + 1 < psc(w) ? buffer_ld4(bottom_blob_data, v_offset45.x + 1) : afpvec4(0.f);
+-    afpvec4 v42 = sy + 4 < psc(h) && sx + 2 < psc(w) ? buffer_ld4(bottom_blob_data, v_offset45.x + 2) : afpvec4(0.f);
+-    afpvec4 v43 = sy + 4 < psc(h) && sx + 3 < psc(w) ? buffer_ld4(bottom_blob_data, v_offset45.x + 3) : afpvec4(0.f);
+-    afpvec4 v44 = sy + 4 < psc(h) && sx + 4 < psc(w) ? buffer_ld4(bottom_blob_data, v_offset45.x + 4) : afpvec4(0.f);
+-    afpvec4 v45 = sy + 4 < psc(h) && sx + 5 < psc(w) ? buffer_ld4(bottom_blob_data, v_offset45.x + 5) : afpvec4(0.f);
+-
+-    afpvec4 v50 = sy + 5 < psc(h) ? buffer_ld4(bottom_blob_data, v_offset45.y + 0) : afpvec4(0.f);
+-    afpvec4 v51 = sy + 5 < psc(h) && sx + 1 < psc(w) ? buffer_ld4(bottom_blob_data, v_offset45.y + 1) : afpvec4(0.f);
+-    afpvec4 v52 = sy + 5 < psc(h) && sx + 2 < psc(w) ? buffer_ld4(bottom_blob_data, v_offset45.y + 2) : afpvec4(0.f);
+-    afpvec4 v53 = sy + 5 < psc(h) && sx + 3 < psc(w) ? buffer_ld4(bottom_blob_data, v_offset45.y + 3) : afpvec4(0.f);
+-    afpvec4 v54 = sy + 5 < psc(h) && sx + 4 < psc(w) ? buffer_ld4(bottom_blob_data, v_offset45.y + 4) : afpvec4(0.f);
+-    afpvec4 v55 = sy + 5 < psc(h) && sx + 5 < psc(w) ? buffer_ld4(bottom_blob_data, v_offset45.y + 5) : afpvec4(0.f);
++    afpvec4 v00;
++    afpvec4 v01;
++    afpvec4 v02;
++    afpvec4 v03;
++    afpvec4 v04;
++    afpvec4 v05;
++    afpvec4 v10;
++    afpvec4 v11;
++    afpvec4 v12;
++    afpvec4 v13;
++    afpvec4 v14;
++    afpvec4 v15;
++    afpvec4 v20;
++    afpvec4 v21;
++    afpvec4 v22;
++    afpvec4 v23;
++    afpvec4 v24;
++    afpvec4 v25;
++    afpvec4 v30;
++    afpvec4 v31;
++    afpvec4 v32;
++    afpvec4 v33;
++    afpvec4 v34;
++    afpvec4 v35;
++    afpvec4 v40;
++    afpvec4 v41;
++    afpvec4 v42;
++    afpvec4 v43;
++    afpvec4 v44;
++    afpvec4 v45;
++    afpvec4 v50;
++    afpvec4 v51;
++    afpvec4 v52;
++    afpvec4 v53;
++    afpvec4 v54;
++    afpvec4 v55;
++
++    if (manyue_pad1 == 1)
++    {
++        int sx_pad1 = gx * 4 - 1;
++        int sy_pad1 = gy * 4 - 1;
++        int v_offset_pad1_0 = gz * psc(cstep) + sy_pad1 * psc(w) + sx_pad1;
++        ivec4 v_offset_pad1 = v_offset_pad1_0 + ivec4(0, 1, 2, 3) * psc(w);
++        ivec2 v_offset_pad1_45 = v_offset_pad1_0 + ivec2(4, 5) * psc(w);
++        bool pad1_interior = sx_pad1 >= 0 && sy_pad1 >= 0 && sx_pad1 + 5 < psc(w) && sy_pad1 + 5 < psc(h);
++
++        if (pad1_interior)
++        {
++            v00 = buffer_ld4(bottom_blob_data, v_offset_pad1.r + 0);
++            v01 = buffer_ld4(bottom_blob_data, v_offset_pad1.r + 1);
++            v02 = buffer_ld4(bottom_blob_data, v_offset_pad1.r + 2);
++            v03 = buffer_ld4(bottom_blob_data, v_offset_pad1.r + 3);
++            v04 = buffer_ld4(bottom_blob_data, v_offset_pad1.r + 4);
++            v05 = buffer_ld4(bottom_blob_data, v_offset_pad1.r + 5);
++            v10 = buffer_ld4(bottom_blob_data, v_offset_pad1.g + 0);
++            v11 = buffer_ld4(bottom_blob_data, v_offset_pad1.g + 1);
++            v12 = buffer_ld4(bottom_blob_data, v_offset_pad1.g + 2);
++            v13 = buffer_ld4(bottom_blob_data, v_offset_pad1.g + 3);
++            v14 = buffer_ld4(bottom_blob_data, v_offset_pad1.g + 4);
++            v15 = buffer_ld4(bottom_blob_data, v_offset_pad1.g + 5);
++            v20 = buffer_ld4(bottom_blob_data, v_offset_pad1.b + 0);
++            v21 = buffer_ld4(bottom_blob_data, v_offset_pad1.b + 1);
++            v22 = buffer_ld4(bottom_blob_data, v_offset_pad1.b + 2);
++            v23 = buffer_ld4(bottom_blob_data, v_offset_pad1.b + 3);
++            v24 = buffer_ld4(bottom_blob_data, v_offset_pad1.b + 4);
++            v25 = buffer_ld4(bottom_blob_data, v_offset_pad1.b + 5);
++            v30 = buffer_ld4(bottom_blob_data, v_offset_pad1.a + 0);
++            v31 = buffer_ld4(bottom_blob_data, v_offset_pad1.a + 1);
++            v32 = buffer_ld4(bottom_blob_data, v_offset_pad1.a + 2);
++            v33 = buffer_ld4(bottom_blob_data, v_offset_pad1.a + 3);
++            v34 = buffer_ld4(bottom_blob_data, v_offset_pad1.a + 4);
++            v35 = buffer_ld4(bottom_blob_data, v_offset_pad1.a + 5);
++            v40 = buffer_ld4(bottom_blob_data, v_offset_pad1_45.x + 0);
++            v41 = buffer_ld4(bottom_blob_data, v_offset_pad1_45.x + 1);
++            v42 = buffer_ld4(bottom_blob_data, v_offset_pad1_45.x + 2);
++            v43 = buffer_ld4(bottom_blob_data, v_offset_pad1_45.x + 3);
++            v44 = buffer_ld4(bottom_blob_data, v_offset_pad1_45.x + 4);
++            v45 = buffer_ld4(bottom_blob_data, v_offset_pad1_45.x + 5);
++            v50 = buffer_ld4(bottom_blob_data, v_offset_pad1_45.y + 0);
++            v51 = buffer_ld4(bottom_blob_data, v_offset_pad1_45.y + 1);
++            v52 = buffer_ld4(bottom_blob_data, v_offset_pad1_45.y + 2);
++            v53 = buffer_ld4(bottom_blob_data, v_offset_pad1_45.y + 3);
++            v54 = buffer_ld4(bottom_blob_data, v_offset_pad1_45.y + 4);
++            v55 = buffer_ld4(bottom_blob_data, v_offset_pad1_45.y + 5);
++        }
++        else
++        {
++            if (sx_pad1 + 0 >= 0 && sy_pad1 + 0 >= 0 && sx_pad1 + 0 < psc(w) && sy_pad1 + 0 < psc(h))
++            {
++                v00 = buffer_ld4(bottom_blob_data, v_offset_pad1.r + 0);
++            }
++            else
++            {
++                v00 = afpvec4(0.f);
++            }
++            if (sx_pad1 + 1 >= 0 && sy_pad1 + 0 >= 0 && sx_pad1 + 1 < psc(w) && sy_pad1 + 0 < psc(h))
++            {
++                v01 = buffer_ld4(bottom_blob_data, v_offset_pad1.r + 1);
++            }
++            else
++            {
++                v01 = afpvec4(0.f);
++            }
++            if (sx_pad1 + 2 >= 0 && sy_pad1 + 0 >= 0 && sx_pad1 + 2 < psc(w) && sy_pad1 + 0 < psc(h))
++            {
++                v02 = buffer_ld4(bottom_blob_data, v_offset_pad1.r + 2);
++            }
++            else
++            {
++                v02 = afpvec4(0.f);
++            }
++            if (sx_pad1 + 3 >= 0 && sy_pad1 + 0 >= 0 && sx_pad1 + 3 < psc(w) && sy_pad1 + 0 < psc(h))
++            {
++                v03 = buffer_ld4(bottom_blob_data, v_offset_pad1.r + 3);
++            }
++            else
++            {
++                v03 = afpvec4(0.f);
++            }
++            if (sx_pad1 + 4 >= 0 && sy_pad1 + 0 >= 0 && sx_pad1 + 4 < psc(w) && sy_pad1 + 0 < psc(h))
++            {
++                v04 = buffer_ld4(bottom_blob_data, v_offset_pad1.r + 4);
++            }
++            else
++            {
++                v04 = afpvec4(0.f);
++            }
++            if (sx_pad1 + 5 >= 0 && sy_pad1 + 0 >= 0 && sx_pad1 + 5 < psc(w) && sy_pad1 + 0 < psc(h))
++            {
++                v05 = buffer_ld4(bottom_blob_data, v_offset_pad1.r + 5);
++            }
++            else
++            {
++                v05 = afpvec4(0.f);
++            }
++            if (sx_pad1 + 0 >= 0 && sy_pad1 + 1 >= 0 && sx_pad1 + 0 < psc(w) && sy_pad1 + 1 < psc(h))
++            {
++                v10 = buffer_ld4(bottom_blob_data, v_offset_pad1.g + 0);
++            }
++            else
++            {
++                v10 = afpvec4(0.f);
++            }
++            if (sx_pad1 + 1 >= 0 && sy_pad1 + 1 >= 0 && sx_pad1 + 1 < psc(w) && sy_pad1 + 1 < psc(h))
++            {
++                v11 = buffer_ld4(bottom_blob_data, v_offset_pad1.g + 1);
++            }
++            else
++            {
++                v11 = afpvec4(0.f);
++            }
++            if (sx_pad1 + 2 >= 0 && sy_pad1 + 1 >= 0 && sx_pad1 + 2 < psc(w) && sy_pad1 + 1 < psc(h))
++            {
++                v12 = buffer_ld4(bottom_blob_data, v_offset_pad1.g + 2);
++            }
++            else
++            {
++                v12 = afpvec4(0.f);
++            }
++            if (sx_pad1 + 3 >= 0 && sy_pad1 + 1 >= 0 && sx_pad1 + 3 < psc(w) && sy_pad1 + 1 < psc(h))
++            {
++                v13 = buffer_ld4(bottom_blob_data, v_offset_pad1.g + 3);
++            }
++            else
++            {
++                v13 = afpvec4(0.f);
++            }
++            if (sx_pad1 + 4 >= 0 && sy_pad1 + 1 >= 0 && sx_pad1 + 4 < psc(w) && sy_pad1 + 1 < psc(h))
++            {
++                v14 = buffer_ld4(bottom_blob_data, v_offset_pad1.g + 4);
++            }
++            else
++            {
++                v14 = afpvec4(0.f);
++            }
++            if (sx_pad1 + 5 >= 0 && sy_pad1 + 1 >= 0 && sx_pad1 + 5 < psc(w) && sy_pad1 + 1 < psc(h))
++            {
++                v15 = buffer_ld4(bottom_blob_data, v_offset_pad1.g + 5);
++            }
++            else
++            {
++                v15 = afpvec4(0.f);
++            }
++            if (sx_pad1 + 0 >= 0 && sy_pad1 + 2 >= 0 && sx_pad1 + 0 < psc(w) && sy_pad1 + 2 < psc(h))
++            {
++                v20 = buffer_ld4(bottom_blob_data, v_offset_pad1.b + 0);
++            }
++            else
++            {
++                v20 = afpvec4(0.f);
++            }
++            if (sx_pad1 + 1 >= 0 && sy_pad1 + 2 >= 0 && sx_pad1 + 1 < psc(w) && sy_pad1 + 2 < psc(h))
++            {
++                v21 = buffer_ld4(bottom_blob_data, v_offset_pad1.b + 1);
++            }
++            else
++            {
++                v21 = afpvec4(0.f);
++            }
++            if (sx_pad1 + 2 >= 0 && sy_pad1 + 2 >= 0 && sx_pad1 + 2 < psc(w) && sy_pad1 + 2 < psc(h))
++            {
++                v22 = buffer_ld4(bottom_blob_data, v_offset_pad1.b + 2);
++            }
++            else
++            {
++                v22 = afpvec4(0.f);
++            }
++            if (sx_pad1 + 3 >= 0 && sy_pad1 + 2 >= 0 && sx_pad1 + 3 < psc(w) && sy_pad1 + 2 < psc(h))
++            {
++                v23 = buffer_ld4(bottom_blob_data, v_offset_pad1.b + 3);
++            }
++            else
++            {
++                v23 = afpvec4(0.f);
++            }
++            if (sx_pad1 + 4 >= 0 && sy_pad1 + 2 >= 0 && sx_pad1 + 4 < psc(w) && sy_pad1 + 2 < psc(h))
++            {
++                v24 = buffer_ld4(bottom_blob_data, v_offset_pad1.b + 4);
++            }
++            else
++            {
++                v24 = afpvec4(0.f);
++            }
++            if (sx_pad1 + 5 >= 0 && sy_pad1 + 2 >= 0 && sx_pad1 + 5 < psc(w) && sy_pad1 + 2 < psc(h))
++            {
++                v25 = buffer_ld4(bottom_blob_data, v_offset_pad1.b + 5);
++            }
++            else
++            {
++                v25 = afpvec4(0.f);
++            }
++            if (sx_pad1 + 0 >= 0 && sy_pad1 + 3 >= 0 && sx_pad1 + 0 < psc(w) && sy_pad1 + 3 < psc(h))
++            {
++                v30 = buffer_ld4(bottom_blob_data, v_offset_pad1.a + 0);
++            }
++            else
++            {
++                v30 = afpvec4(0.f);
++            }
++            if (sx_pad1 + 1 >= 0 && sy_pad1 + 3 >= 0 && sx_pad1 + 1 < psc(w) && sy_pad1 + 3 < psc(h))
++            {
++                v31 = buffer_ld4(bottom_blob_data, v_offset_pad1.a + 1);
++            }
++            else
++            {
++                v31 = afpvec4(0.f);
++            }
++            if (sx_pad1 + 2 >= 0 && sy_pad1 + 3 >= 0 && sx_pad1 + 2 < psc(w) && sy_pad1 + 3 < psc(h))
++            {
++                v32 = buffer_ld4(bottom_blob_data, v_offset_pad1.a + 2);
++            }
++            else
++            {
++                v32 = afpvec4(0.f);
++            }
++            if (sx_pad1 + 3 >= 0 && sy_pad1 + 3 >= 0 && sx_pad1 + 3 < psc(w) && sy_pad1 + 3 < psc(h))
++            {
++                v33 = buffer_ld4(bottom_blob_data, v_offset_pad1.a + 3);
++            }
++            else
++            {
++                v33 = afpvec4(0.f);
++            }
++            if (sx_pad1 + 4 >= 0 && sy_pad1 + 3 >= 0 && sx_pad1 + 4 < psc(w) && sy_pad1 + 3 < psc(h))
++            {
++                v34 = buffer_ld4(bottom_blob_data, v_offset_pad1.a + 4);
++            }
++            else
++            {
++                v34 = afpvec4(0.f);
++            }
++            if (sx_pad1 + 5 >= 0 && sy_pad1 + 3 >= 0 && sx_pad1 + 5 < psc(w) && sy_pad1 + 3 < psc(h))
++            {
++                v35 = buffer_ld4(bottom_blob_data, v_offset_pad1.a + 5);
++            }
++            else
++            {
++                v35 = afpvec4(0.f);
++            }
++            if (sx_pad1 + 0 >= 0 && sy_pad1 + 4 >= 0 && sx_pad1 + 0 < psc(w) && sy_pad1 + 4 < psc(h))
++            {
++                v40 = buffer_ld4(bottom_blob_data, v_offset_pad1_45.x + 0);
++            }
++            else
++            {
++                v40 = afpvec4(0.f);
++            }
++            if (sx_pad1 + 1 >= 0 && sy_pad1 + 4 >= 0 && sx_pad1 + 1 < psc(w) && sy_pad1 + 4 < psc(h))
++            {
++                v41 = buffer_ld4(bottom_blob_data, v_offset_pad1_45.x + 1);
++            }
++            else
++            {
++                v41 = afpvec4(0.f);
++            }
++            if (sx_pad1 + 2 >= 0 && sy_pad1 + 4 >= 0 && sx_pad1 + 2 < psc(w) && sy_pad1 + 4 < psc(h))
++            {
++                v42 = buffer_ld4(bottom_blob_data, v_offset_pad1_45.x + 2);
++            }
++            else
++            {
++                v42 = afpvec4(0.f);
++            }
++            if (sx_pad1 + 3 >= 0 && sy_pad1 + 4 >= 0 && sx_pad1 + 3 < psc(w) && sy_pad1 + 4 < psc(h))
++            {
++                v43 = buffer_ld4(bottom_blob_data, v_offset_pad1_45.x + 3);
++            }
++            else
++            {
++                v43 = afpvec4(0.f);
++            }
++            if (sx_pad1 + 4 >= 0 && sy_pad1 + 4 >= 0 && sx_pad1 + 4 < psc(w) && sy_pad1 + 4 < psc(h))
++            {
++                v44 = buffer_ld4(bottom_blob_data, v_offset_pad1_45.x + 4);
++            }
++            else
++            {
++                v44 = afpvec4(0.f);
++            }
++            if (sx_pad1 + 5 >= 0 && sy_pad1 + 4 >= 0 && sx_pad1 + 5 < psc(w) && sy_pad1 + 4 < psc(h))
++            {
++                v45 = buffer_ld4(bottom_blob_data, v_offset_pad1_45.x + 5);
++            }
++            else
++            {
++                v45 = afpvec4(0.f);
++            }
++            if (sx_pad1 + 0 >= 0 && sy_pad1 + 5 >= 0 && sx_pad1 + 0 < psc(w) && sy_pad1 + 5 < psc(h))
++            {
++                v50 = buffer_ld4(bottom_blob_data, v_offset_pad1_45.y + 0);
++            }
++            else
++            {
++                v50 = afpvec4(0.f);
++            }
++            if (sx_pad1 + 1 >= 0 && sy_pad1 + 5 >= 0 && sx_pad1 + 1 < psc(w) && sy_pad1 + 5 < psc(h))
++            {
++                v51 = buffer_ld4(bottom_blob_data, v_offset_pad1_45.y + 1);
++            }
++            else
++            {
++                v51 = afpvec4(0.f);
++            }
++            if (sx_pad1 + 2 >= 0 && sy_pad1 + 5 >= 0 && sx_pad1 + 2 < psc(w) && sy_pad1 + 5 < psc(h))
++            {
++                v52 = buffer_ld4(bottom_blob_data, v_offset_pad1_45.y + 2);
++            }
++            else
++            {
++                v52 = afpvec4(0.f);
++            }
++            if (sx_pad1 + 3 >= 0 && sy_pad1 + 5 >= 0 && sx_pad1 + 3 < psc(w) && sy_pad1 + 5 < psc(h))
++            {
++                v53 = buffer_ld4(bottom_blob_data, v_offset_pad1_45.y + 3);
++            }
++            else
++            {
++                v53 = afpvec4(0.f);
++            }
++            if (sx_pad1 + 4 >= 0 && sy_pad1 + 5 >= 0 && sx_pad1 + 4 < psc(w) && sy_pad1 + 5 < psc(h))
++            {
++                v54 = buffer_ld4(bottom_blob_data, v_offset_pad1_45.y + 4);
++            }
++            else
++            {
++                v54 = afpvec4(0.f);
++            }
++            if (sx_pad1 + 5 >= 0 && sy_pad1 + 5 >= 0 && sx_pad1 + 5 < psc(w) && sy_pad1 + 5 < psc(h))
++            {
++                v55 = buffer_ld4(bottom_blob_data, v_offset_pad1_45.y + 5);
++            }
++            else
++            {
++                v55 = afpvec4(0.f);
++            }
++        }
++    }
++    else
++    {
++        int v_offset_0 = gz * psc(cstep) + sy * psc(w) + sx;
++        ivec4 v_offset = v_offset_0 + ivec4(0, 1, 2, 3) * psc(w);
++        ivec2 v_offset45 = v_offset_0 + ivec2(4, 5) * psc(w);
++        v00 = buffer_ld4(bottom_blob_data, v_offset.r + 0);
++        v01 = sx + 1 < psc(w) ? buffer_ld4(bottom_blob_data, v_offset.r + 1) : afpvec4(0.f);
++        v02 = sx + 2 < psc(w) ? buffer_ld4(bottom_blob_data, v_offset.r + 2) : afpvec4(0.f);
++        v03 = sx + 3 < psc(w) ? buffer_ld4(bottom_blob_data, v_offset.r + 3) : afpvec4(0.f);
++        v04 = sx + 4 < psc(w) ? buffer_ld4(bottom_blob_data, v_offset.r + 4) : afpvec4(0.f);
++        v05 = sx + 5 < psc(w) ? buffer_ld4(bottom_blob_data, v_offset.r + 5) : afpvec4(0.f);
++        v10 = sy + 1 < psc(h) ? buffer_ld4(bottom_blob_data, v_offset.g + 0) : afpvec4(0.f);
++        v11 = sy + 1 < psc(h) && sx + 1 < psc(w) ? buffer_ld4(bottom_blob_data, v_offset.g + 1) : afpvec4(0.f);
++        v12 = sy + 1 < psc(h) && sx + 2 < psc(w) ? buffer_ld4(bottom_blob_data, v_offset.g + 2) : afpvec4(0.f);
++        v13 = sy + 1 < psc(h) && sx + 3 < psc(w) ? buffer_ld4(bottom_blob_data, v_offset.g + 3) : afpvec4(0.f);
++        v14 = sy + 1 < psc(h) && sx + 4 < psc(w) ? buffer_ld4(bottom_blob_data, v_offset.g + 4) : afpvec4(0.f);
++        v15 = sy + 1 < psc(h) && sx + 5 < psc(w) ? buffer_ld4(bottom_blob_data, v_offset.g + 5) : afpvec4(0.f);
++        v20 = sy + 2 < psc(h) ? buffer_ld4(bottom_blob_data, v_offset.b + 0) : afpvec4(0.f);
++        v21 = sy + 2 < psc(h) && sx + 1 < psc(w) ? buffer_ld4(bottom_blob_data, v_offset.b + 1) : afpvec4(0.f);
++        v22 = sy + 2 < psc(h) && sx + 2 < psc(w) ? buffer_ld4(bottom_blob_data, v_offset.b + 2) : afpvec4(0.f);
++        v23 = sy + 2 < psc(h) && sx + 3 < psc(w) ? buffer_ld4(bottom_blob_data, v_offset.b + 3) : afpvec4(0.f);
++        v24 = sy + 2 < psc(h) && sx + 4 < psc(w) ? buffer_ld4(bottom_blob_data, v_offset.b + 4) : afpvec4(0.f);
++        v25 = sy + 2 < psc(h) && sx + 5 < psc(w) ? buffer_ld4(bottom_blob_data, v_offset.b + 5) : afpvec4(0.f);
++        v30 = sy + 3 < psc(h) ? buffer_ld4(bottom_blob_data, v_offset.a + 0) : afpvec4(0.f);
++        v31 = sy + 3 < psc(h) && sx + 1 < psc(w) ? buffer_ld4(bottom_blob_data, v_offset.a + 1) : afpvec4(0.f);
++        v32 = sy + 3 < psc(h) && sx + 2 < psc(w) ? buffer_ld4(bottom_blob_data, v_offset.a + 2) : afpvec4(0.f);
++        v33 = sy + 3 < psc(h) && sx + 3 < psc(w) ? buffer_ld4(bottom_blob_data, v_offset.a + 3) : afpvec4(0.f);
++        v34 = sy + 3 < psc(h) && sx + 4 < psc(w) ? buffer_ld4(bottom_blob_data, v_offset.a + 4) : afpvec4(0.f);
++        v35 = sy + 3 < psc(h) && sx + 5 < psc(w) ? buffer_ld4(bottom_blob_data, v_offset.a + 5) : afpvec4(0.f);
++        v40 = sy + 4 < psc(h) ? buffer_ld4(bottom_blob_data, v_offset45.x + 0) : afpvec4(0.f);
++        v41 = sy + 4 < psc(h) && sx + 1 < psc(w) ? buffer_ld4(bottom_blob_data, v_offset45.x + 1) : afpvec4(0.f);
++        v42 = sy + 4 < psc(h) && sx + 2 < psc(w) ? buffer_ld4(bottom_blob_data, v_offset45.x + 2) : afpvec4(0.f);
++        v43 = sy + 4 < psc(h) && sx + 3 < psc(w) ? buffer_ld4(bottom_blob_data, v_offset45.x + 3) : afpvec4(0.f);
++        v44 = sy + 4 < psc(h) && sx + 4 < psc(w) ? buffer_ld4(bottom_blob_data, v_offset45.x + 4) : afpvec4(0.f);
++        v45 = sy + 4 < psc(h) && sx + 5 < psc(w) ? buffer_ld4(bottom_blob_data, v_offset45.x + 5) : afpvec4(0.f);
++        v50 = sy + 5 < psc(h) ? buffer_ld4(bottom_blob_data, v_offset45.y + 0) : afpvec4(0.f);
++        v51 = sy + 5 < psc(h) && sx + 1 < psc(w) ? buffer_ld4(bottom_blob_data, v_offset45.y + 1) : afpvec4(0.f);
++        v52 = sy + 5 < psc(h) && sx + 2 < psc(w) ? buffer_ld4(bottom_blob_data, v_offset45.y + 2) : afpvec4(0.f);
++        v53 = sy + 5 < psc(h) && sx + 3 < psc(w) ? buffer_ld4(bottom_blob_data, v_offset45.y + 3) : afpvec4(0.f);
++        v54 = sy + 5 < psc(h) && sx + 4 < psc(w) ? buffer_ld4(bottom_blob_data, v_offset45.y + 4) : afpvec4(0.f);
++        v55 = sy + 5 < psc(h) && sx + 5 < psc(w) ? buffer_ld4(bottom_blob_data, v_offset45.y + 5) : afpvec4(0.f);
++    }
+ #endif
+ 
+ #define sq2 1.41421356237

@@ -1,0 +1,1703 @@
+{
+  "clientDate": "2026-10-25",
+  "baselineSource": "1dfa768bf6ae7aab08637c5e1d0b81f1c2c4964d",
+  "pinnedNcnnArchiveSha256": "b2145f7b01422f5ee66777d1c2c29de935191ed39865193951e1a7228202a6c1",
+  "scope": "Exact numerical and isolated resident-worker performance candidate. NOT reader/energy/heat acceptance",
+  "pilot": {
+    "summary": {
+      "disabledMs": 331.05427099999997,
+      "enabledMs": 289.451849,
+      "pooledImprovementPercent": 12.566647116297137,
+      "disabledBracketDriftPercent": 1.0757222642809428
+    },
+    "pairs": [
+      {
+        "case": "color-ccby",
+        "round": 1,
+        "baselineWallMs": 331.05427099999997,
+        "candidateWallMs": 288.271172,
+        "improvementPercent": 12.923288641094135,
+        "baselineThreadCpuMs": 27.2321635,
+        "candidateThreadCpuMs": 20.982554,
+        "rgbDifferentValues": 0,
+        "rgbMaxDifference": 0,
+        "floatDifferentValues": 0,
+        "floatMaxDifference": 0.0
+      },
+      {
+        "case": "color-ccby",
+        "round": 4,
+        "baselineWallMs": 327.4930465,
+        "candidateWallMs": 290.618073,
+        "improvementPercent": 11.259772961316909,
+        "baselineThreadCpuMs": 29.215574500000002,
+        "candidateThreadCpuMs": 28.1116945,
+        "rgbDifferentValues": 0,
+        "rgbMaxDifference": 0,
+        "floatDifferentValues": 0,
+        "floatMaxDifference": 0.0
+      }
+    ],
+    "attribution": {
+      "pair": {
+        "case": "color-ccby",
+        "round": 5,
+        "baselineWallMs": 317.943698,
+        "candidateWallMs": 282.1364575,
+        "improvementPercent": 11.26213248611079,
+        "baselineThreadCpuMs": 23.158515,
+        "candidateThreadCpuMs": 23.195726999999998,
+        "rgbDifferentValues": 0,
+        "rgbMaxDifference": 0,
+        "floatDifferentValues": 0,
+        "floatMaxDifference": 0.0
+      },
+      "stages": [
+        {
+          "padGpuMs": 19.4740355,
+          "inputGpuMs": 89.1649465,
+          "gemmGpuMs": 85.253905,
+          "outputGpuMs": 57.631249499999996
+        },
+        {
+          "padGpuMs": 0.01013,
+          "inputGpuMs": 77.70807099999999,
+          "gemmGpuMs": 84.610987,
+          "outputGpuMs": 51.8266405
+        }
+      ]
+    }
+  },
+  "plain": {
+    "summary": [
+      {
+        "model": "native2",
+        "case": "color-ccby",
+        "gainsPercent": [
+          13.42527163434396,
+          6.629232589206599,
+          3.7357596067891974
+        ],
+        "medianPercent": 6.629232589206599,
+        "gatePassed": true
+      },
+      {
+        "model": "native2",
+        "case": "line-text-synthetic",
+        "gainsPercent": [
+          9.706466676263846,
+          7.0343205297631775,
+          6.821863096647795
+        ],
+        "medianPercent": 7.0343205297631775,
+        "gatePassed": true
+      },
+      {
+        "model": "native2",
+        "case": "gray-grid-synthetic",
+        "gainsPercent": [
+          10.834272615966857,
+          10.696562489065114,
+          11.071772432137147
+        ],
+        "medianPercent": 10.834272615966857,
+        "gatePassed": true
+      },
+      {
+        "model": "quality4to2",
+        "case": "color-ccby",
+        "gainsPercent": [
+          6.418905719489104,
+          7.298314434421616,
+          1.2581059548552862
+        ],
+        "medianPercent": 6.418905719489104,
+        "gatePassed": true
+      },
+      {
+        "model": "quality4to2",
+        "case": "line-text-synthetic",
+        "gainsPercent": [
+          3.746396991136433,
+          5.743812124790313,
+          7.89440400764929
+        ],
+        "medianPercent": 5.743812124790313,
+        "gatePassed": true
+      },
+      {
+        "model": "quality4to2",
+        "case": "gray-grid-synthetic",
+        "gainsPercent": [
+          2.5260495383927206,
+          12.243599125264844,
+          12.6920064377189
+        ],
+        "medianPercent": 12.243599125264844,
+        "gatePassed": true
+      }
+    ],
+    "controls": [
+      {
+        "case": "color-ccby",
+        "round": "control",
+        "baselineWallMs": 252.0749995,
+        "candidateWallMs": 243.15463549999998,
+        "improvementPercent": 3.538773784664832,
+        "baselineThreadCpuMs": 26.7990615,
+        "candidateThreadCpuMs": 21.197632499999997,
+        "rgbDifferentValues": 0,
+        "rgbMaxDifference": 0,
+        "floatDifferentValues": 0,
+        "floatMaxDifference": 0.0,
+        "model": "native2"
+      },
+      {
+        "case": "color-ccby",
+        "round": "control",
+        "baselineWallMs": 266.26255249999997,
+        "candidateWallMs": 262.588177,
+        "improvementPercent": 1.3799820761501926,
+        "baselineThreadCpuMs": 29.4060135,
+        "candidateThreadCpuMs": 29.51576,
+        "rgbDifferentValues": 0,
+        "rgbMaxDifference": 0,
+        "floatDifferentValues": 0,
+        "floatMaxDifference": 0.0,
+        "model": "quality4to2"
+      }
+    ],
+    "pairs": [
+      {
+        "case": "color-ccby",
+        "round": "r1",
+        "baselineWallMs": 251.597682,
+        "candidateWallMs": 235.44786399999998,
+        "improvementPercent": 6.418905719489104,
+        "baselineThreadCpuMs": 18.9369275,
+        "candidateThreadCpuMs": 23.2708855,
+        "rgbDifferentValues": 0,
+        "rgbMaxDifference": 0,
+        "floatDifferentValues": 0,
+        "floatMaxDifference": 0.0,
+        "model": "quality4to2"
+      },
+      {
+        "case": "gray-grid-synthetic",
+        "round": "r1",
+        "baselineWallMs": 246.1803385,
+        "candidateWallMs": 219.5084895,
+        "improvementPercent": 10.834272615966857,
+        "baselineThreadCpuMs": 18.842058,
+        "candidateThreadCpuMs": 16.790134000000002,
+        "rgbDifferentValues": 0,
+        "rgbMaxDifference": 0,
+        "floatDifferentValues": 0,
+        "floatMaxDifference": 0.0,
+        "model": "native2"
+      },
+      {
+        "case": "gray-grid-synthetic",
+        "round": "r1",
+        "baselineWallMs": 254.06726600000002,
+        "candidateWallMs": 247.649401,
+        "improvementPercent": 2.5260495383927206,
+        "baselineThreadCpuMs": 19.224504500000002,
+        "candidateThreadCpuMs": 28.3695605,
+        "rgbDifferentValues": 0,
+        "rgbMaxDifference": 0,
+        "floatDifferentValues": 0,
+        "floatMaxDifference": 0.0,
+        "model": "quality4to2"
+      },
+      {
+        "case": "color-ccby",
+        "round": "r1",
+        "baselineWallMs": 258.833802,
+        "candidateWallMs": 224.08466099999998,
+        "improvementPercent": 13.42527163434396,
+        "baselineThreadCpuMs": 27.311483,
+        "candidateThreadCpuMs": 24.413802,
+        "rgbDifferentValues": 0,
+        "rgbMaxDifference": 0,
+        "floatDifferentValues": 0,
+        "floatMaxDifference": 0.0,
+        "model": "native2"
+      },
+      {
+        "case": "line-text-synthetic",
+        "round": "r1",
+        "baselineWallMs": 290.835156,
+        "candidateWallMs": 262.6053385,
+        "improvementPercent": 9.706466676263846,
+        "baselineThreadCpuMs": 28.831979500000003,
+        "candidateThreadCpuMs": 24.3616955,
+        "rgbDifferentValues": 0,
+        "rgbMaxDifference": 0,
+        "floatDifferentValues": 0,
+        "floatMaxDifference": 0.0,
+        "model": "native2"
+      },
+      {
+        "case": "line-text-synthetic",
+        "round": "r1",
+        "baselineWallMs": 288.84486949999996,
+        "candidateWallMs": 278.023594,
+        "improvementPercent": 3.746396991136433,
+        "baselineThreadCpuMs": 22.0388285,
+        "candidateThreadCpuMs": 26.884115,
+        "rgbDifferentValues": 0,
+        "rgbMaxDifference": 0,
+        "floatDifferentValues": 0,
+        "floatMaxDifference": 0.0,
+        "model": "quality4to2"
+      },
+      {
+        "case": "line-text-synthetic",
+        "round": "r2",
+        "baselineWallMs": 279.9996875,
+        "candidateWallMs": 263.9170315,
+        "improvementPercent": 5.743812124790313,
+        "baselineThreadCpuMs": 18.679872,
+        "candidateThreadCpuMs": 18.044947,
+        "rgbDifferentValues": 0,
+        "rgbMaxDifference": 0,
+        "floatDifferentValues": 0,
+        "floatMaxDifference": 0.0,
+        "model": "quality4to2"
+      },
+      {
+        "case": "gray-grid-synthetic",
+        "round": "r2",
+        "baselineWallMs": 254.003672,
+        "candidateWallMs": 226.8340105,
+        "improvementPercent": 10.696562489065114,
+        "baselineThreadCpuMs": 25.100543000000002,
+        "candidateThreadCpuMs": 22.4354705,
+        "rgbDifferentValues": 0,
+        "rgbMaxDifference": 0,
+        "floatDifferentValues": 0,
+        "floatMaxDifference": 0.0,
+        "model": "native2"
+      },
+      {
+        "case": "line-text-synthetic",
+        "round": "r2",
+        "baselineWallMs": 286.5900255,
+        "candidateWallMs": 266.4303645,
+        "improvementPercent": 7.0343205297631775,
+        "baselineThreadCpuMs": 30.11719,
+        "candidateThreadCpuMs": 23.56791,
+        "rgbDifferentValues": 0,
+        "rgbMaxDifference": 0,
+        "floatDifferentValues": 0,
+        "floatMaxDifference": 0.0,
+        "model": "native2"
+      },
+      {
+        "case": "gray-grid-synthetic",
+        "round": "r2",
+        "baselineWallMs": 268.7009895,
+        "candidateWallMs": 235.80231750000002,
+        "improvementPercent": 12.243599125264844,
+        "baselineThreadCpuMs": 29.54305,
+        "candidateThreadCpuMs": 23.28052,
+        "rgbDifferentValues": 0,
+        "rgbMaxDifference": 0,
+        "floatDifferentValues": 0,
+        "floatMaxDifference": 0.0,
+        "model": "quality4to2"
+      },
+      {
+        "case": "color-ccby",
+        "round": "r2",
+        "baselineWallMs": 249.6148955,
+        "candidateWallMs": 233.0673435,
+        "improvementPercent": 6.629232589206599,
+        "baselineThreadCpuMs": 27.958695499999997,
+        "candidateThreadCpuMs": 25.484246,
+        "rgbDifferentValues": 0,
+        "rgbMaxDifference": 0,
+        "floatDifferentValues": 0,
+        "floatMaxDifference": 0.0,
+        "model": "native2"
+      },
+      {
+        "case": "color-ccby",
+        "round": "r2",
+        "baselineWallMs": 255.4710155,
+        "candidateWallMs": 236.8259375,
+        "improvementPercent": 7.298314434421616,
+        "baselineThreadCpuMs": 21.880729,
+        "candidateThreadCpuMs": 25.244270999999998,
+        "rgbDifferentValues": 0,
+        "rgbMaxDifference": 0,
+        "floatDifferentValues": 0,
+        "floatMaxDifference": 0.0,
+        "model": "quality4to2"
+      },
+      {
+        "case": "line-text-synthetic",
+        "round": "r3",
+        "baselineWallMs": 284.764583,
+        "candidateWallMs": 265.33833300000003,
+        "improvementPercent": 6.821863096647795,
+        "baselineThreadCpuMs": 27.263802,
+        "candidateThreadCpuMs": 24.3112245,
+        "rgbDifferentValues": 0,
+        "rgbMaxDifference": 0,
+        "floatDifferentValues": 0,
+        "floatMaxDifference": 0.0,
+        "model": "native2"
+      },
+      {
+        "case": "color-ccby",
+        "round": "r3",
+        "baselineWallMs": 239.38752599999998,
+        "candidateWallMs": 230.4445835,
+        "improvementPercent": 3.7357596067891974,
+        "baselineThreadCpuMs": 18.489092499999998,
+        "candidateThreadCpuMs": 25.73086,
+        "rgbDifferentValues": 0,
+        "rgbMaxDifference": 0,
+        "floatDifferentValues": 0,
+        "floatMaxDifference": 0.0,
+        "model": "native2"
+      },
+      {
+        "case": "gray-grid-synthetic",
+        "round": "r3",
+        "baselineWallMs": 265.8261455,
+        "candidateWallMs": 232.087474,
+        "improvementPercent": 12.6920064377189,
+        "baselineThreadCpuMs": 25.5436455,
+        "candidateThreadCpuMs": 17.8366935,
+        "rgbDifferentValues": 0,
+        "rgbMaxDifference": 0,
+        "floatDifferentValues": 0,
+        "floatMaxDifference": 0.0,
+        "model": "quality4to2"
+      },
+      {
+        "case": "gray-grid-synthetic",
+        "round": "r3",
+        "baselineWallMs": 258.7649735,
+        "candidateWallMs": 230.1151045,
+        "improvementPercent": 11.071772432137147,
+        "baselineThreadCpuMs": 28.105573,
+        "candidateThreadCpuMs": 28.4988015,
+        "rgbDifferentValues": 0,
+        "rgbMaxDifference": 0,
+        "floatDifferentValues": 0,
+        "floatMaxDifference": 0.0,
+        "model": "native2"
+      },
+      {
+        "case": "line-text-synthetic",
+        "round": "r3",
+        "baselineWallMs": 292.313802,
+        "candidateWallMs": 269.2373695,
+        "improvementPercent": 7.89440400764929,
+        "baselineThreadCpuMs": 28.642602,
+        "candidateThreadCpuMs": 22.7245835,
+        "rgbDifferentValues": 0,
+        "rgbMaxDifference": 0,
+        "floatDifferentValues": 0,
+        "floatMaxDifference": 0.0,
+        "model": "quality4to2"
+      },
+      {
+        "case": "color-ccby",
+        "round": "r3",
+        "baselineWallMs": 246.950703,
+        "candidateWallMs": 243.8438015,
+        "improvementPercent": 1.2581059548552862,
+        "baselineThreadCpuMs": 18.068567,
+        "candidateThreadCpuMs": 28.114974,
+        "rgbDifferentValues": 0,
+        "rgbMaxDifference": 0,
+        "floatDifferentValues": 0,
+        "floatMaxDifference": 0.0,
+        "model": "quality4to2"
+      }
+    ],
+    "boundaryChecks": [
+      {
+        "case": "boundary",
+        "round": "boundary",
+        "baselineWallMs": 18.951432500000003,
+        "candidateWallMs": 12.348411,
+        "improvementPercent": 34.841806813284435,
+        "baselineThreadCpuMs": 7.311408,
+        "candidateThreadCpuMs": 3.8523935000000002,
+        "rgbDifferentValues": 0,
+        "rgbMaxDifference": 0,
+        "floatDifferentValues": 0,
+        "floatMaxDifference": 0.0,
+        "model": "native2"
+      },
+      {
+        "case": "boundary",
+        "round": "boundary",
+        "baselineWallMs": 14.460364,
+        "candidateWallMs": 11.466953499999999,
+        "improvementPercent": 20.700796328501834,
+        "baselineThreadCpuMs": 5.1446355,
+        "candidateThreadCpuMs": 3.053127,
+        "rgbDifferentValues": 0,
+        "rgbMaxDifference": 0,
+        "floatDifferentValues": 0,
+        "floatMaxDifference": 0.0,
+        "model": "quality4to2"
+      },
+      {
+        "case": "boundary",
+        "round": "boundary",
+        "baselineWallMs": 13.116953500000001,
+        "candidateWallMs": 18.500469000000002,
+        "improvementPercent": -41.04242269365368,
+        "baselineThreadCpuMs": 3.9964825,
+        "candidateThreadCpuMs": 5.663437999999999,
+        "rgbDifferentValues": 0,
+        "rgbMaxDifference": 0,
+        "floatDifferentValues": 0,
+        "floatMaxDifference": 0.0,
+        "model": "native2"
+      },
+      {
+        "case": "boundary",
+        "round": "boundary",
+        "baselineWallMs": 17.6484635,
+        "candidateWallMs": 16.221823,
+        "improvementPercent": 8.083652721382787,
+        "baselineThreadCpuMs": 6.0145035,
+        "candidateThreadCpuMs": 5.234089,
+        "rgbDifferentValues": 0,
+        "rgbMaxDifference": 0,
+        "floatDifferentValues": 0,
+        "floatMaxDifference": 0.0,
+        "model": "quality4to2"
+      },
+      {
+        "case": "boundary",
+        "round": "boundary",
+        "baselineWallMs": 21.496302,
+        "candidateWallMs": 18.019687,
+        "improvementPercent": 16.17308409604591,
+        "baselineThreadCpuMs": 8.0364845,
+        "candidateThreadCpuMs": 5.9468505,
+        "rgbDifferentValues": 0,
+        "rgbMaxDifference": 0,
+        "floatDifferentValues": 0,
+        "floatMaxDifference": 0.0,
+        "model": "native2"
+      },
+      {
+        "case": "boundary",
+        "round": "boundary",
+        "baselineWallMs": 22.863203,
+        "candidateWallMs": 19.0898955,
+        "improvementPercent": 16.503844627544087,
+        "baselineThreadCpuMs": 7.967366,
+        "candidateThreadCpuMs": 5.209923,
+        "rgbDifferentValues": 0,
+        "rgbMaxDifference": 0,
+        "floatDifferentValues": 0,
+        "floatMaxDifference": 0.0,
+        "model": "quality4to2"
+      },
+      {
+        "case": "boundary",
+        "round": "boundary",
+        "baselineWallMs": 62.58346349999999,
+        "candidateWallMs": 58.754922,
+        "improvementPercent": 6.117496996630737,
+        "baselineThreadCpuMs": 10.728884,
+        "candidateThreadCpuMs": 10.0560425,
+        "rgbDifferentValues": 0,
+        "rgbMaxDifference": 0,
+        "floatDifferentValues": 0,
+        "floatMaxDifference": 0.0,
+        "model": "native2"
+      },
+      {
+        "case": "boundary",
+        "round": "boundary",
+        "baselineWallMs": 65.14268200000001,
+        "candidateWallMs": 60.270598500000006,
+        "improvementPercent": 7.479095656515956,
+        "baselineThreadCpuMs": 11.1502615,
+        "candidateThreadCpuMs": 10.5361735,
+        "rgbDifferentValues": 0,
+        "rgbMaxDifference": 0,
+        "floatDifferentValues": 0,
+        "floatMaxDifference": 0.0,
+        "model": "quality4to2"
+      },
+      {
+        "case": "boundary",
+        "round": "boundary",
+        "baselineWallMs": 271.977031,
+        "candidateWallMs": 259.62791649999997,
+        "improvementPercent": 4.5404990467743,
+        "baselineThreadCpuMs": 19.450156,
+        "candidateThreadCpuMs": 25.1818205,
+        "rgbDifferentValues": 0,
+        "rgbMaxDifference": 0,
+        "floatDifferentValues": 0,
+        "floatMaxDifference": 0.0,
+        "model": "native2"
+      },
+      {
+        "case": "boundary",
+        "round": "boundary",
+        "baselineWallMs": 292.33554649999996,
+        "candidateWallMs": 276.63013,
+        "improvementPercent": 5.3723937058061315,
+        "baselineThreadCpuMs": 23.756978,
+        "candidateThreadCpuMs": 24.5222155,
+        "rgbDifferentValues": 0,
+        "rgbMaxDifference": 0,
+        "floatDifferentValues": 0,
+        "floatMaxDifference": 0.0,
+        "model": "quality4to2"
+      }
+    ],
+    "gatePassed": true,
+    "identities": {
+      "stock": {
+        "tool": "7f56834916c577063a0fdbeb25e816e25f7d8f536fbb072fcb37a840a203f4f1",
+        "lib": "87d150e735157b09aa20f26f5e57f72468c548e7ce98ce407ec50ee7e14a52dd"
+      },
+      "plain": {
+        "tool": "69d8f26dde37afcb18ca88fe1a558d0f7c325466537f6155821d60f940a3f478",
+        "lib": "f1e3b020150008b5e2701c1bf11283fa0d0bbd730626e0fb715df0a8613ae415"
+      }
+    },
+    "models": {
+      "native2": {
+        "x2.param": "44f0e77ab0c793d42a2b2858b20969959d8ab985c575a8578b15e857bb518ac1",
+        "x2.bin": "a3a99b7bcc6a8dd094821af2cf8df8d0c1b5ae262571eb465bb9359ce28f8015"
+      },
+      "quality4to2": {
+        "x2.param": "b88ff4f00ebf019a7fdac17fdd45a7fd3665d37509efc5baf2e4da2e24420a04",
+        "x2.bin": "548a36f9c3f4ab8da56cd3b13badf23968bee207b396dad14d04b830e5f2ab2d"
+      }
+    }
+  },
+  "fullNative": {
+    "summary": [
+      {
+        "model": "native2",
+        "case": "color",
+        "totalGainsPercent": [
+          1.921718041308218,
+          6.254870766432353,
+          6.526497912855045
+        ],
+        "medianTotalGainPercent": 6.254870766432353,
+        "medianInferGainPercent": 7.733480417952954,
+        "gatePassed": true
+      },
+      {
+        "model": "native2",
+        "case": "line",
+        "totalGainsPercent": [
+          3.5837364006026884,
+          5.445295750654999,
+          11.798847406723834
+        ],
+        "medianTotalGainPercent": 5.445295750654999,
+        "medianInferGainPercent": 6.135966017469386,
+        "gatePassed": true
+      },
+      {
+        "model": "quality4to2",
+        "case": "color",
+        "totalGainsPercent": [
+          7.338770280953555,
+          6.6269397316227945,
+          6.854479155119819
+        ],
+        "medianTotalGainPercent": 6.854479155119819,
+        "medianInferGainPercent": 9.113589727416327,
+        "gatePassed": true
+      },
+      {
+        "model": "quality4to2",
+        "case": "line",
+        "totalGainsPercent": [
+          10.891161618197609,
+          22.54575083717153,
+          6.407010073254904
+        ],
+        "medianTotalGainPercent": 10.891161618197609,
+        "medianInferGainPercent": 10.898306316997708,
+        "gatePassed": true
+      }
+    ],
+    "pairs": [
+      {
+        "model": "native2",
+        "case": "color",
+        "round": 1,
+        "exactRgba": true,
+        "stockInferMs": 1495.427,
+        "padInferMs": 1448.81,
+        "inferGainPercent": 3.117303619635059,
+        "stockTotalMs": 1899.186,
+        "padTotalMs": 1862.689,
+        "totalGainPercent": 1.921718041308218
+      },
+      {
+        "model": "native2",
+        "case": "line",
+        "round": 1,
+        "exactRgba": true,
+        "stockInferMs": 1394.933,
+        "padInferMs": 1335.649,
+        "inferGainPercent": 4.249953223559844,
+        "stockTotalMs": 1515.876,
+        "padTotalMs": 1461.551,
+        "totalGainPercent": 3.5837364006026884
+      },
+      {
+        "model": "quality4to2",
+        "case": "color",
+        "round": 1,
+        "exactRgba": true,
+        "stockInferMs": 1490.258,
+        "padInferMs": 1354.442,
+        "inferGainPercent": 9.113589727416327,
+        "stockTotalMs": 1893.587,
+        "padTotalMs": 1754.621,
+        "totalGainPercent": 7.338770280953555
+      },
+      {
+        "model": "quality4to2",
+        "case": "line",
+        "round": 1,
+        "exactRgba": true,
+        "stockInferMs": 1361.707,
+        "padInferMs": 1213.304,
+        "inferGainPercent": 10.898306316997708,
+        "stockTotalMs": 1488.372,
+        "padTotalMs": 1326.271,
+        "totalGainPercent": 10.891161618197609
+      },
+      {
+        "model": "native2",
+        "case": "color",
+        "round": 2,
+        "exactRgba": true,
+        "stockInferMs": 1421.404,
+        "padInferMs": 1311.48,
+        "inferGainPercent": 7.733480417952954,
+        "stockTotalMs": 1828.511,
+        "padTotalMs": 1714.14,
+        "totalGainPercent": 6.254870766432353
+      },
+      {
+        "model": "native2",
+        "case": "line",
+        "round": 2,
+        "exactRgba": true,
+        "stockInferMs": 1392.951,
+        "padInferMs": 1307.48,
+        "inferGainPercent": 6.135966017469386,
+        "stockTotalMs": 1512.186,
+        "padTotalMs": 1429.843,
+        "totalGainPercent": 5.445295750654999
+      },
+      {
+        "model": "quality4to2",
+        "case": "color",
+        "round": 2,
+        "exactRgba": true,
+        "stockInferMs": 1497.929,
+        "padInferMs": 1374.383,
+        "inferGainPercent": 8.24778744519934,
+        "stockTotalMs": 1905.676,
+        "padTotalMs": 1779.388,
+        "totalGainPercent": 6.6269397316227945
+      },
+      {
+        "model": "quality4to2",
+        "case": "line",
+        "round": 2,
+        "exactRgba": true,
+        "stockInferMs": 1657.707,
+        "padInferMs": 1262.957,
+        "inferGainPercent": 23.81301400066477,
+        "stockTotalMs": 1788.164,
+        "padTotalMs": 1385.009,
+        "totalGainPercent": 22.54575083717153
+      },
+      {
+        "model": "native2",
+        "case": "color",
+        "round": 3,
+        "exactRgba": true,
+        "stockInferMs": 1774.238,
+        "padInferMs": 1625.404,
+        "inferGainPercent": 8.388615281602585,
+        "stockTotalMs": 2203.249,
+        "padTotalMs": 2059.454,
+        "totalGainPercent": 6.526497912855045
+      },
+      {
+        "model": "native2",
+        "case": "line",
+        "round": 3,
+        "exactRgba": true,
+        "stockInferMs": 1582.46,
+        "padInferMs": 1382.552,
+        "inferGainPercent": 12.632736372483356,
+        "stockTotalMs": 1703.463,
+        "padTotalMs": 1502.474,
+        "totalGainPercent": 11.798847406723834
+      },
+      {
+        "model": "quality4to2",
+        "case": "color",
+        "round": 3,
+        "exactRgba": true,
+        "stockInferMs": 1815.393,
+        "padInferMs": 1646.579,
+        "inferGainPercent": 9.299033322261351,
+        "stockTotalMs": 2246.283,
+        "padTotalMs": 2092.312,
+        "totalGainPercent": 6.854479155119819
+      },
+      {
+        "model": "quality4to2",
+        "case": "line",
+        "round": 3,
+        "exactRgba": true,
+        "stockInferMs": 1652.845,
+        "padInferMs": 1543.065,
+        "inferGainPercent": 6.641881120129234,
+        "stockTotalMs": 1771.622,
+        "padTotalMs": 1658.114,
+        "totalGainPercent": 6.407010073254904
+      }
+    ],
+    "thermal": [
+      {
+        "model": "native2",
+        "case": "color",
+        "round": 1,
+        "kind": "stock",
+        "before": {
+          "thermal": [
+            "Thermal Status: 1"
+          ],
+          "battery": [
+            "AC powered: true",
+            "USB powered: false",
+            "Wireless powered: false",
+            "Dock powered: false",
+            "level: 56",
+            "temperature: 350",
+            "Capacity level: 3"
+          ]
+        },
+        "after": {
+          "thermal": [
+            "Thermal Status: 0"
+          ],
+          "battery": [
+            "AC powered: true",
+            "USB powered: false",
+            "Wireless powered: false",
+            "Dock powered: false",
+            "level: 56",
+            "temperature: 350",
+            "Capacity level: 3"
+          ]
+        },
+        "transition": true
+      },
+      {
+        "model": "native2",
+        "case": "color",
+        "round": 1,
+        "kind": "pad1",
+        "before": {
+          "thermal": [
+            "Thermal Status: 0"
+          ],
+          "battery": [
+            "AC powered: true",
+            "USB powered: false",
+            "Wireless powered: false",
+            "Dock powered: false",
+            "level: 56",
+            "temperature: 350",
+            "Capacity level: 3"
+          ]
+        },
+        "after": {
+          "thermal": [
+            "Thermal Status: 0"
+          ],
+          "battery": [
+            "AC powered: true",
+            "USB powered: false",
+            "Wireless powered: false",
+            "Dock powered: false",
+            "level: 56",
+            "temperature: 350",
+            "Capacity level: 3"
+          ]
+        },
+        "transition": false
+      },
+      {
+        "model": "native2",
+        "case": "line",
+        "round": 1,
+        "kind": "stock",
+        "before": {
+          "thermal": [
+            "Thermal Status: 0"
+          ],
+          "battery": [
+            "AC powered: true",
+            "USB powered: false",
+            "Wireless powered: false",
+            "Dock powered: false",
+            "level: 56",
+            "temperature: 350",
+            "Capacity level: 3"
+          ]
+        },
+        "after": {
+          "thermal": [
+            "Thermal Status: 0"
+          ],
+          "battery": [
+            "AC powered: true",
+            "USB powered: false",
+            "Wireless powered: false",
+            "Dock powered: false",
+            "level: 56",
+            "temperature: 350",
+            "Capacity level: 3"
+          ]
+        },
+        "transition": false
+      },
+      {
+        "model": "native2",
+        "case": "line",
+        "round": 1,
+        "kind": "pad1",
+        "before": {
+          "thermal": [
+            "Thermal Status: 0"
+          ],
+          "battery": [
+            "AC powered: true",
+            "USB powered: false",
+            "Wireless powered: false",
+            "Dock powered: false",
+            "level: 56",
+            "temperature: 350",
+            "Capacity level: 3"
+          ]
+        },
+        "after": {
+          "thermal": [
+            "Thermal Status: 0"
+          ],
+          "battery": [
+            "AC powered: true",
+            "USB powered: false",
+            "Wireless powered: false",
+            "Dock powered: false",
+            "level: 56",
+            "temperature: 350",
+            "Capacity level: 3"
+          ]
+        },
+        "transition": false
+      },
+      {
+        "model": "quality4to2",
+        "case": "color",
+        "round": 1,
+        "kind": "stock",
+        "before": {
+          "thermal": [
+            "Thermal Status: 0"
+          ],
+          "battery": [
+            "AC powered: true",
+            "USB powered: false",
+            "Wireless powered: false",
+            "Dock powered: false",
+            "level: 56",
+            "temperature: 350",
+            "Capacity level: 3"
+          ]
+        },
+        "after": {
+          "thermal": [
+            "Thermal Status: 1"
+          ],
+          "battery": [
+            "AC powered: true",
+            "USB powered: false",
+            "Wireless powered: false",
+            "Dock powered: false",
+            "level: 56",
+            "temperature: 360",
+            "Capacity level: 3"
+          ]
+        },
+        "transition": true
+      },
+      {
+        "model": "quality4to2",
+        "case": "color",
+        "round": 1,
+        "kind": "pad1",
+        "before": {
+          "thermal": [
+            "Thermal Status: 1"
+          ],
+          "battery": [
+            "AC powered: true",
+            "USB powered: false",
+            "Wireless powered: false",
+            "Dock powered: false",
+            "level: 56",
+            "temperature: 360",
+            "Capacity level: 3"
+          ]
+        },
+        "after": {
+          "thermal": [
+            "Thermal Status: 1"
+          ],
+          "battery": [
+            "AC powered: true",
+            "USB powered: false",
+            "Wireless powered: false",
+            "Dock powered: false",
+            "level: 56",
+            "temperature: 360",
+            "Capacity level: 3"
+          ]
+        },
+        "transition": false
+      },
+      {
+        "model": "quality4to2",
+        "case": "line",
+        "round": 1,
+        "kind": "stock",
+        "before": {
+          "thermal": [
+            "Thermal Status: 1"
+          ],
+          "battery": [
+            "AC powered: true",
+            "USB powered: false",
+            "Wireless powered: false",
+            "Dock powered: false",
+            "level: 56",
+            "temperature: 360",
+            "Capacity level: 3"
+          ]
+        },
+        "after": {
+          "thermal": [
+            "Thermal Status: 1"
+          ],
+          "battery": [
+            "AC powered: true",
+            "USB powered: false",
+            "Wireless powered: false",
+            "Dock powered: false",
+            "level: 56",
+            "temperature: 350",
+            "Capacity level: 3"
+          ]
+        },
+        "transition": false
+      },
+      {
+        "model": "quality4to2",
+        "case": "line",
+        "round": 1,
+        "kind": "pad1",
+        "before": {
+          "thermal": [
+            "Thermal Status: 1"
+          ],
+          "battery": [
+            "AC powered: true",
+            "USB powered: false",
+            "Wireless powered: false",
+            "Dock powered: false",
+            "level: 56",
+            "temperature: 350",
+            "Capacity level: 3"
+          ]
+        },
+        "after": {
+          "thermal": [
+            "Thermal Status: 1"
+          ],
+          "battery": [
+            "AC powered: true",
+            "USB powered: false",
+            "Wireless powered: false",
+            "Dock powered: false",
+            "level: 57",
+            "temperature: 350",
+            "Capacity level: 3"
+          ]
+        },
+        "transition": false
+      },
+      {
+        "model": "native2",
+        "case": "color",
+        "round": 2,
+        "kind": "pad1",
+        "before": {
+          "thermal": [
+            "Thermal Status: 1"
+          ],
+          "battery": [
+            "AC powered: true",
+            "USB powered: false",
+            "Wireless powered: false",
+            "Dock powered: false",
+            "level: 57",
+            "temperature: 350",
+            "Capacity level: 3"
+          ]
+        },
+        "after": {
+          "thermal": [
+            "Thermal Status: 1"
+          ],
+          "battery": [
+            "AC powered: true",
+            "USB powered: false",
+            "Wireless powered: false",
+            "Dock powered: false",
+            "level: 57",
+            "temperature: 360",
+            "Capacity level: 3"
+          ]
+        },
+        "transition": false
+      },
+      {
+        "model": "native2",
+        "case": "color",
+        "round": 2,
+        "kind": "stock",
+        "before": {
+          "thermal": [
+            "Thermal Status: 1"
+          ],
+          "battery": [
+            "AC powered: true",
+            "USB powered: false",
+            "Wireless powered: false",
+            "Dock powered: false",
+            "level: 57",
+            "temperature: 360",
+            "Capacity level: 3"
+          ]
+        },
+        "after": {
+          "thermal": [
+            "Thermal Status: 1"
+          ],
+          "battery": [
+            "AC powered: true",
+            "USB powered: false",
+            "Wireless powered: false",
+            "Dock powered: false",
+            "level: 57",
+            "temperature: 360",
+            "Capacity level: 3"
+          ]
+        },
+        "transition": false
+      },
+      {
+        "model": "native2",
+        "case": "line",
+        "round": 2,
+        "kind": "pad1",
+        "before": {
+          "thermal": [
+            "Thermal Status: 1"
+          ],
+          "battery": [
+            "AC powered: true",
+            "USB powered: false",
+            "Wireless powered: false",
+            "Dock powered: false",
+            "level: 57",
+            "temperature: 360",
+            "Capacity level: 3"
+          ]
+        },
+        "after": {
+          "thermal": [
+            "Thermal Status: 1"
+          ],
+          "battery": [
+            "AC powered: true",
+            "USB powered: false",
+            "Wireless powered: false",
+            "Dock powered: false",
+            "level: 57",
+            "temperature: 360",
+            "Capacity level: 3"
+          ]
+        },
+        "transition": false
+      },
+      {
+        "model": "native2",
+        "case": "line",
+        "round": 2,
+        "kind": "stock",
+        "before": {
+          "thermal": [
+            "Thermal Status: 1"
+          ],
+          "battery": [
+            "AC powered: true",
+            "USB powered: false",
+            "Wireless powered: false",
+            "Dock powered: false",
+            "level: 57",
+            "temperature: 360",
+            "Capacity level: 3"
+          ]
+        },
+        "after": {
+          "thermal": [
+            "Thermal Status: 1"
+          ],
+          "battery": [
+            "AC powered: true",
+            "USB powered: false",
+            "Wireless powered: false",
+            "Dock powered: false",
+            "level: 57",
+            "temperature: 360",
+            "Capacity level: 3"
+          ]
+        },
+        "transition": false
+      },
+      {
+        "model": "quality4to2",
+        "case": "color",
+        "round": 2,
+        "kind": "pad1",
+        "before": {
+          "thermal": [
+            "Thermal Status: 1"
+          ],
+          "battery": [
+            "AC powered: true",
+            "USB powered: false",
+            "Wireless powered: false",
+            "Dock powered: false",
+            "level: 57",
+            "temperature: 360",
+            "Capacity level: 3"
+          ]
+        },
+        "after": {
+          "thermal": [
+            "Thermal Status: 1"
+          ],
+          "battery": [
+            "AC powered: true",
+            "USB powered: false",
+            "Wireless powered: false",
+            "Dock powered: false",
+            "level: 57",
+            "temperature: 360",
+            "Capacity level: 3"
+          ]
+        },
+        "transition": false
+      },
+      {
+        "model": "quality4to2",
+        "case": "color",
+        "round": 2,
+        "kind": "stock",
+        "before": {
+          "thermal": [
+            "Thermal Status: 1"
+          ],
+          "battery": [
+            "AC powered: true",
+            "USB powered: false",
+            "Wireless powered: false",
+            "Dock powered: false",
+            "level: 57",
+            "temperature: 360",
+            "Capacity level: 3"
+          ]
+        },
+        "after": {
+          "thermal": [
+            "Thermal Status: 1"
+          ],
+          "battery": [
+            "AC powered: true",
+            "USB powered: false",
+            "Wireless powered: false",
+            "Dock powered: false",
+            "level: 57",
+            "temperature: 360",
+            "Capacity level: 3"
+          ]
+        },
+        "transition": false
+      },
+      {
+        "model": "quality4to2",
+        "case": "line",
+        "round": 2,
+        "kind": "pad1",
+        "before": {
+          "thermal": [
+            "Thermal Status: 1"
+          ],
+          "battery": [
+            "AC powered: true",
+            "USB powered: false",
+            "Wireless powered: false",
+            "Dock powered: false",
+            "level: 57",
+            "temperature: 360",
+            "Capacity level: 3"
+          ]
+        },
+        "after": {
+          "thermal": [
+            "Thermal Status: 1"
+          ],
+          "battery": [
+            "AC powered: true",
+            "USB powered: false",
+            "Wireless powered: false",
+            "Dock powered: false",
+            "level: 57",
+            "temperature: 370",
+            "Capacity level: 3"
+          ]
+        },
+        "transition": false
+      },
+      {
+        "model": "quality4to2",
+        "case": "line",
+        "round": 2,
+        "kind": "stock",
+        "before": {
+          "thermal": [
+            "Thermal Status: 1"
+          ],
+          "battery": [
+            "AC powered: true",
+            "USB powered: false",
+            "Wireless powered: false",
+            "Dock powered: false",
+            "level: 57",
+            "temperature: 370",
+            "Capacity level: 3"
+          ]
+        },
+        "after": {
+          "thermal": [
+            "Thermal Status: 1"
+          ],
+          "battery": [
+            "AC powered: true",
+            "USB powered: false",
+            "Wireless powered: false",
+            "Dock powered: false",
+            "level: 57",
+            "temperature: 370",
+            "Capacity level: 3"
+          ]
+        },
+        "transition": false
+      },
+      {
+        "model": "native2",
+        "case": "color",
+        "round": 3,
+        "kind": "stock",
+        "before": {
+          "thermal": [
+            "Thermal Status: 1"
+          ],
+          "battery": [
+            "AC powered: true",
+            "USB powered: false",
+            "Wireless powered: false",
+            "Dock powered: false",
+            "level: 57",
+            "temperature: 370",
+            "Capacity level: 3"
+          ]
+        },
+        "after": {
+          "thermal": [
+            "Thermal Status: 1"
+          ],
+          "battery": [
+            "AC powered: true",
+            "USB powered: false",
+            "Wireless powered: false",
+            "Dock powered: false",
+            "level: 57",
+            "temperature: 370",
+            "Capacity level: 3"
+          ]
+        },
+        "transition": false
+      },
+      {
+        "model": "native2",
+        "case": "color",
+        "round": 3,
+        "kind": "pad1",
+        "before": {
+          "thermal": [
+            "Thermal Status: 1"
+          ],
+          "battery": [
+            "AC powered: true",
+            "USB powered: false",
+            "Wireless powered: false",
+            "Dock powered: false",
+            "level: 57",
+            "temperature: 370",
+            "Capacity level: 3"
+          ]
+        },
+        "after": {
+          "thermal": [
+            "Thermal Status: 1"
+          ],
+          "battery": [
+            "AC powered: true",
+            "USB powered: false",
+            "Wireless powered: false",
+            "Dock powered: false",
+            "level: 57",
+            "temperature: 370",
+            "Capacity level: 3"
+          ]
+        },
+        "transition": false
+      },
+      {
+        "model": "native2",
+        "case": "line",
+        "round": 3,
+        "kind": "stock",
+        "before": {
+          "thermal": [
+            "Thermal Status: 1"
+          ],
+          "battery": [
+            "AC powered: true",
+            "USB powered: false",
+            "Wireless powered: false",
+            "Dock powered: false",
+            "level: 57",
+            "temperature: 370",
+            "Capacity level: 3"
+          ]
+        },
+        "after": {
+          "thermal": [
+            "Thermal Status: 1"
+          ],
+          "battery": [
+            "AC powered: true",
+            "USB powered: false",
+            "Wireless powered: false",
+            "Dock powered: false",
+            "level: 57",
+            "temperature: 370",
+            "Capacity level: 3"
+          ]
+        },
+        "transition": false
+      },
+      {
+        "model": "native2",
+        "case": "line",
+        "round": 3,
+        "kind": "pad1",
+        "before": {
+          "thermal": [
+            "Thermal Status: 1"
+          ],
+          "battery": [
+            "AC powered: true",
+            "USB powered: false",
+            "Wireless powered: false",
+            "Dock powered: false",
+            "level: 57",
+            "temperature: 370",
+            "Capacity level: 3"
+          ]
+        },
+        "after": {
+          "thermal": [
+            "Thermal Status: 1"
+          ],
+          "battery": [
+            "AC powered: true",
+            "USB powered: false",
+            "Wireless powered: false",
+            "Dock powered: false",
+            "level: 57",
+            "temperature: 370",
+            "Capacity level: 3"
+          ]
+        },
+        "transition": false
+      },
+      {
+        "model": "quality4to2",
+        "case": "color",
+        "round": 3,
+        "kind": "stock",
+        "before": {
+          "thermal": [
+            "Thermal Status: 1"
+          ],
+          "battery": [
+            "AC powered: true",
+            "USB powered: false",
+            "Wireless powered: false",
+            "Dock powered: false",
+            "level: 57",
+            "temperature: 370",
+            "Capacity level: 3"
+          ]
+        },
+        "after": {
+          "thermal": [
+            "Thermal Status: 1"
+          ],
+          "battery": [
+            "AC powered: true",
+            "USB powered: false",
+            "Wireless powered: false",
+            "Dock powered: false",
+            "level: 57",
+            "temperature: 370",
+            "Capacity level: 3"
+          ]
+        },
+        "transition": false
+      },
+      {
+        "model": "quality4to2",
+        "case": "color",
+        "round": 3,
+        "kind": "pad1",
+        "before": {
+          "thermal": [
+            "Thermal Status: 1"
+          ],
+          "battery": [
+            "AC powered: true",
+            "USB powered: false",
+            "Wireless powered: false",
+            "Dock powered: false",
+            "level: 57",
+            "temperature: 370",
+            "Capacity level: 3"
+          ]
+        },
+        "after": {
+          "thermal": [
+            "Thermal Status: 1"
+          ],
+          "battery": [
+            "AC powered: true",
+            "USB powered: false",
+            "Wireless powered: false",
+            "Dock powered: false",
+            "level: 57",
+            "temperature: 370",
+            "Capacity level: 3"
+          ]
+        },
+        "transition": false
+      },
+      {
+        "model": "quality4to2",
+        "case": "line",
+        "round": 3,
+        "kind": "stock",
+        "before": {
+          "thermal": [
+            "Thermal Status: 1"
+          ],
+          "battery": [
+            "AC powered: true",
+            "USB powered: false",
+            "Wireless powered: false",
+            "Dock powered: false",
+            "level: 57",
+            "temperature: 370",
+            "Capacity level: 3"
+          ]
+        },
+        "after": {
+          "thermal": [
+            "Thermal Status: 1"
+          ],
+          "battery": [
+            "AC powered: true",
+            "USB powered: false",
+            "Wireless powered: false",
+            "Dock powered: false",
+            "level: 57",
+            "temperature: 370",
+            "Capacity level: 3"
+          ]
+        },
+        "transition": false
+      },
+      {
+        "model": "quality4to2",
+        "case": "line",
+        "round": 3,
+        "kind": "pad1",
+        "before": {
+          "thermal": [
+            "Thermal Status: 1"
+          ],
+          "battery": [
+            "AC powered: true",
+            "USB powered: false",
+            "Wireless powered: false",
+            "Dock powered: false",
+            "level: 57",
+            "temperature: 370",
+            "Capacity level: 3"
+          ]
+        },
+        "after": {
+          "thermal": [
+            "Thermal Status: 1"
+          ],
+          "battery": [
+            "AC powered: true",
+            "USB powered: false",
+            "Wireless powered: false",
+            "Dock powered: false",
+            "level: 57",
+            "temperature: 370",
+            "Capacity level: 3"
+          ]
+        },
+        "transition": false
+      }
+    ],
+    "identities": {
+      "worker": "a4c5581ef5b0d6e0f96e3b7c6d607d7a6f97565f80cc1f6760b1f3953c3f2698",
+      "omp": "da75dcbe6026a3e08d01bfe86860159432051b329a84deb5ee042ce9b8e1a302",
+      "stock": "87d150e735157b09aa20f26f5e57f72468c548e7ce98ce407ec50ee7e14a52dd",
+      "pad1": "859fe2acd3a4bce7762c7c957d79217d1a958d379d494d372dd0534e2bee1b8e"
+    },
+    "rgbaComparisonPairs": 60,
+    "rgbaComparedOutputs": 120,
+    "gatePassed": true,
+    "readerTested": false,
+    "energyImprovement": "NOT MEASURED"
+  },
+  "strip": {
+    "passed": true,
+    "sourceSha256": "f1e3b020150008b5e2701c1bf11283fa0d0bbd730626e0fb715df0a8613ae415",
+    "strippedSha256": "859fe2acd3a4bce7762c7c957d79217d1a958d379d494d372dd0534e2bee1b8e",
+    "sourceBytes": 75929728,
+    "strippedBytes": 12111472,
+    "normalizedElfHeaderBytes": [
+      "40:48 section offset",
+      "58:64 section table entry/count/name index"
+    ],
+    "loadSegments": [
+      {
+        "flags": 5,
+        "offset": 0,
+        "vaddr": 0,
+        "paddr": 0,
+        "filesz": 11842896,
+        "memsz": 11842896,
+        "align": 16384,
+        "sha256": "8976bc0f9bf6f4de40a53fdb5ebbb7f522684c086a7669d215c1621e3381491d"
+      },
+      {
+        "flags": 6,
+        "offset": 11842896,
+        "vaddr": 11859280,
+        "paddr": 11859280,
+        "filesz": 254952,
+        "memsz": 256688,
+        "align": 16384,
+        "sha256": "547e2ae474a86aa125e2f7306e7056ac9cfdb8e8346f8a111d46f73920802432"
+      },
+      {
+        "flags": 6,
+        "offset": 12098048,
+        "vaddr": 12130816,
+        "paddr": 12130816,
+        "filesz": 10784,
+        "memsz": 100192,
+        "align": 16384,
+        "sha256": "ccf4a05e17f765a1566383dc19354401075455de807557cc091c0a8ee382450c"
+      }
+    ]
+  },
+  "evidence": {
+    "pad1-pilot-20261025T002124.private": {
+      "path": "pad1-pilot-20261025T002124.private\\report.json",
+      "sha256": "9ff35fd6e5c45b8f99e28f7aab60bf30739de7fa776ce6c6d7e7d1dc2b75c170"
+    },
+    "pad1-plain-20261025T002510.private": {
+      "path": "pad1-plain-20261025T002510.private\\report.json",
+      "sha256": "2dbf071eee447fe690384b286a0ed01a52b2d071793cf8213851e662add265f5"
+    },
+    "pad1-fullnative-20261025T002908.private": {
+      "path": "pad1-fullnative-20261025T002908.private\\report.json",
+      "sha256": "123806e98a4dbf550efa6ab7c8f88e2164e97de72ddd283e81cc2a6d63e5c4d7"
+    }
+  },
+  "failures": [
+    {
+      "scope": "First fullNative harness startup",
+      "reason": "Worker rejected shortened model directory name (unknown model dir type); stock route, no inference. Corrected to existing asset directory basenames.",
+      "path": "pad1-fullnative-20261025T002846.private/report.json"
+    }
+  ]
+}

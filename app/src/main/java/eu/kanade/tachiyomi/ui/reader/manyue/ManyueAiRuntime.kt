@@ -190,6 +190,7 @@ object ManyueAiRuntime {
         pb.environment()["LD_LIBRARY_PATH"] = nativeDir
         pb.environment()["OMP_NUM_THREADS"] = "1"
         pb.environment()["OMP_WAIT_POLICY"] = "PASSIVE"
+        if (model.usesQualityRuntime) pb.environment()["MANYUE_FUSE_PAD1"] = "1"
         pb.redirectErrorStream(true)
         // Always drain native stdout/stderr to a file. An unread Process pipe can fill and
         // deadlock waitFor() on real devices even though JVM unit tests stay green.
@@ -261,6 +262,9 @@ object ManyueAiRuntime {
                     environment()["OMP_WAIT_POLICY"] = "PASSIVE"
                     // Bound each quality-model GPU submission without changing its arithmetic.
                     environment()["MANYUE_GPU_CHUNK"] = "1"
+                    // Merge zero padding into eligible Winograd input transforms.
+                    // The Native guard preserves other GPUs, shapes and precision paths.
+                    environment()["MANYUE_FUSE_PAD1"] = "1"
                     redirectErrorStream(false)
                 }.start()
             },

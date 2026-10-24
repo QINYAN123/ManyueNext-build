@@ -1,0 +1,10 @@
+{
+  "defaultEnabled": false,
+  "requiresEnv": "MANYUE_STAGE_PROFILE=1",
+  "queryCount": 420,
+  "patchSha256": "8c1cf46e7045ae306d6e78dcf5ade1d847b4159669f353726e0ff566cc6a903f",
+  "sourceArchiveSha256": "b2145f7b01422f5ee66777d1c2c29de935191ed39865193951e1a7228202a6c1",
+  "runtimeChanged": false,
+  "availability": "VK_SUCCESS required; no WAIT",
+  "ordering": "relative to whole convolution; two timestamp ticks tolerance"
+}

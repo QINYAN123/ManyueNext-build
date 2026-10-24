@@ -1,0 +1,148 @@
+--- a/src/layer/vulkan/convolution_vulkan.cpp
++++ b/src/layer/vulkan/convolution_vulkan.cpp
+@@ -13,6 +13,7 @@
+ // specific language governing permissions and limitations under the License.
+ 
+ #include "convolution_vulkan.h"
++#include <cstdlib>
+ 
+ #include "layer_shader_type.h"
+ #include "layer_type.h"
+@@ -1290,6 +1291,21 @@
+     size_t elemsize = bottom_blob.elemsize;
+     int elempack = bottom_blob.elempack;
+ 
++#if NCNN_BENCHMARK
++    // Diagnostic-only: the fixed 41-layer/42-blob probe reserves eight slots per
++    // top blob after upstream queries 0..81 and outer interval 82/83.
++    // Distinct slots keep the last middle convolution in the tail unambiguous.
++    const char* stage_env = std::getenv("MANYUE_STAGE_PROFILE");
++    const bool stage_profile = stage_env && stage_env[0] == '1' && stage_env[1] == 0
++        && channels * elempack == 64 && num_output == 64
++        && kernel_w == 3 && kernel_h == 3 && stride_w == 1 && stride_h == 1
++        && dilation_w == 1 && dilation_h == 1
++        && pad_left == 1 && pad_right == 1 && pad_top == 1 && pad_bottom == 1
++        && opt.use_winograd_convolution && (opt.use_winograd23_convolution || opt.use_winograd43_convolution)
++        && !opt.use_image_storage && tops.size() == 1 && tops[0] >= 0 && tops[0] < 42;
++    const uint32_t stage_query = stage_profile ? 84 + 8 * tops[0] : 0;
++#endif
++
+     // flattened blob, implement as InnerProduct
+     if (bottom_blob.dims == 1 && kernel_w == 1 && kernel_h == 1)
+     {
+@@ -1318,6 +1334,9 @@
+     const int kernel_extent_w = dilation_w * (kernel_w - 1) + 1;
+     const int kernel_extent_h = dilation_h * (kernel_h - 1) + 1;
+ 
++#if NCNN_BENCHMARK
++    if (stage_profile) cmd.record_write_timestamp(stage_query);
++#endif
+     VkMat bottom_blob_bordered = bottom_blob;
+     if (pad_left > 0 || pad_right > 0 || pad_top > 0 || pad_bottom > 0)
+     {
+@@ -1382,6 +1401,9 @@
+         }
+     }
+ 
++#if NCNN_BENCHMARK
++    if (stage_profile) cmd.record_write_timestamp(stage_query + 1);
++#endif
+     w = bottom_blob_bordered.w;
+     h = bottom_blob_bordered.h;
+ 
+@@ -1450,7 +1472,13 @@
+                 dispatcher.h = block_y;
+                 dispatcher.c = bottom_tm_blob.h;
+ 
++#if NCNN_BENCHMARK
++                if (stage_profile) cmd.record_write_timestamp(stage_query + 2);
++#endif
+                 cmd.record_pipeline(pipeline_convolution_3x3s1d1_winograd43_transform_input, bindings, constants, dispatcher);
++#if NCNN_BENCHMARK
++                if (stage_profile) cmd.record_write_timestamp(stage_query + 3);
++#endif
+             }
+ 
+             // gemm
+@@ -1490,7 +1518,13 @@
+                     dispatcher.c = 36;
+                 }
+ 
++#if NCNN_BENCHMARK
++                if (stage_profile) cmd.record_write_timestamp(stage_query + 4);
++#endif
+                 cmd.record_pipeline(pipeline_convolution_3x3s1d1_winograd43_gemm, bindings, constants, dispatcher);
++#if NCNN_BENCHMARK
++                if (stage_profile) cmd.record_write_timestamp(stage_query + 5);
++#endif
+             }
+ 
+             // transform output
+@@ -1518,7 +1552,13 @@
+                 dispatcher.h = block_y;
+                 dispatcher.c = top_blob.c;
+ 
++#if NCNN_BENCHMARK
++                if (stage_profile) cmd.record_write_timestamp(stage_query + 6);
++#endif
+                 cmd.record_pipeline(pipeline_convolution_3x3s1d1_winograd43_transform_output, bindings, constants, dispatcher);
++#if NCNN_BENCHMARK
++                if (stage_profile) cmd.record_write_timestamp(stage_query + 7);
++#endif
+             }
+         }
+         else
+@@ -1552,7 +1592,13 @@
+                 dispatcher.h = block_y;
+                 dispatcher.c = bottom_tm_blob.h;
+ 
++#if NCNN_BENCHMARK
++                if (stage_profile) cmd.record_write_timestamp(stage_query + 2);
++#endif
+                 cmd.record_pipeline(pipeline_convolution_3x3s1d1_winograd23_transform_input, bindings, constants, dispatcher);
++#if NCNN_BENCHMARK
++                if (stage_profile) cmd.record_write_timestamp(stage_query + 3);
++#endif
+             }
+ 
+             // gemm
+@@ -1592,7 +1638,13 @@
+                     dispatcher.c = 16;
+                 }
+ 
++#if NCNN_BENCHMARK
++                if (stage_profile) cmd.record_write_timestamp(stage_query + 4);
++#endif
+                 cmd.record_pipeline(pipeline_convolution_3x3s1d1_winograd23_gemm, bindings, constants, dispatcher);
++#if NCNN_BENCHMARK
++                if (stage_profile) cmd.record_write_timestamp(stage_query + 5);
++#endif
+             }
+ 
+             // transform output
+@@ -1620,7 +1672,13 @@
+                 dispatcher.h = block_y;
+                 dispatcher.c = top_blob.c;
+ 
++#if NCNN_BENCHMARK
++                if (stage_profile) cmd.record_write_timestamp(stage_query + 6);
++#endif
+                 cmd.record_pipeline(pipeline_convolution_3x3s1d1_winograd23_transform_output, bindings, constants, dispatcher);
++#if NCNN_BENCHMARK
++                if (stage_profile) cmd.record_write_timestamp(stage_query + 7);
++#endif
+             }
+         }
+ 
+--- a/src/command.cpp
++++ b/src/command.cpp
+@@ -2587,7 +2587,8 @@
+ 
+     VkResult ret = vkGetQueryPoolResults(vkdev->vkdevice(), d->query_pool, first_query, query_count,
+                                          query_count * sizeof(uint64_t), results.data() + first_query, sizeof(uint64_t), VK_QUERY_RESULT_64_BIT);
+-    if (ret != VK_SUCCESS && ret != VK_NOT_READY)
++    // Profile-only: a completed fence does not make an unwritten query valid.
++    if (ret != VK_SUCCESS)
+     {
+         NCNN_LOGE("vkGetQueryPoolResults failed %d", ret);
+         return -1;
