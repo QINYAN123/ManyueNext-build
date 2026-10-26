@@ -74,8 +74,13 @@ class ManyueReaderPrefetcher(context: Context) {
             return
         }
         val generation = ManyueRuntimeState.generation
+        val direction = ManyuePrefetchManager.directionForSelection(chapterId, current.index, generation, mode)
+            ?: run {
+                coordinator.cancelAll()
+                return
+            }
         val activeProfile = ManyueEnhancementCache.currentProfile()
-        coordinator.reconcile(chapterId, current.index, generation, pages.size) { pageIndex, taskGeneration ->
+        coordinator.reconcile(chapterId, current.index, generation, pages.size, committedDirection = direction) { pageIndex, taskGeneration ->
             val page = pages.getOrNull(pageIndex)
                 ?: return@reconcile ManyuePrefetchWorkOutcome.FAILED
             coordinator.ensureCurrent(chapterId, taskGeneration, mode)
@@ -329,6 +334,7 @@ internal class ManyuePrefetchJobCoordinator(
     @Volatile private var activeJob: Job? = null
     private var pageCount: Int = 0
     private var nextPageIndex: Int = -1
+    private val readingDirection = ManyueReadingDirection()
     private var direction = ManyueAiSafetyPolicy.PrefetchDirection.FORWARD
     private val failedPages = mutableSetOf<Int>()
     private var latestWork: (suspend (pageIndex: Int, generation: Long) -> ManyuePrefetchWorkOutcome)? = null
@@ -383,6 +389,7 @@ internal class ManyuePrefetchJobCoordinator(
         generation: Long,
         pageCount: Int,
         mode: Int = ManyueRuntimeState.modeInt,
+        committedDirection: ManyueAiSafetyPolicy.PrefetchDirection? = null,
         work: suspend (pageIndex: Int, generation: Long) -> ManyuePrefetchWorkOutcome,
     ) {
         if (pageCount <= 0 || currentPageIndex !in 0 until pageCount) {
@@ -401,15 +408,12 @@ internal class ManyuePrefetchJobCoordinator(
                 activeKey = key
                 selectedPage = currentPageIndex
                 this.pageCount = pageCount
-                direction = ManyueAiSafetyPolicy.PrefetchDirection.FORWARD
+                direction = readingDirection.reset(currentPageIndex, committedDirection ?: ManyueAiSafetyPolicy.PrefetchDirection.FORWARD)
                 nextPageIndex = currentPageIndex + direction.step
                 failedPages.clear()
             } else {
-                val nextDirection = ManyueAiSafetyPolicy.directionAfterSelection(
-                    previousPage = selectedPage,
-                    currentPage = currentPageIndex,
-                    currentDirection = direction,
-                )
+                val nextDirection = committedDirection?.let { readingDirection.reset(currentPageIndex, it) }
+                    ?: readingDirection.selected(currentPageIndex)
                 if (nextDirection != direction) {
                     direction = nextDirection
                     nextPageIndex = currentPageIndex + direction.step
@@ -774,7 +778,7 @@ internal class ManyuePrefetchJobCoordinator(
             selectedPage = -1
             pageCount = 0
             nextPageIndex = -1
-            direction = ManyueAiSafetyPolicy.PrefetchDirection.FORWARD
+            direction = readingDirection.reset()
             failedPages.clear()
             latestWork = null
             activeJob?.cancel()

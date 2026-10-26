@@ -29,6 +29,7 @@ object ManyuePrefetchManager {
     @Volatile private var currentPage: Int = -1
 
     private var directionKey: DirectionKey? = null
+    private val readingDirection = ManyueReadingDirection()
 
     private var prefetchDirection = ManyueAiSafetyPolicy.PrefetchDirection.FORWARD
     private val displayPreparationSlot = ManyueDisplayPreparationSlot()
@@ -67,6 +68,19 @@ object ManyuePrefetchManager {
         chapterId == currentChapterId && pageIndex == currentPage
     }
 
+    /** A recreated or delayed source cursor must inherit the existing viewport decision. */
+    internal fun directionForSelection(
+        chapterId: Long,
+        pageIndex: Int,
+        generation: Long,
+        mode: Int,
+    ): ManyueAiSafetyPolicy.PrefetchDirection? = synchronized(this) {
+        prefetchDirection.takeIf {
+            currentChapterId == chapterId && currentPage == pageIndex &&
+                directionKey == DirectionKey(chapterId, generation, mode)
+        }
+    }
+
     fun reset() {
         synchronized(this) {
             tokens.values.flatten().forEach(ManyueAiUpscaler::cancel)
@@ -78,7 +92,7 @@ object ManyuePrefetchManager {
             currentChapterId = Long.MIN_VALUE
             currentPage = -1
             directionKey = null
-            prefetchDirection = ManyueAiSafetyPolicy.PrefetchDirection.FORWARD
+            prefetchDirection = readingDirection.reset()
             displayPreparationSlot.reset()
             ManyueReadAheadScheduler.policy.reset()
         }
@@ -122,14 +136,10 @@ object ManyuePrefetchManager {
                 mode = ManyueRuntimeState.modeInt,
             )
             if (directionKey == nextDirectionKey) {
-                prefetchDirection = ManyueAiSafetyPolicy.directionAfterSelection(
-                    previousPage = currentPage,
-                    currentPage = current,
-                    currentDirection = prefetchDirection,
-                )
+                prefetchDirection = readingDirection.selected(current)
             } else {
                 directionKey = nextDirectionKey
-                prefetchDirection = ManyueAiSafetyPolicy.PrefetchDirection.FORWARD
+                prefetchDirection = readingDirection.reset(current)
             }
 
             visiblePages = visible.mapTo(linkedSetOf()) { PageKey(it.first, it.second) }
@@ -144,7 +154,7 @@ object ManyuePrefetchManager {
             }
             currentChapterId = chapterId
             currentPage = current
-            ManyueReadAheadScheduler.policy.selected(chapterId, current, nextDirectionKey.generation)
+            ManyueReadAheadScheduler.policy.selected(chapterId, current, nextDirectionKey.generation, prefetchDirection)
             ManyueReadAheadScheduler.policy.visible(
                 chapterId, visiblePages.filter { it.chapterId == chapterId }.mapTo(linkedSetOf()) { it.pageIndex },
                 nextDirectionKey.generation,

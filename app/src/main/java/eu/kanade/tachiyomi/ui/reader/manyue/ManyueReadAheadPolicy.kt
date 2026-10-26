@@ -11,6 +11,7 @@ internal class ManyueReadAheadPolicy(private val nanoTime: () -> Long = System::
     private var generation = Long.MIN_VALUE
     private var head = -1
     private var direction = 1
+    private val readingDirection = ManyueReadingDirection()
     private var selectedAt = 0L
     private var intervalMs = 0.0
     private var samples = 0
@@ -21,19 +22,25 @@ internal class ManyueReadAheadPolicy(private val nanoTime: () -> Long = System::
         chapter = Long.MIN_VALUE
         generation = Long.MIN_VALUE
         head = -1
-        direction = 1
+        direction = readingDirection.reset().step
         selectedAt = 0L
         intervalMs = 0.0
         samples = 0
         visibleFrontier = 0
     }
 
-    @Synchronized fun selected(chapterId: Long, page: Int, requestGeneration: Long) {
+    @Synchronized fun selected(
+        chapterId: Long,
+        page: Int,
+        requestGeneration: Long,
+        committedDirection: ManyueAiSafetyPolicy.PrefetchDirection? = null,
+    ) {
         val now = nanoTime()
         if (chapter != chapterId || generation != requestGeneration) {
             reset()
             chapter = chapterId
             generation = requestGeneration
+            direction = readingDirection.reset(page, committedDirection ?: ManyueAiSafetyPolicy.PrefetchDirection.FORWARD).step
         } else if (page == head) {
             return // repeated geometry callbacks are not new reading-speed samples
         } else if (head >= 0) {
@@ -48,7 +55,7 @@ internal class ManyueReadAheadPolicy(private val nanoTime: () -> Long = System::
                 intervalMs = if (samples == 0) interval else .65 * intervalMs + .35 * interval
                 samples++
             }
-            direction = step
+            direction = (committedDirection?.let { readingDirection.reset(page, it) } ?: readingDirection.selected(page)).step
         }
         head = page
         selectedAt = now

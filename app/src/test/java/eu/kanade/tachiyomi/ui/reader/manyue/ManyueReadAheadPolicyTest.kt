@@ -43,7 +43,9 @@ class ManyueReadAheadPolicyTest {
         select(0); select(1); select(2)
         select(1)
         assertEquals(0, policy.preferredLead(10, 1, 720, 562))
-        assertEquals(1, policy.distance(10, 0, 1))
+        assertEquals(-1, policy.distance(10, 0, 1), "a single-page backlook must not reverse prefetch")
+        select(0)
+        assertEquals(1, policy.distance(10, -1, 1), "two pages back confirm deliberate reverse reading")
         select(20)
         assertEquals(0, policy.preferredLead(10, 1, 720, 562))
         select(0, chapter = 11)
@@ -51,6 +53,22 @@ class ManyueReadAheadPolicyTest {
         select(1, generation = 2, chapter = 11)
         assertNull(policy.distance(11, 1, 1))
         assertEquals(0, policy.preferredLead(11, 2, 720, 562))
+    }
+
+    @Test fun `short backlook clears speed without reversing and repeated callbacks cannot confirm direction`() {
+        select(10); select(11); select(12)
+        select(11)
+        repeat(3) { select(11, 100) }
+        assertEquals(1, policy.distance(10, 12, 1))
+        assertEquals(0, policy.preferredLead(10, 1, 720, 562))
+        select(12)
+        assertEquals(1, policy.distance(10, 13, 1))
+        select(11); select(10)
+        assertEquals(1, policy.distance(10, 9, 1))
+        select(11)
+        assertEquals(1, policy.distance(10, 10, 1), "a forward glance during reverse reading is symmetric")
+        select(12)
+        assertEquals(1, policy.distance(10, 13, 1))
     }
 
     @Test fun `repeated selection does not fabricate speed and lead stays bounded`() {

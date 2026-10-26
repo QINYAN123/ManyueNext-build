@@ -26,6 +26,115 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 class ManyuePrefetchCoordinatorLifecycleTest {
+    @Test
+    fun `late cursor and same-generation manager reset inherit the canonical direction`() {
+        val chapter = 111L
+        val mode = ManyueEnhancementMode.AI_2X.value
+        val oldMode = ManyueRuntimeState.modeInt
+        ManyueRuntimeState.updateMode(mode)
+        ManyuePrefetchManager.reset()
+        val generation = ManyueRuntimeState.generation
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val coordinator = ManyuePrefetchJobCoordinator(scope)
+        val never = CompletableDeferred<Unit>()
+        fun reconcile() {
+            coordinator.reconcile(
+                chapter, 8, generation, 20, mode,
+                committedDirection = ManyuePrefetchManager.directionForSelection(chapter, 8, generation, mode),
+            ) { _, _ -> never.await(); ManyuePrefetchWorkOutcome.COMPLETED }
+        }
+        try {
+            ManyuePrefetchManager.onPageChanged(chapter, 10)
+            ManyuePrefetchManager.onPageChanged(chapter, 8)
+            assertNull(ManyuePrefetchManager.directionForSelection(chapter, 9, generation, mode))
+            assertNull(ManyuePrefetchManager.directionForSelection(chapter, 8, generation - 1, mode))
+            reconcile()
+            assertEquals(ManyueAiSafetyPolicy.PrefetchDirection.BACKWARD, coordinator.selectedDirection(chapter, generation))
+            assertEquals(1, ManyueReadAheadScheduler.policy.distance(chapter, 7, generation))
+            ManyuePrefetchManager.reset()
+            ManyuePrefetchManager.onPageChanged(chapter, 8)
+            reconcile()
+            assertEquals(ManyueAiSafetyPolicy.PrefetchDirection.FORWARD, coordinator.selectedDirection(chapter, generation))
+            assertEquals(1, ManyueReadAheadScheduler.policy.distance(chapter, 9, generation))
+        } finally {
+            coordinator.cancelAll()
+            scope.cancel()
+            ManyuePrefetchManager.reset()
+            ManyueRuntimeState.updateMode(oldMode)
+        }
+    }
+
+    @Test
+    @OptIn(ExperimentalCoroutinesApi::class)
+    fun `short backlook keeps source work while confirmed reverse cancels it before enqueue`() = runBlocking {
+        val chapterId = 110L
+        val mode = ManyueEnhancementMode.AI_2X.value
+        val oldMode = ManyueRuntimeState.modeInt
+        ManyueRuntimeState.updateMode(mode)
+        ManyuePrefetchManager.reset()
+        val generation = ManyueRuntimeState.generation
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default.limitedParallelism(1))
+        val coordinator = ManyuePrefetchJobCoordinator(scope)
+        val sourceEntered = CompletableDeferred<Unit>()
+        val sourceClosed = CompletableDeferred<Unit>()
+        val releaseSource = CompletableDeferred<Unit>()
+        val enqueued = Collections.synchronizedList(mutableListOf<Int>())
+        val work: suspend (Int, Long) -> ManyuePrefetchWorkOutcome = { page, taskGeneration ->
+            val guard = ManyuePrefetchPreparationPhaseGuard()
+            try {
+                coordinator.awaitWhileCurrent(
+                    chapterId, taskGeneration, mode,
+                    keepStageCurrent = {
+                        guard.shouldKeepStageCurrent { coordinator.isPreparationCurrent(chapterId, taskGeneration, mode, page) }
+                    },
+                    cancelStageIfStale = { guard.cancelPreparationIfPending() },
+                ) {
+                    if (page == 11) {
+                        sourceEntered.complete(Unit)
+                        try {
+                            releaseSource.await()
+                        } finally {
+                            sourceClosed.complete(Unit)
+                        }
+                    }
+                    enqueued += page
+                }
+                ManyuePrefetchWorkOutcome.COMPLETED
+            } catch (_: CancellationException) {
+                ManyuePrefetchWorkOutcome.CANCELLED
+            }
+        }
+        fun select(page: Int) {
+            ManyuePrefetchManager.onPageChanged(chapterId, page, setOf(chapterId to page))
+            ManyuePrefetchManager.releaseCurrent(chapterId, page, generation)
+            coordinator.reconcile(
+                chapterId, page, generation, 20, mode,
+                committedDirection = ManyuePrefetchManager.directionForSelection(chapterId, page, generation, mode),
+                work = work,
+            )
+        }
+        try {
+            select(10)
+            withTimeout(5_000) { sourceEntered.await() }
+            select(9)
+            assertEquals(ManyueAiSafetyPolicy.PrefetchDirection.FORWARD, coordinator.selectedDirection(chapterId, generation))
+            assertTrue(coordinator.isPreparationCurrent(chapterId, generation, mode, 11))
+            assertEquals(2, ManyueReadAheadScheduler.policy.distance(chapterId, 11, generation))
+            assertTrue(!sourceClosed.isCompleted)
+            select(8)
+            assertEquals(ManyueAiSafetyPolicy.PrefetchDirection.BACKWARD, coordinator.selectedDirection(chapterId, generation))
+            assertEquals(1, ManyueReadAheadScheduler.policy.distance(chapterId, 7, generation))
+            withTimeout(5_000) { sourceClosed.await() }
+            withTimeout(5_000) { coordinator.awaitCursorIdle() }
+            assertEquals((7 downTo 0).toList(), enqueued.toList(), "stale source must close before reverse work is enqueued")
+        } finally {
+            coordinator.cancelAll()
+            scope.cancel()
+            ManyuePrefetchManager.reset()
+            ManyueRuntimeState.updateMode(oldMode)
+        }
+    }
+
 
     @Test
     fun `closed current decision prevents future work until visible request has been offered`() = runBlocking {
@@ -222,7 +331,7 @@ class ManyuePrefetchCoordinatorLifecycleTest {
             coordinator.awaitCursorIdle()
             assertEquals(1, attempts.count { it == 11 })
 
-            coordinator.reconcileAfterDecision(93, 9, generation, 20, ManyueEnhancementMode.AI_2X.value, work)
+            coordinator.reconcileAfterDecision(93, 8, generation, 20, ManyueEnhancementMode.AI_2X.value, work)
             coordinator.awaitCursorIdle()
             coordinator.reconcileAfterDecision(93, 10, generation, 20, ManyueEnhancementMode.AI_2X.value, work)
             coordinator.awaitCursorIdle()
@@ -258,7 +367,7 @@ class ManyuePrefetchCoordinatorLifecycleTest {
         try {
             coordinator.reconcileAfterDecision(94, 10, generation, 20, ManyueEnhancementMode.AI_2X.value, work)
             coordinator.awaitCursorIdle()
-            coordinator.reconcileAfterDecision(94, 9, generation, 20, ManyueEnhancementMode.AI_2X.value, work)
+            coordinator.reconcileAfterDecision(94, 8, generation, 20, ManyueEnhancementMode.AI_2X.value, work)
             coordinator.awaitCursorIdle()
             coordinator.reconcileAfterDecision(94, 10, generation, 20, ManyueEnhancementMode.AI_2X.value, work)
             coordinator.awaitCursorIdle()
@@ -295,13 +404,13 @@ class ManyuePrefetchCoordinatorLifecycleTest {
         try {
             coordinator.reconcileAfterDecision(97, 10, generation, 20, ManyueEnhancementMode.AI_2X.value, work)
             withTimeout(5_000) { page11Started.await() }
-            coordinator.reconcileAfterDecision(97, 9, generation, 20, ManyueEnhancementMode.AI_2X.value, work)
+            coordinator.reconcileAfterDecision(97, 8, generation, 20, ManyueEnhancementMode.AI_2X.value, work)
             assertEquals(1, coordinator.activeCursorCount, "direction reversal keeps one cursor alive")
 
             releasePage11.complete(Unit)
             coordinator.awaitCursorIdle()
 
-            assertEquals(listOf(11) + (8 downTo 0).toList(), completed.toList())
+            assertEquals(listOf(11) + (7 downTo 0).toList(), completed.toList())
             assertTrue(!coordinator.isPreparationCurrent(97, generation, ManyueEnhancementMode.AI_2X.value, 11),
                 "after reversal an invisible page behind the directional head is stale")
         } finally {
@@ -336,7 +445,7 @@ class ManyuePrefetchCoordinatorLifecycleTest {
         try {
             coordinator.reconcileAfterDecision(100, 10, generation, 20, ManyueEnhancementMode.AI_2X.value, work)
             withTimeout(5_000) { firstAttemptStarted.await() }
-            coordinator.reconcileAfterDecision(100, 9, generation, 20, ManyueEnhancementMode.AI_2X.value, work)
+            coordinator.reconcileAfterDecision(100, 8, generation, 20, ManyueEnhancementMode.AI_2X.value, work)
             releaseFirstAttempt.complete(Unit)
             coordinator.awaitCursorIdle()
 
@@ -1099,5 +1208,5 @@ private fun ManyuePrefetchJobCoordinator.reconcileAfterDecision(
     work: suspend (pageIndex: Int, generation: Long) -> ManyuePrefetchWorkOutcome,
 ) {
     ManyuePrefetchManager.releaseCurrent(chapterId, currentPageIndex, generation)
-    reconcile(chapterId, currentPageIndex, generation, pageCount, mode, work)
+    reconcile(chapterId, currentPageIndex, generation, pageCount, mode, work = work)
 }

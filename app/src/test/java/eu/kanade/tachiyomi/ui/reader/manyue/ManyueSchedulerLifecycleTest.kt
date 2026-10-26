@@ -25,6 +25,35 @@ import java.util.concurrent.PriorityBlockingQueue
 @Config(application = Application::class, sdk = [34], manifest = Config.NONE)
 @LooperMode(LooperMode.Mode.PAUSED)
 class ManyueSchedulerLifecycleTest {
+    @Test fun singlePageBacklookKeepsFutureWorkAndConfirmedReverseStillProtectsVisibleStrips() {
+        val oldMode = ManyueRuntimeState.modeInt
+        ManyueRuntimeState.updateMode(ManyueEnhancementMode.AI_2X.value)
+        ManyuePrefetchManager.reset()
+        ManyuePrefetchManager.onPageChanged(92, 11, setOf(92L to 10, 92L to 11))
+        val futureToken = registerAtCurrentGeneration(12)
+        val visibleToken = registerAtCurrentGeneration(10)
+        val tokens = listOf(futureToken, visibleToken)
+        try {
+            ManyuePrefetchManager.register(92, 12, futureToken)
+            ManyuePrefetchManager.register(92, 10, visibleToken)
+            ManyuePrefetchManager.onPageChanged(92, 10, setOf(92L to 10, 92L to 11))
+            assertFalse("a brief backlook must not discard pending forward computation", request(futureToken).cancelled)
+            assertEquals(40, request(futureToken).priority)
+            assertFalse(request(visibleToken).cancelled)
+            assertEquals(120, request(visibleToken).priority)
+            assertEquals(2, ManyueReadAheadScheduler.policy.distance(92, 12, ManyueRuntimeState.generation))
+
+            ManyuePrefetchManager.onPageChanged(92, 9, setOf(92L to 9, 92L to 10))
+            assertTrue("two pages back must cancel obsolete forward requests", request(futureToken).cancelled)
+            assertFalse("an earlier visible strip must survive the confirmed reversal", request(visibleToken).cancelled)
+            assertEquals(100, request(visibleToken).priority)
+            assertEquals(1, ManyueReadAheadScheduler.policy.distance(92, 8, ManyueRuntimeState.generation))
+        } finally {
+            cleanSchedulerRequests(tokens)
+            ManyueRuntimeState.updateMode(oldMode)
+        }
+    }
+
     @Test fun newlyAttachedListenersSeeResourceWaitRatherThanInference() = runBlocking {
         val token = register(87)
         val req = request(token)
