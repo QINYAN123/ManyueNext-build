@@ -41,6 +41,8 @@ internal class ManyueWebGpuPageBridge(
     private var startJob: Job? = null
     private var prepareJob: Job? = null
     private var visible = false
+    private var demandEpoch = 0L
+    private var failedInputDemandEpoch: Long? = null
     private var prepareAhead = false
     private var terminalFailure = false
     private var waitingForDisplayWidth = false
@@ -71,6 +73,7 @@ internal class ManyueWebGpuPageBridge(
         (prepareAhead && ManyuePrefetchManager.isNextDisplayPage(identity.chapterId, identity.pageIndex))
 
     fun updateVisibility(isVisible: Boolean, prepareNext: Boolean = false) {
+        if (visible != isVisible || prepareAhead != prepareNext) demandEpoch++
         visible = isVisible
         prepareAhead = prepareNext
         cancellationRetry.updateVisibility(isVisible)
@@ -94,7 +97,9 @@ internal class ManyueWebGpuPageBridge(
         }
         if (readyResult != null) {
             prepareReady()
-        } else if (token == null && !terminalFailure && cancellationRetry.allowsVisibilityStart()) {
+        } else if (token == null && !terminalFailure && failedInputDemandEpoch != demandEpoch &&
+            cancellationRetry.allowsVisibilityStart()
+        ) {
             val activeStart = startJob?.takeIf { it.isActive }
             if (isVisible && activeStart != null) {
                 cancellationRetry.afterVisibleUpdate(
@@ -114,6 +119,7 @@ internal class ManyueWebGpuPageBridge(
         mode = ManyueRuntimeState.modeInt
         val requestGeneration = generation
         val requestMode = mode
+        val requestDemandEpoch = demandEpoch
         page.resetEnhancementState(mode)
         startJob = scope.launch {
             val decision = PageDecisionReleaseGuard(identity.chapterId, identity.pageIndex, requestGeneration)
@@ -194,14 +200,17 @@ internal class ManyueWebGpuPageBridge(
                                 token = null
                                 cacheKey = null
                                 listener = null
-                                page.updateEnhancementState(ManyueEnhancementState.AI_QUEUED, detail)
-                                cancellationRetry.afterCancellation(
+                                val retryScheduled = cancellationRetry.afterCancellation(
                                     startJob = startJob,
                                     currentStartJob = { startJob },
                                     canStart = {
                                         canRetryCancelledRequest(requestGeneration, requestMode, requestFingerprint)
                                     },
                                     start = ::start,
+                                )
+                                page.updateEnhancementState(
+                                    if (retryScheduled) ManyueEnhancementState.AI_QUEUED else ManyueEnhancementState.SKIPPED,
+                                    if (retryScheduled) detail else "本次 AI 请求已取消，保留原图；重新进入可重试",
                                 )
                             }
                             else -> {
@@ -216,10 +225,16 @@ internal class ManyueWebGpuPageBridge(
             } catch (error: CancellationException) {
                 throw error
             } catch (_: Throwable) {
-                if (current()) {
-                    terminalFailure = true
+                if (current() && generation == requestGeneration && mode == requestMode) {
+                    // An old source read can outlive hiding and even finish after re-entry.
+                    // Failure suppresses only this demand, not a later visible/preparation episode.
+                    val sameDemand = wantedForDisplay() && demandEpoch == requestDemandEpoch
+                    if (sameDemand) failedInputDemandEpoch = requestDemandEpoch
                     decision.markDecisionReached()
-                    page.updateEnhancementState(ManyueEnhancementState.FAILED, "AI 输入读取失败，已保留原图")
+                    page.updateEnhancementState(
+                        if (sameDemand) ManyueEnhancementState.FAILED else ManyueEnhancementState.SKIPPED,
+                        if (sameDemand) "AI 输入读取失败，已保留原图" else "先前 AI 输入读取已失效，保留原图；重新进入可重试",
+                    )
                 }
             } finally {
                 decision.releaseIfReached()
@@ -264,7 +279,7 @@ internal class ManyueWebGpuPageBridge(
     private fun canStartVisibleRequest(): Boolean =
         current() && visible && wantedForDisplay() &&
             page.status == eu.kanade.tachiyomi.source.model.Page.State.Ready &&
-            token == null && readyResult == null && !terminalFailure
+            token == null && readyResult == null && !terminalFailure && failedInputDemandEpoch != demandEpoch
 
     private fun hasUsableAutoDisplayWidth(): Boolean {
         if (mode != ManyueEnhancementMode.AUTO.value) {
@@ -322,6 +337,7 @@ internal class ManyueWebGpuPageBridge(
         inputFingerprint = null
         shownToken = null
         terminalFailure = false
+        failedInputDemandEpoch = null
         waitingForDisplayWidth = false
         displayWidthAtWait = 0
         generation = ManyueRuntimeState.generation

@@ -39,15 +39,17 @@ internal class ManyueWebGpuCancellationRetry(
         schedule(startJob, currentStartJob, canStart, start)
     }
 
+    /** True only when a bounded retry was accepted, including an existing deferred start. */
     fun afterCancellation(
         startJob: Job?,
         currentStartJob: () -> Job?,
         canStart: () -> Boolean,
         start: () -> Unit,
-    ) {
-        if (!visible || cancellationRetryUsed || !canStart()) return
+    ): Boolean {
+        if (!visible || cancellationRetryUsed || !canStart()) return false
         cancellationRetryUsed = true
         schedule(startJob, currentStartJob, canStart, start)
+        return true
     }
 
     fun reset() {

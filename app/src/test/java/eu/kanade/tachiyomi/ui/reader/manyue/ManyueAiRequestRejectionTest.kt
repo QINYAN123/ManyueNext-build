@@ -26,9 +26,10 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import org.robolectric.annotation.LooperMode
 import org.robolectric.util.ReflectionHelpers
-import java.io.ByteArrayOutputStream
 import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.IOException
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
@@ -38,6 +39,185 @@ import java.util.concurrent.atomic.AtomicInteger
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 @LooperMode(LooperMode.Mode.PAUSED)
 class ManyueAiRequestRejectionTest {
+
+    @Test
+    fun `webgpu hidden input failure does not permanently block a later visible request`() {
+        hiddenInputFailureRecovers(reenterBeforeError = false)
+    }
+
+    @Test
+    fun `webgpu input failure from an earlier visible episode cannot poison reentry`() {
+        hiddenInputFailureRecovers(reenterBeforeError = true)
+    }
+
+    @Test
+    fun `webgpu old prewarm input failure cannot poison renewed hidden preparation`() {
+        prewarmInputFailureRecovers(renewPreparationBeforeError = true)
+    }
+
+    @Test
+    fun `webgpu failed prewarm input can retry when the page becomes visible`() {
+        prewarmInputFailureRecovers(renewPreparationBeforeError = false)
+    }
+
+    private fun prewarmInputFailureRecovers(renewPreparationBeforeError: Boolean) = withRuntime { context ->
+        val dbChapter = mockk<Chapter>(relaxed = true)
+        every { dbChapter.id } returns 9812L
+        every { dbChapter.manga_id } returns 9701L
+        val reads = AtomicInteger()
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val bytes = png(64, 64)
+        val page = ReaderPage(2, stream = {
+            if (reads.incrementAndGet() == 1) {
+                entered.countDown()
+                check(release.await(5, TimeUnit.SECONDS))
+                throw IOException("prewarm source failure")
+            }
+            ByteArrayInputStream(bytes)
+        }).apply {
+            chapter = ReaderChapter(dbChapter)
+            status = Page.State.Ready
+            updateSourceImageInfo(SourceImageInfo.Available(64, 64))
+        }
+        ManyuePrefetchManager.onPageChanged(9812L, 1)
+        val bridge = ManyueWebGpuPageBridge(context, page, alive = { true }) { _, _, _ -> false }
+        try {
+            bridge.updateVisibility(false, prepareNext = true)
+            assertTrue(entered.await(5, TimeUnit.SECONDS))
+            if (renewPreparationBeforeError) {
+                bridge.updateVisibility(false, prepareNext = false)
+                bridge.updateVisibility(false, prepareNext = true)
+            }
+            release.countDown()
+            assertTrue(awaitMainCondition(5_000) {
+                ReflectionHelpers.getField<kotlinx.coroutines.Job>(bridge, "startJob").isCompleted
+            })
+            if (renewPreparationBeforeError) {
+                bridge.updateVisibility(false, prepareNext = true)
+            } else {
+                // A failed hidden preparation must not be retried on every geometry callback.
+                repeat(8) { bridge.updateVisibility(false, prepareNext = true); shadowOf(Looper.getMainLooper()).idle() }
+                assertEquals(1, reads.get())
+                bridge.updateVisibility(true)
+            }
+            assertTrue("new demand must not inherit old prewarm IO failure", awaitMainCondition(5_000) {
+                reads.get() == 2 && schedulerRequests().any { it.chapterId == 9812L && it.pageIndex == 2 && !it.cancelled }
+            })
+            assertEquals(2, reads.get())
+        } finally {
+            release.countDown()
+            bridge.destroy()
+        }
+    }
+
+    private fun hiddenInputFailureRecovers(reenterBeforeError: Boolean) = withRuntime { context ->
+        val dbChapter = mockk<Chapter>(relaxed = true)
+        every { dbChapter.id } returns 9802L
+        every { dbChapter.manga_id } returns 9701L
+        val chapter = ReaderChapter(dbChapter)
+        val reads = AtomicInteger()
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val bytes = png(64, 64)
+        val page = ReaderPage(2, stream = {
+            if (reads.incrementAndGet() == 1) {
+                entered.countDown()
+                check(release.await(5, TimeUnit.SECONDS))
+                throw IOException("old hidden source closed")
+            }
+            ByteArrayInputStream(bytes)
+        }).apply {
+            this.chapter = chapter
+            status = Page.State.Ready
+            updateSourceImageInfo(SourceImageInfo.Available(64, 64))
+        }
+        val bridge = ManyueWebGpuPageBridge(context, page, alive = { true }) { _, _, _ -> false }
+        try {
+            bridge.updateVisibility(true)
+            assertTrue(entered.await(5, TimeUnit.SECONDS))
+            bridge.updateVisibility(false, prepareNext = false)
+            if (reenterBeforeError) bridge.updateVisibility(true)
+            release.countDown()
+            if (!reenterBeforeError) {
+                assertTrue(awaitMainCondition(5_000) {
+                    ReflectionHelpers.getField<kotlinx.coroutines.Job>(bridge, "startJob").isCompleted
+                })
+                bridge.updateVisibility(true)
+            }
+            assertTrue("same-generation cached bridge must retry a stale hidden input", awaitMainCondition(5_000) {
+                reads.get() == 2 && schedulerRequests().any { it.chapterId == 9802L && it.pageIndex == 2 && !it.cancelled }
+            })
+            assertEquals(2, reads.get())
+        } finally {
+            release.countDown()
+            bridge.destroy()
+        }
+    }
+
+    @Test
+    fun `webgpu failure for the same visible demand remains terminal without retry spin`() = withRuntime { context ->
+        val dbChapter = mockk<Chapter>(relaxed = true)
+        every { dbChapter.id } returns 9852L
+        every { dbChapter.manga_id } returns 9701L
+        val reads = AtomicInteger()
+        val page = ReaderPage(3, stream = {
+            reads.incrementAndGet()
+            throw IOException("persistent current source failure")
+        }).apply {
+            chapter = ReaderChapter(dbChapter)
+            status = Page.State.Ready
+            updateSourceImageInfo(SourceImageInfo.Available(64, 64))
+        }
+        val bridge = ManyueWebGpuPageBridge(context, page, alive = { true }) { _, _, _ -> false }
+        try {
+            bridge.updateVisibility(true)
+            assertTrue(awaitMainCondition(5_000) {
+                (page.sourceImageInfo.value as SourceImageInfo.Available).enhancementState == ManyueEnhancementState.FAILED
+            })
+            repeat(8) {
+                bridge.updateVisibility(true)
+                shadowOf(Looper.getMainLooper()).idle()
+            }
+            assertEquals(1, reads.get())
+            assertFalse(schedulerRequests().any { it.chapterId == 9852L })
+        } finally {
+            bridge.destroy()
+        }
+    }
+
+    @Test
+    fun `webgpu second cancellation retains original without fake queue and reentry can retry`() = withRuntime { context ->
+        val dbChapter = mockk<Chapter>(relaxed = true)
+        every { dbChapter.id } returns 9902L
+        every { dbChapter.manga_id } returns 9701L
+        val reads = AtomicInteger()
+        val page = readerPage(ReaderChapter(dbChapter), 4, 64, 64, reads) { }
+        val bridge = ManyueWebGpuPageBridge(context, page, alive = { true }) { _, _, _ -> false }
+        fun activeRequests() = schedulerRequests().filter { it.chapterId == 9902L && it.pageIndex == 4 && !it.cancelled }
+        try {
+            bridge.updateVisibility(true)
+            assertTrue(awaitMainCondition(5_000) { activeRequests().size == 1 })
+            val first = activeRequests().single().token
+            ManyueAiUpscaler.cancel(first)
+            assertTrue(awaitMainCondition(5_000) { activeRequests().singleOrNull()?.token?.let { it != first } == true })
+            val second = activeRequests().single().token
+            ManyueAiUpscaler.cancel(second)
+            assertTrue(awaitMainCondition(5_000) { ReflectionHelpers.getField<String?>(bridge, "token") == null })
+            val info = page.sourceImageInfo.value as SourceImageInfo.Available
+            assertEquals("no runnable request remains after the bounded retry", ManyueEnhancementState.SKIPPED, info.enhancementState)
+            assertTrue(info.enhancementDetail.orEmpty().contains("重新进入"))
+            repeat(8) { bridge.updateVisibility(true); shadowOf(Looper.getMainLooper()).idle() }
+            assertEquals(2, reads.get())
+            assertTrue(activeRequests().isEmpty())
+            bridge.updateVisibility(false)
+            bridge.updateVisibility(true)
+            assertTrue(awaitMainCondition(5_000) { activeRequests().singleOrNull()?.token?.let { it != first && it != second } == true })
+            assertEquals(3, reads.get())
+        } finally {
+            bridge.destroy()
+        }
+    }
 
     @Test
     fun `quality reports exact two times output budget and normal page remains enqueueable`() = withRuntime { context ->
