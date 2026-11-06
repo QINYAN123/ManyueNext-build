@@ -402,24 +402,53 @@ open class WebGpuViewer(
 
         val toRemove = candidates.firstOrNull() ?: farthest ?: return false
 
-        pageCache.remove(pageKey(toRemove))
-        decodeQueue.remove(toRemove)
-        toRemove.state = PageState.IDLE
-        (toRemove as? ViewerReaderPage)?.releaseManyue()
-        // Through the pin: a decode that swapped this page's image leaves its spread unguarded.
-        (toRemove as? ViewerReaderPage)?.spreadPage?.let(::cleanupImage)
-        cleanupImage(toRemove.imagePage)
+        dropFromCache(toRemove)
         return true
+    }
+
+    /** Removes [page] from the cache and releases its images and AI state. Call under [lock]. */
+    private fun dropFromCache(page: ViewerPage) {
+        pageCache.remove(pageKey(page))
+        decodeQueue.remove(page)
+        page.state = PageState.IDLE
+        (page as? ViewerReaderPage)?.releaseManyue()
+        // Through the pin: a decode that swapped this page's image leaves its spread unguarded.
+        (page as? ViewerReaderPage)?.spreadPage?.let(::cleanupImage)
+        cleanupImage(page.imagePage)
     }
 
     /**
      * Gets or creates a page. Thread-safe.
+     *
+     * A cached wrapper is only reused for the same [ReaderPage] instance. A reloaded chapter
+     * (e.g. recycled after leaving the prev/curr/next window, then re-entered) builds new
+     * ReaderPages under the same `(chapterId, index)` key; reusing the old wrapper would keep
+     * the old page list, loader stream and AI state alive behind the new table. The shown or
+     * pinned page is never swapped out here - see [WebGpuPageCachePolicy].
+     *
      * @param referencePage The page to use as reference for eviction (defaults to currentPage)
      */
     fun getPage(page: ReaderPage, referencePage: ViewerPage? = null): ViewerPage {
         val key = PageKey.Reader(page.chapter.chapter.id, page.index)
         return synchronized(lock) {
-            findInCache(key) ?: ViewerReaderPage(page).also { newPage ->
+            val cached = findInCache(key)
+            val reusable = when {
+                cached == null -> null
+                cached !is ViewerReaderPage -> cached
+                WebGpuPageCachePolicy.shouldReuse(
+                    cachedPage = cached.page,
+                    requestedPage = page,
+                    isProtected = cached === currentPage || isPinned(cached),
+                ) -> cached
+                else -> {
+                    logcat(LogPriority.INFO) {
+                        "WebGpuViewer: replaced stale page wrapper chapter=${key.chapterId} index=${key.index}"
+                    }
+                    dropFromCache(cached)
+                    null
+                }
+            }
+            reusable ?: ViewerReaderPage(page).also { newPage ->
                 pageCache[key] = newPage
                 val limit = cacheSize
                 while (pageCache.size > limit) {
