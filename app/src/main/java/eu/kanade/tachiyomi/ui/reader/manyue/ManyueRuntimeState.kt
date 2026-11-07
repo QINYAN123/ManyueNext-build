@@ -26,6 +26,10 @@ object ManyueRuntimeState {
     @Volatile var anime4kOverlay: Boolean = false
         private set
 
+    /** Off by default: fixed-2x output stays full 2x unless the reader opts into display fit. */
+    @Volatile var aiDisplayFit: Boolean = false
+        private set
+
     @Volatile var displayWidthPx: Int = 0
         private set
 
@@ -66,7 +70,9 @@ object ManyueRuntimeState {
     fun updateDisplayWidth(width: Int): Boolean {
         if (width <= 0 || displayWidthPx == width) return false
         displayWidthPx = width
-        if (modeInt != ManyueEnhancementMode.AUTO.value) return false
+        val widthDrivesTargets = modeInt == ManyueEnhancementMode.AUTO.value ||
+            (aiDisplayFit && ManyueEnhancementMode.fromInt(modeInt).usesAi() && !aiModel.continuousScale)
+        if (!widthDrivesTargets) return false
         generation++
         ManyuePrefetchManager.reset()
         return true
@@ -96,6 +102,16 @@ object ManyueRuntimeState {
         if (aiDetailStrength == safe) return
         aiDetailStrength = safe
         if (aiModel.continuousScale) {
+            generation++
+            ManyuePrefetchManager.reset()
+        }
+    }
+
+    @Synchronized
+    fun updateAiDisplayFit(enabled: Boolean) {
+        if (aiDisplayFit == enabled) return
+        aiDisplayFit = enabled
+        if (!aiModel.continuousScale) {
             generation++
             ManyuePrefetchManager.reset()
         }
@@ -144,6 +160,7 @@ object ManyueRuntimeState {
         updateAnime4kOverlay(false)
         updateAiScale(prefs.manyueAiScalePercent.get())
         updateAiDetailStrength(prefs.manyueAiDetailStrength.get())
+        updateAiDisplayFit(prefs.manyueAiDisplayFit.get())
         foldableMode = prefs.manyueFoldableMode.get()
         foldableTargetWidth = prefs.manyueFoldableTargetWidth.get()
     }

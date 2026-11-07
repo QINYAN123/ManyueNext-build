@@ -248,7 +248,8 @@ class ManyueAiRequestRejectionTest {
         assertFalse(message.contains("格式"))
         assertEquals(before, inputFiles(context))
 
-        // The v99 1200x3656 page (2x = 17.5 MP) is now budget-fitted instead of refused.
+        // The v99 1200x3656 page (2x = 17.5 MP) is now enhanced: full-resolution input, with the
+        // native 2x result area-resampled to the largest output inside the display budget.
         var fittedRejection: ManyueAiRequestFactory.Rejection? = null
         val fittedToken = ManyueAiRequestFactory.enqueue(
             context = context,
@@ -259,17 +260,14 @@ class ManyueAiRequestRejectionTest {
         )
         assertNull(fittedRejection)
         val fitted = request(requireNotNull(fittedToken))
-        val (fitWidth, fitHeight) = requireNotNull(ManyueAiSafetyPolicy.nativeBudgetFit(1200, 3656, 12_000_000))
-        assertEquals(fitWidth, fitted.sourceWidth)
-        assertEquals(fitHeight, fitted.sourceHeight)
-        assertEquals(fitWidth * 2, fitted.targetWidth)
+        assertEquals(1200, fitted.sourceWidth)
+        assertEquals(3656, fitted.sourceHeight)
+        assertEquals(1984, fitted.targetWidth)
         assertEquals(1200, fitted.coverageWidth)
-        assertEquals(3656, fitted.coverageHeight)
-        assertTrue(fitted.targetWidth > 1200)
         val staged = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
         android.graphics.BitmapFactory.decodeFile(fitted.inputFile.path, staged)
-        assertEquals(fitWidth, staged.outWidth)
-        assertEquals(fitHeight, staged.outHeight)
+        assertEquals("input is the untouched original", 1200, staged.outWidth)
+        assertEquals(3656, staged.outHeight)
         ManyueAiUpscaler.cancel(requireNotNull(fittedToken))
 
         val normalToken = ManyueAiRequestFactory.enqueue(
@@ -284,6 +282,44 @@ class ManyueAiRequestRejectionTest {
         assertEquals(4320, ManyueAiUpscaler.targetHeight(1200, 2160, normalRequest.targetWidth))
         assertTrue(inputFiles(context).size > before.size)
         ManyueAiUpscaler.cancel(requireNotNull(normalToken))
+    }
+
+    @Test
+    fun `display fit is off by default and shrinks input only when enabled`() = withRuntime { context ->
+        val identity = ManyuePageBridge.Identity(9401, 9402, 0)
+        val page = png(1200, 1852)
+
+        val defaultToken = requireNotNull(
+            ManyueAiRequestFactory.enqueue(context, identity, page, priority = 100, displayWidthPx = 2090),
+        )
+        assertEquals(1200, request(defaultToken).sourceWidth)
+        assertEquals(2400, request(defaultToken).targetWidth)
+        ManyueAiUpscaler.cancel(defaultToken)
+
+        val fitToken = requireNotNull(
+            ManyueAiRequestFactory.enqueue(
+                context, identity.copy(pageIndex = 1), page, priority = 100,
+                displayWidthPx = 2090, aiDisplayFit = true,
+            ),
+        )
+        val fitted = request(fitToken)
+        assertEquals(1045, fitted.sourceWidth)
+        assertEquals(1613, fitted.sourceHeight)
+        assertEquals(2090, fitted.targetWidth)
+        assertEquals(1200, fitted.coverageWidth)
+        assertEquals(1852, fitted.coverageHeight)
+        ManyueAiUpscaler.cancel(fitToken)
+
+        // Narrow source: full 2x (1380) is already below the display width, nothing changes.
+        val narrowToken = requireNotNull(
+            ManyueAiRequestFactory.enqueue(
+                context, identity.copy(pageIndex = 2), png(690, 2000), priority = 100,
+                displayWidthPx = 2090, aiDisplayFit = true,
+            ),
+        )
+        assertEquals(690, request(narrowToken).sourceWidth)
+        assertEquals(1380, request(narrowToken).targetWidth)
+        ManyueAiUpscaler.cancel(narrowToken)
     }
 
     @Test

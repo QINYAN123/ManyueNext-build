@@ -570,6 +570,13 @@ class ReaderActivity : BaseActivity() {
         if (eu.kanade.tachiyomi.BuildConfig.BUILD_TYPE != "benchmark" || !manyueReaderResumed) return false
         val runtime = eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState
         when (operation) {
+            "displayfit" -> {
+                // Only this preference; unlike "configure" it leaves crop and other settings alone.
+                if (!intent.hasExtra("enabled")) return false
+                val enabled = intent.getIntExtra("enabled", 0) != 0
+                readerPreferences.manyueAiDisplayFit.set(enabled)
+                onManyueAiDisplayFitChanged(enabled)
+            }
             "configure" -> {
                 intent.getStringExtra("model")?.let {
                     val model = eu.kanade.tachiyomi.ui.reader.manyue.ManyueAiModel.selectableModels.find { model -> model.id == it }
@@ -753,6 +760,8 @@ class ReaderActivity : BaseActivity() {
             put("innerWindow", comfortInnerScreen)
             put("model", eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.aiModel.id)
             put("scalePercent", eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.aiScalePercent)
+            put("aiDisplayFit", eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.aiDisplayFit)
+            put("displayWidthPx", eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.displayWidthPx)
             put("generation", eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.generation)
             put("mode", readerPreferences.manyueEnhancementMode.get())
             put("gpuEnabled", readerPreferences.manyueGpuDisplayFilter.get())
@@ -899,6 +908,12 @@ class ReaderActivity : BaseActivity() {
 
     fun onManyueAiScaleChanged(percent: Int) {
         eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.updateAiScale(percent)
+        recordManyueConfiguration()
+        viewModel.state.value.viewer?.refreshManyue()
+    }
+
+    fun onManyueAiDisplayFitChanged(enabled: Boolean) {
+        eu.kanade.tachiyomi.ui.reader.manyue.ManyueRuntimeState.updateAiDisplayFit(enabled)
         recordManyueConfiguration()
         viewModel.state.value.viewer?.refreshManyue()
     }

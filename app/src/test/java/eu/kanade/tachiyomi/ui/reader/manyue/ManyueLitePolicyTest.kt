@@ -47,8 +47,12 @@ class ManyueLitePolicyTest {
         val sourceHeight = 3000
 
         assertTrue(ManyueAiSafetyPolicy.isNativeWorkSafe(ManyueAiModel.MOBILE_LITE, sourceWidth, sourceHeight, 2000))
-        assertFalse(
+        // Fixed-2x models need their 2x intermediate within the native limit (24 MP), not 12 MP.
+        assertTrue(
             ManyueAiSafetyPolicy.isNativeWorkSafe(ManyueAiModel.FAST_REAL_CUGAN, sourceWidth, sourceHeight, 2000),
+        )
+        assertFalse(
+            ManyueAiSafetyPolicy.isNativeWorkSafe(ManyueAiModel.FAST_REAL_CUGAN, sourceWidth, sourceHeight + 1, 2000),
         )
 
         // The rounded output is 2828x4242 (under 12 MP); one pixel wider rounds to 2829x4244.

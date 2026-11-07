@@ -10,6 +10,13 @@ object ManyueAiSafetyPolicy {
 
     const val MAX_DISPLAY_PIXELS = 12_000_000
     const val MAX_CLASSIC_PIXELS = 6_000_000
+
+    /**
+     * Fixed-2x native intermediate before the worker area-resamples to the target width.
+     * Measured on VER-AN10 (Adreno 740): peak worker RSS ~377-384 MB for 12, 17.5 and 24 MP
+     * intermediates alike; GPU runtime state dominates, not the packed RGB buffer.
+     */
+    const val MAX_NATIVE_INTERMEDIATE_PIXELS = 24_000_000
     const val MAX_WEBP_DIMENSION = 16_383
 
     const val ACTIVE_COMPLETION_LOOK_BACK_PAGES = 5
@@ -100,7 +107,10 @@ object ManyueAiSafetyPolicy {
         if (!isPixelBudgetSafe(sourceWidth, sourceHeight, MAX_DISPLAY_PIXELS)) return false
         val targetHeight = ManyueAiUpscaler.targetHeight(sourceWidth, sourceHeight, targetWidth)
         if (!isPixelBudgetSafe(targetWidth, targetHeight, MAX_DISPLAY_PIXELS)) return false
-        return model.continuousScale || isPredictedNativeOutputSafe(sourceWidth, sourceHeight, MAX_DISPLAY_PIXELS)
+        // The 2x intermediate lives only inside the native worker, which area-resamples it to
+        // targetWidth before encoding; the displayed result is bounded separately above.
+        return model.continuousScale ||
+            isPredictedNativeOutputSafe(sourceWidth, sourceHeight, MAX_NATIVE_INTERMEDIATE_PIXELS)
     }
 
     fun isPredictedNativeOutputSafe(sourceWidth: Int, sourceHeight: Int, maxPixels: Int): Boolean {
@@ -113,29 +123,47 @@ object ManyueAiSafetyPolicy {
     }
 
     /**
-     * Inference input size for a fixed-2x model whose full 2x output would exceed [maxPixels].
-     * The page is downscaled just enough that the model's 2x output fits, instead of refusing
-     * the page outright. Returns null when no fit is needed, or when the fitted output would
-     * not be meaningfully wider than the original (then the existing rejection stands).
+     * Output width for a fixed-2x page whose full 2x result exceeds [maxDisplayPixels]. The model
+     * still infers on the full-resolution source (no input downscale); the native worker then
+     * area-resamples its 2x result to this width. Null when no fit is needed, when the native 2x
+     * intermediate exceeds [maxNativePixels], or when the result would not be meaningfully wider
+     * than the original page.
      */
-    fun nativeBudgetFit(sourceWidth: Int, sourceHeight: Int, maxPixels: Int): Pair<Int, Int>? {
-        if (sourceWidth <= 0 || sourceHeight <= 0 || maxPixels <= 0) return null
-        if (isPredictedNativeOutputSafe(sourceWidth, sourceHeight, maxPixels)) return null
-        val scale = kotlin.math.sqrt(maxPixels.toDouble() / (4.0 * sourceWidth.toDouble() * sourceHeight.toDouble()))
-        var width = kotlin.math.floor(sourceWidth * scale).toInt().coerceAtMost(sourceWidth - 1)
-        while (width > 0) {
-            val height = ((sourceHeight.toLong() * width + sourceWidth / 2L) / sourceWidth).toInt()
-            if (height > 0 && isPredictedNativeOutputSafe(width, height, maxPixels)) {
-                val outputWidth = width.toLong() * 2L
-                return if (outputWidth * 100L > sourceWidth.toLong() * (100L + MIN_FIT_GAIN_PERCENT)) {
-                    width to height
-                } else {
-                    null
-                }
+    fun outputBudgetWidth(
+        sourceWidth: Int,
+        sourceHeight: Int,
+        maxDisplayPixels: Int = MAX_DISPLAY_PIXELS,
+        maxNativePixels: Int = MAX_NATIVE_INTERMEDIATE_PIXELS,
+    ): Int? {
+        if (sourceWidth <= 0 || sourceHeight <= 0 || maxDisplayPixels <= 0) return null
+        if (isPredictedNativeOutputSafe(sourceWidth, sourceHeight, maxDisplayPixels)) return null
+        if (!isPredictedNativeOutputSafe(sourceWidth, sourceHeight, maxNativePixels)) return null
+        val scale = kotlin.math.sqrt(maxDisplayPixels.toDouble() / (sourceWidth.toDouble() * sourceHeight.toDouble()))
+        var width = kotlin.math.floor(sourceWidth * scale).toInt().coerceAtMost(sourceWidth * 2)
+        while (width > sourceWidth) {
+            val height = ManyueAiUpscaler.targetHeight(sourceWidth, sourceHeight, width)
+            if (height > 0 && isPixelBudgetSafe(width, height, maxDisplayPixels)) {
+                return width.takeIf { it.toLong() * 100L > sourceWidth.toLong() * (100L + MIN_FIT_GAIN_PERCENT) }
             }
             width--
         }
         return null
+    }
+
+    /**
+     * Opt-in display fit for fixed-2x models: inference input whose 2x output just covers
+     * [displayWidth]. Null when the full 2x output is not meaningfully wider than the display,
+     * or when the fitted output would not be meaningfully wider than the original page.
+     */
+    fun displayFit(sourceWidth: Int, sourceHeight: Int, displayWidth: Int): Pair<Int, Int>? {
+        if (sourceWidth <= 0 || sourceHeight <= 0 || displayWidth <= 0) return null
+        val fullWidth = sourceWidth.toLong() * 2L
+        if (fullWidth * 100L <= displayWidth.toLong() * (100L + MIN_FIT_GAIN_PERCENT)) return null
+        val width = (displayWidth + 1) / 2
+        if (width >= sourceWidth) return null
+        if (width.toLong() * 2L * 100L <= sourceWidth.toLong() * (100L + MIN_FIT_GAIN_PERCENT)) return null
+        val height = ((sourceHeight.toLong() * width + sourceWidth / 2L) / sourceWidth).toInt()
+        return if (height > 0) width to height else null
     }
 
     /** A fitted 2x output must still be at least this much wider than the original page. */

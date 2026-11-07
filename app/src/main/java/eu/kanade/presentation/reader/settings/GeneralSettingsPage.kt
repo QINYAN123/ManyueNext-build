@@ -366,6 +366,21 @@ internal fun ColumnScope.GeneralPage(viewModel: ReaderSettingsViewModel) {
         )
     } else {
         Text("质量超分倍率：2×（固定）", style = MaterialTheme.typography.bodyMedium)
+        val aiDisplayFit by viewModel.preferences.manyueAiDisplayFit.collectAsState()
+        CheckboxItem(
+            label = "按阅读区宽度超分（省电）",
+            checked = aiDisplayFit,
+            onClick = {
+                val enabled = !aiDisplayFit
+                viewModel.preferences.manyueAiDisplayFit.set(enabled)
+                readerActivity?.onManyueAiDisplayFitChanged(enabled)
+            },
+        )
+        Text(
+            "原图 2× 后比阅读区还宽时，先把输入缩到阅读区一半宽再超分，省去屏幕显示不出的像素。" +
+                "实测约快 1/4、发热更少；细密排线会略软一点，文字和线条基本无差别。默认关闭。",
+            style = MaterialTheme.typography.bodySmall,
+        )
     }
     if (selectedAiModel.continuousScale) {
         val aiDetailStrength by viewModel.preferences.manyueAiDetailStrength.collectAsState()

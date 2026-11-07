@@ -226,6 +226,9 @@ class ReaderPreferences(
 
     val manyueAiDetailStrength = preferenceStore.getInt("manyueAiDetailStrength", 60)
 
+    /** Fixed-2x models: shrink the input so the 2x output matches the reading width (faster, cooler). */
+    val manyueAiDisplayFit: Preference<Boolean> = preferenceStore.getBoolean("manyueAiDisplayFit", false)
+
     val manyuePerformanceDiagnostics = preferenceStore.getBoolean("manyuePerformanceDiagnostics", false)
 
     val manyueLiteModelMigrationDone = preferenceStore.getBoolean("manyueLiteModelMigrationDone", false)

@@ -50,6 +50,7 @@ object ManyueAiRequestFactory {
         generation: Long = ManyueRuntimeState.generation,
         displayWidthPx: Int = ManyueRuntimeState.displayWidthPx,
         onRejected: (Rejection) -> Unit = {},
+        aiDisplayFit: Boolean = ManyueRuntimeState.aiDisplayFit,
     ): String? {
         if (!ManyueEnhancementMode.fromInt(expectedMode).usesAi()) {
             return reject(onRejected, Rejection(RejectionReason.MODE_NOT_AI))
@@ -125,24 +126,32 @@ object ManyueAiRequestFactory {
                 ),
             )
         }
-        // Tall pages whose full 2x output exceeds the native budget are downscaled just enough to
-        // fit, so they are still enhanced instead of always keeping the original.
-        val budgetFit = if (!model.continuousScale &&
+        if (!model.continuousScale &&
             ManyueAiSafetyPolicy.isPixelBudgetSafe(width, height, ManyueAiSafetyPolicy.MAX_DISPLAY_PIXELS)
         ) {
-            ManyueAiSafetyPolicy.nativeBudgetFit(width, height, ManyueAiSafetyPolicy.MAX_DISPLAY_PIXELS)
-        } else {
-            null
-        }
-        if (budgetFit != null) {
-            val (fitWidth, fitHeight) = budgetFit
-            return createOrReuse(
-                context, identity, originalBytes, priority, expectedMode, generation, model, targetMode,
-                inputWidth = fitWidth, inputHeight = fitHeight, targetWidth = fitWidth * 2,
-                coverageWidth = width, coverageHeight = height,
-                writeInput = { writeScaledInput(it, originalBytes, fitWidth, fitHeight) },
-                onRejected = onRejected,
-            )
+            // Opt-in only: shrink the input so the 2x output matches the reading width.
+            val inputFit = if (aiDisplayFit) ManyueAiSafetyPolicy.displayFit(width, height, displayWidthPx) else null
+            val inputWidth = inputFit?.first ?: width
+            val inputHeight = inputFit?.second ?: height
+            // Over-budget tall pages: infer at full resolution, then let the native worker
+            // area-resample the 2x result down to the largest output that fits the display budget.
+            val fittedTarget = ManyueAiSafetyPolicy.outputBudgetWidth(inputWidth, inputHeight)
+            if (inputFit != null || fittedTarget != null) {
+                val planTarget = fittedTarget ?: (inputWidth * 2)
+                if (ManyueAiSafetyPolicy.isNativeWorkSafe(model, inputWidth, inputHeight, planTarget)) {
+                    return createOrReuse(
+                        context, identity, originalBytes, priority, expectedMode, generation, model, targetMode,
+                        inputWidth = inputWidth, inputHeight = inputHeight, targetWidth = planTarget,
+                        coverageWidth = width, coverageHeight = height,
+                        writeInput = if (inputFit != null) {
+                            { writeScaledInput(it, originalBytes, inputWidth, inputHeight) }
+                        } else {
+                            { it.writeBytes(originalBytes) }
+                        },
+                        onRejected = onRejected,
+                    )
+                }
+            }
         }
         if (!ManyueAiSafetyPolicy.isNativeWorkSafe(model, width, height, targetWidth)) {
             val reason = when {
