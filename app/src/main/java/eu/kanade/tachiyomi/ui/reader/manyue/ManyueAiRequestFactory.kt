@@ -1,6 +1,7 @@
 package eu.kanade.tachiyomi.ui.reader.manyue
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import logcat.LogPriority
 import tachiyomi.core.common.util.system.logcat
@@ -124,6 +125,25 @@ object ManyueAiRequestFactory {
                 ),
             )
         }
+        // Tall pages whose full 2x output exceeds the native budget are downscaled just enough to
+        // fit, so they are still enhanced instead of always keeping the original.
+        val budgetFit = if (!model.continuousScale &&
+            ManyueAiSafetyPolicy.isPixelBudgetSafe(width, height, ManyueAiSafetyPolicy.MAX_DISPLAY_PIXELS)
+        ) {
+            ManyueAiSafetyPolicy.nativeBudgetFit(width, height, ManyueAiSafetyPolicy.MAX_DISPLAY_PIXELS)
+        } else {
+            null
+        }
+        if (budgetFit != null) {
+            val (fitWidth, fitHeight) = budgetFit
+            return createOrReuse(
+                context, identity, originalBytes, priority, expectedMode, generation, model, targetMode,
+                inputWidth = fitWidth, inputHeight = fitHeight, targetWidth = fitWidth * 2,
+                coverageWidth = width, coverageHeight = height,
+                writeInput = { writeScaledInput(it, originalBytes, fitWidth, fitHeight) },
+                onRejected = onRejected,
+            )
+        }
         if (!ManyueAiSafetyPolicy.isNativeWorkSafe(model, width, height, targetWidth)) {
             val reason = when {
                 !ManyueAiSafetyPolicy.isPixelBudgetSafe(
@@ -165,6 +185,36 @@ object ManyueAiRequestFactory {
                 ),
             )
         }
+        return createOrReuse(
+            context, identity, originalBytes, priority, expectedMode, generation, model, targetMode,
+            inputWidth = width, inputHeight = height, targetWidth = targetWidth,
+            coverageWidth = width, coverageHeight = height,
+            writeInput = { it.writeBytes(originalBytes) },
+            onRejected = onRejected,
+        )
+    }
+
+    /** Shared tail: budget check, cache reuse, input staging and registration. */
+    private fun createOrReuse(
+        context: Context,
+        identity: ManyuePageBridge.Identity,
+        originalBytes: ByteArray,
+        priority: Int,
+        expectedMode: Int,
+        generation: Long,
+        model: ManyueAiModel,
+        targetMode: Int,
+        inputWidth: Int,
+        inputHeight: Int,
+        targetWidth: Int,
+        coverageWidth: Int,
+        coverageHeight: Int,
+        writeInput: (File) -> Unit,
+        onRejected: (Rejection) -> Unit,
+    ): String? {
+        val width = inputWidth
+        val height = inputHeight
+        val resolvedHeight = ManyueAiUpscaler.targetHeight(width, height, targetWidth)
         // The resolved width is in both cache and request identity; legacy tenths stays native x2.
         val targetScaleTenths = 20
         val resolved = targetWidth
@@ -220,7 +270,7 @@ object ManyueAiRequestFactory {
         var input: File? = null
         return try {
             input = File(context.cacheDir, "manyue_in_${UUID.randomUUID()}.bin")
-            input.writeBytes(originalBytes)
+            writeInput(input)
             val token = ManyueAiUpscaler.register(
                 mangaId = identity.mangaId,
                 chapterId = identity.chapterId,
@@ -238,6 +288,8 @@ object ManyueAiRequestFactory {
                 model = model,
                 anime4kOverlay = false,
                 aiDetailStrength = if (model.continuousScale) ManyueRuntimeState.aiDetailStrength else 0,
+                coverageWidth = coverageWidth,
+                coverageHeight = coverageHeight,
             )
             // Register priority first, but open read-ahead only after queue() has offered the
             // current request. A registration-only gate lets a future page win this small race.
@@ -269,6 +321,24 @@ object ManyueAiRequestFactory {
                     targetHeight = resolvedHeight,
                 ),
             )
+        }
+    }
+
+    /** Lossless PNG keeps the model input free of new compression artifacts. */
+    private fun writeScaledInput(file: File, originalBytes: ByteArray, width: Int, height: Int) {
+        val decoded = BitmapFactory.decodeByteArray(originalBytes, 0, originalBytes.size)
+            ?: error("Cannot decode page for budget fit")
+        val scaled = runCatching { Bitmap.createScaledBitmap(decoded, width, height, true) }
+            .onFailure { decoded.recycle() }
+            .getOrThrow()
+        try {
+            check(scaled.width == width && scaled.height == height) { "Unexpected fitted size" }
+            file.outputStream().buffered().use { out ->
+                check(scaled.compress(Bitmap.CompressFormat.PNG, 100, out)) { "Fitted input encode failed" }
+            }
+        } finally {
+            if (scaled !== decoded) scaled.recycle()
+            decoded.recycle()
         }
     }
 

@@ -142,6 +142,9 @@ object ManyueAiUpscaler {
         @Volatile var predictiveStart: Boolean = false,
         val benchmarkNamespace: Int = ManyueBenchmarkControl.cacheNamespace,
         val readerSessionEpoch: Long = ManyueReaderForegroundGate.currentSessionEpoch,
+        /** Page size as displayed; differs from [sourceWidth] when the input was budget-fitted. */
+        val coverageWidth: Int = sourceWidth,
+        val coverageHeight: Int = sourceHeight,
     ) : Comparable<Request> {
         /** Selected mode stays fixed; only the serial worker may bind a physical hybrid model. */
         @Volatile internal var physicalModel: ManyueAiModel? =
@@ -446,6 +449,8 @@ object ManyueAiUpscaler {
         model: ManyueAiModel = ManyueRuntimeState.aiModel,
         @Suppress("UNUSED_PARAMETER") anime4kOverlay: Boolean = false,
         aiDetailStrength: Int = if (model.continuousScale) ManyueRuntimeState.aiDetailStrength else 0,
+        coverageWidth: Int = sourceWidth,
+        coverageHeight: Int = sourceHeight,
     ): String {
         val readerSessionEpoch = ManyueReaderForegroundGate.currentSessionEpoch
         val requestKey = buildRequestKey(
@@ -469,6 +474,8 @@ object ManyueAiUpscaler {
             expectedMode, generation, sourceFingerprint, requestKey = requestKey,
             model = model, anime4kOverlay = false, aiDetailStrength = aiDetailStrength,
             readerSessionEpoch = readerSessionEpoch,
+            coverageWidth = coverageWidth,
+            coverageHeight = coverageHeight,
         )
         requests[token] = req
         tokensByRequestKey[requestKey] = token
@@ -975,7 +982,7 @@ object ManyueAiUpscaler {
     private fun coverageStamp(req: Request) = ManyueReadingCoverage.Result(
             ManyueReadingCoverage.Source(
                 req.mangaId, req.chapterId, req.pageIndex, req.sourceFingerprint,
-                req.sourceWidth, req.sourceHeight,
+                req.coverageWidth, req.coverageHeight,
             ),
             req.generation, req.model.ordinal, req.expectedMode, req.configuredScalePercent,
             req.outputWidth, req.outputHeight, req.token,

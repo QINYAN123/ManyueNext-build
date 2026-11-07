@@ -222,31 +222,55 @@ class ManyueAiRequestRejectionTest {
     @Test
     fun `quality reports exact two times output budget and normal page remains enqueueable`() = withRuntime { context ->
         val identity = ManyuePageBridge.Identity(9201, 9202, 0)
-        val largePage = png(1200, 3656)
         var rejection: ManyueAiRequestFactory.Rejection? = null
         val before = inputFiles(context)
 
+        // A page whose fitted 2x output would not be wider than itself keeps the exact rejection.
         val rejectedToken = ManyueAiRequestFactory.enqueue(
             context = context,
             identity = identity,
-            originalBytes = largePage,
+            originalBytes = png(1000, 11_000),
             priority = 100,
             onRejected = { rejection = it },
         )
 
         assertNull(rejectedToken)
         assertEquals(ManyueAiRequestFactory.RejectionReason.DISPLAY_PIXEL_BUDGET, rejection?.reason)
-        assertEquals(1200, rejection?.sourceWidth)
-        assertEquals(3656, rejection?.sourceHeight)
-        assertEquals(2400, rejection?.targetWidth)
-        assertEquals(7312, rejection?.targetHeight)
+        assertEquals(1000, rejection?.sourceWidth)
+        assertEquals(11_000, rejection?.sourceHeight)
+        assertEquals(2000, rejection?.targetWidth)
+        assertEquals(22_000, rejection?.targetHeight)
         assertEquals(12_000_000L, rejection?.limit)
         val message = ManyuePageBridge.rejectionMessage(requireNotNull(rejection))
-        assertTrue(message.contains("2400×7312"))
-        assertTrue(message.contains("17548800 像素"))
+        assertTrue(message.contains("2000×22000"))
+        assertTrue(message.contains("44000000 像素"))
         assertTrue(message.contains("12000000 像素上限"))
         assertFalse(message.contains("格式"))
         assertEquals(before, inputFiles(context))
+
+        // The v99 1200x3656 page (2x = 17.5 MP) is now budget-fitted instead of refused.
+        var fittedRejection: ManyueAiRequestFactory.Rejection? = null
+        val fittedToken = ManyueAiRequestFactory.enqueue(
+            context = context,
+            identity = identity.copy(pageIndex = 2),
+            originalBytes = png(1200, 3656),
+            priority = 100,
+            onRejected = { fittedRejection = it },
+        )
+        assertNull(fittedRejection)
+        val fitted = request(requireNotNull(fittedToken))
+        val (fitWidth, fitHeight) = requireNotNull(ManyueAiSafetyPolicy.nativeBudgetFit(1200, 3656, 12_000_000))
+        assertEquals(fitWidth, fitted.sourceWidth)
+        assertEquals(fitHeight, fitted.sourceHeight)
+        assertEquals(fitWidth * 2, fitted.targetWidth)
+        assertEquals(1200, fitted.coverageWidth)
+        assertEquals(3656, fitted.coverageHeight)
+        assertTrue(fitted.targetWidth > 1200)
+        val staged = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        android.graphics.BitmapFactory.decodeFile(fitted.inputFile.path, staged)
+        assertEquals(fitWidth, staged.outWidth)
+        assertEquals(fitHeight, staged.outHeight)
+        ManyueAiUpscaler.cancel(requireNotNull(fittedToken))
 
         val normalToken = ManyueAiRequestFactory.enqueue(
             context = context,

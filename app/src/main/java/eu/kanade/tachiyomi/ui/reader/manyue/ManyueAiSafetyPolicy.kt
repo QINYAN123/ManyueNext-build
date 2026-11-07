@@ -112,6 +112,35 @@ object ManyueAiSafetyPolicy {
         )
     }
 
+    /**
+     * Inference input size for a fixed-2x model whose full 2x output would exceed [maxPixels].
+     * The page is downscaled just enough that the model's 2x output fits, instead of refusing
+     * the page outright. Returns null when no fit is needed, or when the fitted output would
+     * not be meaningfully wider than the original (then the existing rejection stands).
+     */
+    fun nativeBudgetFit(sourceWidth: Int, sourceHeight: Int, maxPixels: Int): Pair<Int, Int>? {
+        if (sourceWidth <= 0 || sourceHeight <= 0 || maxPixels <= 0) return null
+        if (isPredictedNativeOutputSafe(sourceWidth, sourceHeight, maxPixels)) return null
+        val scale = kotlin.math.sqrt(maxPixels.toDouble() / (4.0 * sourceWidth.toDouble() * sourceHeight.toDouble()))
+        var width = kotlin.math.floor(sourceWidth * scale).toInt().coerceAtMost(sourceWidth - 1)
+        while (width > 0) {
+            val height = ((sourceHeight.toLong() * width + sourceWidth / 2L) / sourceWidth).toInt()
+            if (height > 0 && isPredictedNativeOutputSafe(width, height, maxPixels)) {
+                val outputWidth = width.toLong() * 2L
+                return if (outputWidth * 100L > sourceWidth.toLong() * (100L + MIN_FIT_GAIN_PERCENT)) {
+                    width to height
+                } else {
+                    null
+                }
+            }
+            width--
+        }
+        return null
+    }
+
+    /** A fitted 2x output must still be at least this much wider than the original page. */
+    const val MIN_FIT_GAIN_PERCENT = 5
+
     fun isCompletionCurrent(
         expectedToken: String,
         currentToken: String?,
