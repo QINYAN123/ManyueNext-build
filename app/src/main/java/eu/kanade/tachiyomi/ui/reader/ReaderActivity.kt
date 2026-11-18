@@ -716,6 +716,27 @@ class ReaderActivity : BaseActivity() {
         return true
     }
 
+    /** Compare resolved image addresses in a bounded chapter slice without exporting the addresses. */
+    internal fun benchmarkPageAddresses(start: Int): String? {
+        check(eu.kanade.tachiyomi.BuildConfig.BUILD_TYPE == "benchmark")
+        if (!manyueReaderResumed) return null
+        val chapter = viewModel.state.value.viewerChapters?.currChapter ?: return null
+        val pages = chapter.pages ?: return null
+        if (start !in pages.indices) return null
+        val firstIndex = mutableMapOf<String, Int>()
+        return org.json.JSONObject().apply {
+            put("chapterInstance", System.identityHashCode(chapter))
+            put("pageCount", pages.size)
+            put("startIndex", start)
+            put("firstEqualImageUrlIndex", org.json.JSONArray().apply {
+                for (i in start until start + minOf(32, pages.size - start)) {
+                    val url = pages[i].imageUrl
+                    put(if (url.isNullOrBlank()) org.json.JSONObject.NULL else firstIndex.getOrPut(url) { i })
+                }
+            })
+        }.toString()
+    }
+
     /** Read-only benchmark snapshot, without book titles, IDs, URLs or paths. */
     fun manyueBenchmarkReaderSnapshot(): String {
         check(eu.kanade.tachiyomi.BuildConfig.BUILD_TYPE == "benchmark")

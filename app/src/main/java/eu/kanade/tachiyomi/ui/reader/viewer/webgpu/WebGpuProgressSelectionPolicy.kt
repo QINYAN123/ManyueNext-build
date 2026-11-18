@@ -11,6 +11,7 @@ internal class WebGpuProgressSelectionPolicy {
     private enum class Direction { FORWARD, BACKWARD }
 
     private var selectionEpoch = 0L
+    private var lastDeliveredReaderPage: Any? = null
     private val transitionCrossings = mutableMapOf<WebGpuTransitionKey, Direction>()
 
     @Synchronized
@@ -24,6 +25,7 @@ internal class WebGpuProgressSelectionPolicy {
     @Synchronized
     fun reset(): Long {
         selectionEpoch++
+        lastDeliveredReaderPage = null
         transitionCrossings.clear()
         return selectionEpoch
     }
@@ -64,8 +66,14 @@ internal class WebGpuProgressSelectionPolicy {
         }
     }
 
-    /** Recheck a queued selection against the current epoch and the same live page object. */
+    /** Claim progress after validating the queued texture. Decode and AI can each replace it
+     * while the same logical reader page remains at the read-through position. */
     @Synchronized
-    fun isCurrentDelivery(eventEpoch: Long, eventPage: Any, currentPage: Any?): Boolean =
-        eventEpoch == selectionEpoch && eventPage === currentPage
+    fun claimDelivery(eventEpoch: Long, eventImage: Any, liveImage: Any?, readerPage: Any): Boolean {
+        if (eventEpoch != selectionEpoch || eventImage !== liveImage || readerPage === lastDeliveredReaderPage) {
+            return false
+        }
+        lastDeliveredReaderPage = readerPage
+        return true
+    }
 }

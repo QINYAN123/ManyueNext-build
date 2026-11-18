@@ -246,6 +246,9 @@
     <string name="transition_no_previous">已達盡頭</string>
     <string name="transition_pages_error">頁面載入失敗：%1$s</string>
     <string name="information_no_recent">最近無更新</string>
+    <string name="updates_automatic_off">書櫃自動更新已關閉。</string>
+    <string name="updates_library_settings">書櫃更新設定</string>
+    <string name="updates_last_check_started">上次開始檢查書櫃更新的時間：%s</string>
     <string name="name">名稱</string>
     <string name="track">歷程</string>
     <string name="action_open_log">檢視記錄檔</string>

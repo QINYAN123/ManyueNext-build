@@ -313,7 +313,7 @@ class WebGpuViewerContinuous(activity: ReaderActivity, val useGap: Boolean = fal
             val liveOwner = viewerPageFor(imagePage)
             if (
                 liveOwner !== owner ||
-                !selectionPolicy.isCurrentDelivery(eventEpoch, imagePage, liveOwner?.imagePage)
+                !selectionPolicy.claimDelivery(eventEpoch, imagePage, liveOwner?.imagePage, page)
             ) {
                 return@launch
             }

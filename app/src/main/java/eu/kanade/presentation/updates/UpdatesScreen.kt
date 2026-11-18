@@ -33,14 +33,18 @@ import mihon.icons.materialsymbols.rounded.FilterList
 import mihon.icons.materialsymbols.rounded.FlipToBack
 import mihon.icons.materialsymbols.rounded.Refresh
 import mihon.icons.materialsymbols.rounded.SelectAll
+import mihon.icons.materialsymbols.rounded.Settings
 import tachiyomi.i18n.MR
 import tachiyomi.presentation.core.components.FastScrollLazyColumn
 import tachiyomi.presentation.core.components.material.PullRefresh
 import tachiyomi.presentation.core.components.material.Scaffold
 import tachiyomi.presentation.core.i18n.stringResource
 import tachiyomi.presentation.core.screens.EmptyScreen
+import tachiyomi.presentation.core.screens.EmptyScreenAction
 import tachiyomi.presentation.core.screens.LoadingScreen
 import tachiyomi.presentation.core.theme.active
+import java.text.DateFormat
+import java.util.Date
 import kotlin.time.Duration.Companion.seconds
 
 @Composable
@@ -48,6 +52,8 @@ fun UpdateScreen(
     state: UpdatesViewModel.State,
     snackbarHostState: SnackbarHostState,
     lastUpdated: Long,
+    automaticUpdatesOff: Boolean,
+    onOpenUpdateSettings: () -> Unit,
     onClickCover: (UpdatesItem) -> Unit,
     onSelectAll: (Boolean) -> Unit,
     onInvertSelection: () -> Unit,
@@ -93,9 +99,18 @@ fun UpdateScreen(
     ) { contentPadding ->
         when {
             state.isLoading -> LoadingScreen(Modifier.padding(contentPadding))
-            state.items.isEmpty() -> EmptyScreen(
-                stringRes = MR.strings.information_no_recent,
+            state.items.isEmpty() && hasActiveFilters -> EmptyScreen(
+                stringRes = MR.strings.no_results_found,
                 modifier = Modifier.padding(contentPadding),
+                actions = listOf(
+                    EmptyScreenAction(MR.strings.action_filter, MaterialSymbols.Rounded.FilterList, onFilterClicked),
+                ),
+            )
+            state.items.isEmpty() -> UpdatesEmptyScreen(
+                modifier = Modifier.padding(contentPadding),
+                lastUpdated = lastUpdated,
+                automaticUpdatesOff = automaticUpdatesOff,
+                onOpenUpdateSettings = onOpenUpdateSettings,
             )
             else -> {
                 val scope = rememberCoroutineScope()
@@ -134,6 +149,41 @@ fun UpdateScreen(
             }
         }
     }
+}
+
+@Composable
+private fun UpdatesEmptyScreen(
+    lastUpdated: Long,
+    automaticUpdatesOff: Boolean,
+    onOpenUpdateSettings: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val message = listOfNotNull(
+        stringResource(MR.strings.information_no_recent),
+        if (automaticUpdatesOff) stringResource(MR.strings.updates_automatic_off) else null,
+        if (lastUpdated > 0) {
+            val time = DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT)
+                .format(Date(lastUpdated))
+            stringResource(MR.strings.updates_last_check_started, time)
+        } else {
+            null
+        },
+    ).joinToString("\n")
+    EmptyScreen(
+        message = message,
+        modifier = modifier,
+        actions = if (automaticUpdatesOff) {
+            listOf(
+                EmptyScreenAction(
+                    stringRes = MR.strings.updates_library_settings,
+                    icon = MaterialSymbols.Rounded.Settings,
+                    onClick = onOpenUpdateSettings,
+                ),
+            )
+        } else {
+            null
+        },
+    )
 }
 
 @Composable

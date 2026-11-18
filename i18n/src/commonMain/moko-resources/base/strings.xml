@@ -1011,6 +1011,9 @@
     <!-- Information Text -->
     <string name="information_no_downloads">No downloads</string>
     <string name="information_no_recent">No recent updates</string>
+    <string name="updates_automatic_off">Automatic library updates are off.</string>
+    <string name="updates_library_settings">Library update settings</string>
+    <string name="updates_last_check_started">Last library check started at %s</string>
     <string name="information_no_recent_manga">Nothing read recently</string>
     <string name="information_empty_library">Your library is empty</string>
     <string name="information_no_manga_category">Category is empty</string>

@@ -98,6 +98,7 @@ class UpdatesViewModel(
     val events: Flow<Event> = _events.receiveAsFlow()
 
     val lastUpdated by libraryPreferences.lastUpdatedTimestamp.asState(viewModelScope)
+    val autoUpdateInterval by libraryPreferences.autoUpdateInterval.asState(viewModelScope)
 
     // First and last selected index in list
     private val selectedPositions: Array<Int> = arrayOf(-1, -1)

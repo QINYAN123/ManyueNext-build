@@ -97,6 +97,11 @@ class ManyueBenchmarkReceiver : BroadcastReceiver() {
             return
         }
         when (operation) {
+            "pageaddresses" -> {
+                val snapshot = reader?.benchmarkPageAddresses(intent.getIntExtra("start", -1))
+                if (snapshot == null) resultCode = 2 else resultData = snapshot
+                return
+            }
             "state" -> {
                 resultData = reader?.manyueBenchmarkReaderSnapshot()
                 return

@@ -254,6 +254,9 @@
     <string name="update_check_notification_update_available">有新版本！</string>
     <string name="information_no_downloads">无下载任务</string>
     <string name="information_no_recent">最近没有更新</string>
+    <string name="updates_automatic_off">书架自动更新已关闭。</string>
+    <string name="updates_library_settings">书架更新设置</string>
+    <string name="updates_last_check_started">上次开始检查书架更新的时间：%s</string>
     <string name="information_no_recent_manga">最近没有阅读</string>
     <string name="information_empty_library">书架为空</string>
     <string name="information_empty_category">尚无分类，点击加号按钮创建分类用来管理书架。</string>

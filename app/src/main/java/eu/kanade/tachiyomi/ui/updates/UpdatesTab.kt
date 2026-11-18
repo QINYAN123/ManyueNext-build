@@ -25,6 +25,7 @@ import eu.kanade.tachiyomi.ui.home.HomeScreen
 import eu.kanade.tachiyomi.ui.main.MainActivity
 import eu.kanade.tachiyomi.ui.manga.MangaScreen
 import eu.kanade.tachiyomi.ui.reader.ReaderActivity
+import eu.kanade.tachiyomi.ui.setting.SettingsScreen
 import eu.kanade.tachiyomi.ui.updates.UpdatesViewModel.Event
 import kotlinx.coroutines.flow.collectLatest
 import mihon.feature.upcoming.UpcomingScreen
@@ -62,6 +63,8 @@ data object UpdatesTab : Tab {
             state = state,
             snackbarHostState = viewModel.snackbarHostState,
             lastUpdated = viewModel.lastUpdated,
+            automaticUpdatesOff = viewModel.autoUpdateInterval == 0,
+            onOpenUpdateSettings = { navigator.push(SettingsScreen(SettingsScreen.Destination.Library)) },
             onClickCover = { item -> navigator.push(MangaScreen(item.update.mangaId)) },
             onSelectAll = viewModel::toggleAllSelection,
             onInvertSelection = viewModel::invertSelection,

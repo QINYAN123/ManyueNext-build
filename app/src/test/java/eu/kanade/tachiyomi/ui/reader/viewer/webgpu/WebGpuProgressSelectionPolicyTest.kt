@@ -52,12 +52,28 @@ class WebGpuProgressSelectionPolicyTest {
         val epoch = policy.reset()
         val eventPage = Any()
 
-        assertTrue(policy.isCurrentDelivery(epoch, eventPage, eventPage))
-        assertFalse(policy.isCurrentDelivery(epoch, eventPage, Any()))
+        val readerPage = Any()
+        assertFalse(policy.claimDelivery(epoch, eventPage, Any(), readerPage))
+        assertTrue(policy.claimDelivery(epoch, eventPage, eventPage, readerPage))
 
         policy.reset()
 
-        assertFalse(policy.isCurrentDelivery(epoch, eventPage, eventPage))
+        assertFalse(policy.claimDelivery(epoch, eventPage, eventPage, Any()))
+        assertTrue(policy.claimDelivery(policy.epoch(), eventPage, eventPage, readerPage))
+    }
+
+    @Test
+    fun originalAndAiReplacementReportOnePageButRealBacktrackingReportsAgain() {
+        val policy = WebGpuProgressSelectionPolicy()
+        val epoch = policy.epoch()
+        val first = Any()
+        val second = Any()
+        val original = Any()
+        val enhanced = Any()
+        assertTrue(policy.claimDelivery(epoch, original, original, first))
+        assertFalse(policy.claimDelivery(epoch, enhanced, enhanced, first))
+        assertTrue(policy.claimDelivery(epoch, original, original, second))
+        assertTrue(policy.claimDelivery(epoch, enhanced, enhanced, first))
     }
 
     @Test
